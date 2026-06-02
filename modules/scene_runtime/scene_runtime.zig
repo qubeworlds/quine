@@ -75,6 +75,7 @@ pub const SceneRuntime = struct {
             if (e.geometry) |g| if (g == .gltf) {
                 const bytes = resolve(assets, g.gltf.source) orelse return error.AssetNotFound;
                 bnd.model = try core.loadModel(a, bytes);
+                if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
             };
             try self.buildMesh(a, ent, e);
             bindings[i] = bnd;
@@ -104,6 +105,22 @@ pub const SceneRuntime = struct {
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             else => {}, // builtin handled in core.loadScene; gltf/fedora next.
+        }
+    }
+
+    /// Scale a model entity so it stands `target_h` metres tall: measure the
+    /// model's bind-pose height and set the entity's Transform scale to the ratio
+    /// (the data-driven form of the app's hardcoded `dancer_scale`).
+    fn applyHeight(self: *SceneRuntime, a: std.mem.Allocator, ent: core.Entity, model: *const core.Model, target_h: f32) !void {
+        var pose = try core.Pose.init(a, model.skeleton.nodes.len);
+        pose.sample(&model.skeleton, null, 0); // bind pose
+        const h = core.measureModelHeight(model, &pose);
+        if (h <= 0) return;
+        const s = m.Vec3.splat(target_h / h);
+        if (self.world.get(core.Transform, ent)) |t| {
+            t.scale = s;
+        } else {
+            self.world.set(core.Transform, ent, .{ .scale = s });
         }
     }
 
@@ -253,6 +270,15 @@ test "SceneRuntime resolves and loads a glTF model from an asset" {
     try std.testing.expect(dancer.model != null);
     try std.testing.expectEqual(@as(usize, 19), dancer.model.?.skeleton.jointCount());
     try std.testing.expectEqual(@as(usize, 1), dancer.model.?.clips.len);
+
+    // heightMeters scaled the actor: CesiumMan (~1.5 m tall) to 1.75 m gives a
+    // uniform scale of ~1.13. Proves measureModelHeight ran on real geometry.
+    const scale = rt.world.get(core.Transform, dancer.entity).?.scale;
+    try std.testing.expect(scale.x > 1.0 and scale.x < 1.4);
+    try std.testing.expectEqual(scale.x, scale.y); // uniform
+    try std.testing.expectEqual(scale.x, scale.z);
+    // ...and 1.75 / scale recovers a plausible model height (~1.5 m).
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), 1.75 / scale.y, 0.25);
 }
 
 test "SceneRuntime reports a missing asset" {

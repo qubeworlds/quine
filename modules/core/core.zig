@@ -76,6 +76,9 @@ pub const Model = anim.Model;
 pub const JointBounds = anim.JointBounds;
 pub const measureJointBounds = anim.measureJointBounds;
 
+/// Bind-pose height of a skinned model — what `heightMeters` scales against.
+pub const measureModelHeight = anim.measureModelHeight;
+
 /// Scene data model + JSON loader — the normalized scene the engine consumes
 /// (the world↔quine bridge). `SceneData` is the parsed scene; `parseScene`
 /// builds it from normalized JSON bytes. Construction of a `World` from it

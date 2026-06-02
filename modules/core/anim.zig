@@ -161,6 +161,22 @@ pub fn measureJointBounds(model: *const Model, pose: *const Pose, joint_node: u3
     return .{ .centroid = centroid, .radius_xz = @sqrt(r2), .top = top, .bottom = bottom, .count = count };
 }
 
+/// Total height (max−min skinned Y, in the posed model's Y-up world frame) of
+/// the whole mesh. Sample `pose` at the bind pose (`clip = null`) first for the
+/// rest height — what `heightMeters` scales against to stand a model at a target
+/// height in metres. Returns 0 for an empty mesh.
+pub fn measureModelHeight(model: *const Model, pose: *const Pose) f32 {
+    if (model.mesh.vertices.len == 0) return 0;
+    var top: f32 = -std.math.inf(f32);
+    var bottom: f32 = std.math.inf(f32);
+    for (model.mesh.vertices) |v| {
+        const p = skinnedPosition(model, pose, v);
+        top = @max(top, p.y);
+        bottom = @min(bottom, p.y);
+    }
+    return top - bottom;
+}
+
 // =============================================================================
 // Pose sampling
 // =============================================================================
