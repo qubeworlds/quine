@@ -115,6 +115,8 @@ pub fn build(b: *Build) !void {
             .{ .name = "math", .module = mod_math },
         },
     });
+    // The character mesh, so the scene-runtime tests can resolve a glTF asset.
+    mod_scene_runtime.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
 
     // --- shader: cross-compiled from shaders/triangle.glsl by sokol-shdc -----
     // The generated Zig lives only in the build cache; regenerate by rebuilding.

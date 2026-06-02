@@ -22,6 +22,10 @@ const core = @import("core");
 const phys = @import("physics");
 const m = @import("math");
 
+/// A named asset the loader can resolve (e.g. a `.glb`'s bytes). The app supplies
+/// these from `@embedFile`; tests supply them inline.
+pub const Asset = struct { name: []const u8, bytes: []const u8 };
+
 /// Per-entity handles, resolvable by scene name (the seam the renderer, the
 /// parenting step, and the QuickJS name table all reuse).
 pub const Binding = struct {
@@ -30,6 +34,8 @@ pub const Binding = struct {
     /// Non-zero contact tag iff this entity has a physics body.
     tag: u64 = 0,
     body: ?phys.BodyId = null,
+    /// Loaded skinned model iff this entity has `gltf` geometry.
+    model: ?core.Model = null,
 };
 
 pub const SceneRuntime = struct {
@@ -41,7 +47,8 @@ pub const SceneRuntime = struct {
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
-    pub fn init(self: *SceneRuntime, gpa: std.mem.Allocator, scene_data: core.SceneData) !void {
+    /// `assets` resolves geometry sources (e.g. a glTF `source` -> its bytes).
+    pub fn init(self: *SceneRuntime, gpa: std.mem.Allocator, scene_data: core.SceneData, assets: []const Asset) !void {
         self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity };
         errdefer self.arena.deinit();
         const a = self.arena.allocator();
@@ -62,6 +69,13 @@ pub const SceneRuntime = struct {
                 bnd.tag = spec.tag;
                 bnd.body = try self.physics.createBody(spec);
             }
+            // glTF geometry: resolve the source bytes and load the skinned model
+            // (into the arena, freed with the runtime). Render upload + the
+            // heightMeters/fitToJoint/parenting derivation plug in next.
+            if (e.geometry) |g| if (g == .gltf) {
+                const bytes = resolve(assets, g.gltf.source) orelse return error.AssetNotFound;
+                bnd.model = try core.loadModel(a, bytes);
+            };
             try self.buildMesh(a, ent, e);
             bindings[i] = bnd;
         }
@@ -113,6 +127,13 @@ pub const SceneRuntime = struct {
 
 fn vec4(c: core.scene.Rgba) m.Vec4 {
     return .{ .x = c[0], .y = c[1], .z = c[2], .w = c[3] };
+}
+
+fn resolve(assets: []const Asset, name: []const u8) ?[]const u8 {
+    for (assets) |asset| {
+        if (std.mem.eql(u8, asset.name, name)) return asset.bytes;
+    }
+    return null;
 }
 
 /// Translate a scene entity's `body` (if any) to a physics `BodySpec`. The
@@ -173,7 +194,7 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
     };
 
     var rt: SceneRuntime = undefined;
-    try rt.init(std.heap.c_allocator, sc);
+    try rt.init(std.heap.c_allocator, sc, &.{});
     defer rt.deinit();
 
     // A binding per entity; bodies only where declared.
@@ -207,4 +228,41 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
     try std.testing.expectEqual(core.sphereVertexCount(8, 12), mesh.vertices.len);
     // ground has no geometry -> no mesh.
     try std.testing.expect(rt.world.get(core.MeshRef, rt.find("ground").?.entity) == null);
+}
+
+test "SceneRuntime resolves and loads a glTF model from an asset" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "g",
+        .entities = &.{
+            .{
+                .name = "dancer",
+                .transform = .{},
+                .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } },
+                .animation = .{},
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const dancer = rt.find("dancer").?;
+    try std.testing.expect(dancer.model != null);
+    try std.testing.expectEqual(@as(usize, 19), dancer.model.?.skeleton.jointCount());
+    try std.testing.expectEqual(@as(usize, 1), dancer.model.?.clips.len);
+}
+
+test "SceneRuntime reports a missing asset" {
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "g",
+        .entities = &.{
+            .{ .name = "dancer", .geometry = .{ .gltf = .{ .source = "absent.glb" } } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try std.testing.expectError(error.AssetNotFound, rt.init(std.heap.c_allocator, sc, &.{}));
 }
