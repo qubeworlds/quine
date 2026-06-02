@@ -64,6 +64,8 @@ pub const SceneRuntime = struct {
     /// the QuickJS pre/post handlers slot into; a native skill can set them now).
     pre_step: ?*const fn (*SceneRuntime, f32) void = null,
     post_step: ?*const fn (*SceneRuntime, f32) void = null,
+    /// Opaque skill state the hooks recover (e.g. the bound JS context).
+    skill_ctx: ?*anyopaque = null,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
