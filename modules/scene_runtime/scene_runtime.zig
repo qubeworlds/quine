@@ -20,6 +20,7 @@
 const std = @import("std");
 const core = @import("core");
 const phys = @import("physics");
+const m = @import("math");
 
 /// Per-entity handles, resolvable by scene name (the seam the renderer, the
 /// parenting step, and the QuickJS name table all reuse).
@@ -61,6 +62,7 @@ pub const SceneRuntime = struct {
                 bnd.tag = spec.tag;
                 bnd.body = try self.physics.createBody(spec);
             }
+            try self.buildMesh(a, ent, e);
             bindings[i] = bnd;
         }
         self.bindings = bindings;
@@ -70,6 +72,25 @@ pub const SceneRuntime = struct {
     pub fn deinit(self: *SceneRuntime) void {
         self.physics.deinit();
         self.arena.deinit();
+    }
+
+    /// Build the CPU geometry an entity owns into the runtime arena, register it
+    /// in the world's mesh table, and attach a `MeshRef`. Procedural shapes are
+    /// generated here (their buffers live as long as the runtime); `builtin`
+    /// meshes are already wired by `core.loadScene`, and glTF/`fedora` (which
+    /// need a loaded model) land next, so they're skipped for now.
+    fn buildMesh(self: *SceneRuntime, a: std.mem.Allocator, ent: core.Entity, e: core.scene.Entity) !void {
+        const g = e.geometry orelse return;
+        switch (g) {
+            .sphere => |sp| {
+                const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.sphereVertexCount(sp.rings, sp.segments));
+                const indices = try a.alloc(u32, core.sphereIndexCount(sp.rings, sp.segments));
+                const mesh = core.uvSphere(sp.radius, sp.rings, sp.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            else => {}, // builtin handled in core.loadScene; gltf/fedora next.
+        }
     }
 
     /// Resolve a scene entity name to its binding, or null.
@@ -89,6 +110,10 @@ pub const SceneRuntime = struct {
         return self.physics.contactImpulse(ba.tag, bb.tag);
     }
 };
+
+fn vec4(c: core.scene.Rgba) m.Vec4 {
+    return .{ .x = c[0], .y = c[1], .z = c[2], .w = c[3] };
+}
 
 /// Translate a scene entity's `body` (if any) to a physics `BodySpec`. The
 /// initial position comes from the entity's transform; the contact tag is
@@ -134,6 +159,8 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
             .{
                 .name = "ball",
                 .transform = .{ .position = .{ 0, 2, 0 } },
+                .geometry = .{ .sphere = .{ .radius = 0.2, .rings = 8, .segments = 12 } },
+                .material = .{ .color = .{ 1, 0.4, 0.05, 1 } },
                 .body = .{ .motion = .dynamic, .collider = .{ .sphere = .{ .radius = 0.2 } }, .mass = 1.0, .restitution = 0.3, .tag = "ball" },
             },
             .{
@@ -171,4 +198,13 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
 
     // The ECS world was populated too — the ball carries a Transform.
     try std.testing.expect(rt.world.get(core.Transform, rt.find("ball").?.entity) != null);
+
+    // The ball's procedural sphere mesh was generated from data and attached.
+    const ball_ent = rt.find("ball").?.entity;
+    const mref = rt.world.get(core.MeshRef, ball_ent);
+    try std.testing.expect(mref != null);
+    const mesh = rt.world.meshes.get(mref.?.mesh);
+    try std.testing.expectEqual(core.sphereVertexCount(8, 12), mesh.vertices.len);
+    // ground has no geometry -> no mesh.
+    try std.testing.expect(rt.world.get(core.MeshRef, rt.find("ground").?.entity) == null);
 }

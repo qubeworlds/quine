@@ -112,6 +112,7 @@ pub fn build(b: *Build) !void {
         .imports = &.{
             .{ .name = "core", .module = mod_core },
             .{ .name = "physics", .module = mod_physics },
+            .{ .name = "math", .module = mod_math },
         },
     });
 
