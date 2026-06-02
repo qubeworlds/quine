@@ -75,6 +75,92 @@ pub const Model = struct {
     }
 };
 
+/// Rest-pose extent of the vertices skinned to one joint — enough to size an
+/// accessory (a hat, say) to the body part it rides on. Measured in the posed
+/// model's world frame (Y-up): the same space `Pose.global` joint positions live
+/// in, so callers can offset directly from a joint's world position.
+pub const JointBounds = struct {
+    /// Centroid of the joint's vertices (Y-up world).
+    centroid: m.Vec3 = .{},
+    /// Largest horizontal (XZ) distance from the centroid — the part's "radius".
+    radius_xz: f32 = 0,
+    /// Highest / lowest vertex Y.
+    top: f32 = 0,
+    bottom: f32 = 0,
+    /// How many vertices were attributed to the joint (0 = none found).
+    count: usize = 0,
+};
+
+/// The palette/joint index a skinned vertex is most influenced by (the largest
+/// of its four weights). This is an index into `Skeleton.joints`.
+fn dominantJoint(v: assets.SkinnedVertex) u32 {
+    const w = [4]f32{ v.weights.x, v.weights.y, v.weights.z, v.weights.w };
+    var best: usize = 0;
+    for (w, 0..) |ww, k| if (ww > w[best]) {
+        best = k;
+    };
+    return @intFromFloat(v.joints[best]);
+}
+
+/// Skin a vertex's rest position by `pose` (its four joint influences), placing
+/// it in the posed model's world frame. CesiumMan's raw vertices are Z-up; the
+/// skeleton's baked root flips them to Y-up, so skinning is what gets a vertex
+/// into the frame the head joint and the rest of the scene are rendered in.
+fn skinnedPosition(model: *const Model, pose: *const Pose, v: assets.SkinnedVertex) m.Vec3 {
+    const w = [4]f32{ v.weights.x, v.weights.y, v.weights.z, v.weights.w };
+    var p = m.Vec3{};
+    inline for (0..4) |k| {
+        if (w[k] != 0) {
+            const ji: usize = @intFromFloat(v.joints[k]);
+            const skin = pose.global[model.skeleton.joints[ji]].mul(model.skeleton.inverse_bind[ji]);
+            p = p.add(skin.transformPoint(v.position).scale(w[k]));
+        }
+    }
+    return p;
+}
+
+/// Measure the extent of the mesh vertices dominantly skinned to `joint_node`
+/// (a node index, e.g. the head joint), in the world frame `pose` describes.
+/// Sample `pose` at the bind pose (`clip = null`) first for a rest-shape measure.
+/// Returns `.count == 0` if the node isn't a skin joint or owns no vertices, so
+/// callers can fall back to defaults.
+pub fn measureJointBounds(model: *const Model, pose: *const Pose, joint_node: u32) JointBounds {
+    // Map the node to its palette index (the value vertices store in `joints`).
+    var palette_idx: ?u32 = null;
+    for (model.skeleton.joints, 0..) |node, j| {
+        if (node == joint_node) {
+            palette_idx = @intCast(j);
+            break;
+        }
+    }
+    const ji = palette_idx orelse return .{};
+
+    var sum = m.Vec3{};
+    var top: f32 = -std.math.inf(f32);
+    var bottom: f32 = std.math.inf(f32);
+    var count: usize = 0;
+    for (model.mesh.vertices) |v| {
+        if (dominantJoint(v) != ji) continue;
+        const p = skinnedPosition(model, pose, v);
+        sum = sum.add(p);
+        top = @max(top, p.y);
+        bottom = @min(bottom, p.y);
+        count += 1;
+    }
+    if (count == 0) return .{};
+
+    const centroid = sum.scale(1.0 / @as(f32, @floatFromInt(count)));
+    var r2: f32 = 0;
+    for (model.mesh.vertices) |v| {
+        if (dominantJoint(v) != ji) continue;
+        const p = skinnedPosition(model, pose, v);
+        const dx = p.x - centroid.x;
+        const dz = p.z - centroid.z;
+        r2 = @max(r2, dx * dx + dz * dz);
+    }
+    return .{ .centroid = centroid, .radius_xz = @sqrt(r2), .top = top, .bottom = bottom, .count = count };
+}
+
 // =============================================================================
 // Pose sampling
 // =============================================================================

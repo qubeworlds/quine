@@ -68,6 +68,11 @@ pub const Clip = anim.Clip;
 pub const Pose = anim.Pose;
 pub const Model = anim.Model;
 
+/// Measure the bind-pose extent of the vertices skinned to a joint (e.g. to size
+/// a hat to the head). See `anim.measureJointBounds`.
+pub const JointBounds = anim.JointBounds;
+pub const measureJointBounds = anim.measureJointBounds;
+
 /// Maximum number of live entities. Fixed so the core needs no allocator and
 /// `World` stays a plain value type.
 pub const max_entities = ecs.default_capacity;
@@ -202,6 +207,38 @@ test "loads CesiumMan skeleton + clip and the sampler moves joints" {
         for (a.m, b.m) |x, y| diff += @abs(x - y);
     }
     try std.testing.expect(diff > 0.01);
+}
+
+test "measureJointBounds finds a head-sized region on CesiumMan" {
+    const glb = @embedFile("character.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // Head joint = topmost skin joint in the bind pose.
+    var pose = try anim.Pose.init(alloc, model.skeleton.nodes.len);
+    defer pose.deinit(alloc);
+    pose.sample(&model.skeleton, null, 0);
+    var head_node: u32 = 0;
+    var top_y: f32 = -std.math.inf(f32);
+    for (model.skeleton.joints) |node| {
+        const y = pose.global[node].m[13];
+        if (y > top_y) {
+            top_y = y;
+            head_node = node;
+        }
+    }
+
+    const b = measureJointBounds(&model, &pose, head_node);
+    const joint_y = pose.global[head_node].m[13];
+    std.debug.print(
+        "\nhead bounds (Y-up model units): count={d} centroid=({d:.3},{d:.3},{d:.3}) radius_xz={d:.3} top={d:.3} bottom={d:.3} joint_y={d:.3}\n",
+        .{ b.count, b.centroid.x, b.centroid.y, b.centroid.z, b.radius_xz, b.top, b.bottom, joint_y },
+    );
+    try std.testing.expect(b.count > 0); // the head joint owns vertices
+    try std.testing.expect(b.radius_xz > 0.02 and b.radius_xz < 0.5); // plausibly head-sized in model units
+    try std.testing.expect(b.top > b.bottom);
+    try std.testing.expect(b.top > joint_y); // the skull rises above its joint
 }
 
 test "tick is deterministic and advances time" {

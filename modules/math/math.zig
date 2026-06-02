@@ -133,6 +133,16 @@ pub const Mat4 = extern struct {
         return r;
     }
 
+    /// Transform a position by this matrix (implicit w = 1), returning the xyz.
+    /// For affine transforms (no projection) the w divide is unnecessary.
+    pub fn transformPoint(a: Mat4, p: Vec3) Vec3 {
+        return .{
+            .x = a.m[0] * p.x + a.m[4] * p.y + a.m[8] * p.z + a.m[12],
+            .y = a.m[1] * p.x + a.m[5] * p.y + a.m[9] * p.z + a.m[13],
+            .z = a.m[2] * p.x + a.m[6] * p.y + a.m[10] * p.z + a.m[14],
+        };
+    }
+
     pub fn scaling(s: Vec3) Mat4 {
         var r = Mat4.identity;
         r.m[0] = s.x;

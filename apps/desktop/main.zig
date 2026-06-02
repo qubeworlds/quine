@@ -45,18 +45,21 @@ const head_radius: f32 = 0.13;
 const crown_above_joint_m: f32 = 0.317;
 
 /// The character's red fedora: a procedural hat (see `core.fedora`) parented to
-/// the animated head joint so it rides along as he walks and juggles. Dimensions
-/// are in metres, sized to sit over the ~0.13 m head: the crown wall clears the
-/// skull and the brim flares wider. `seat_above_joint` lifts the brim plane off
-/// the head joint to roughly forehead height; tune by eye in the windowed app.
-/// Colour is a deep felt red. (Flat lit vertex colour — the same path the ball
-/// uses; real PBR materials remain the future work tracked in docs/TODO.md #1.)
-const hat_brim_radius: f32 = 0.23;
-const hat_crown_radius: f32 = 0.135;
-const hat_crown_height: f32 = 0.14;
+/// the animated head joint so it rides along as he walks and juggles. Rather than
+/// hardcode dimensions, `measureHead` sizes the hat from the model's actual head
+/// geometry (see `core.measureJointBounds`) — CesiumMan has a notably big head, so
+/// a guessed size leaves it sticking out. Colour is a deep felt red. (Flat lit
+/// vertex colour — the same path the ball uses; real PBR materials remain the
+/// future work tracked in docs/TODO.md #1.)
 const hat_segments = 24;
-const hat_seat_above_joint_m: f32 = 0.17;
 const hat_color = m.Vec4{ .x = 0.62, .y = 0.05, .z = 0.07, .w = 1.0 };
+
+/// Fit factors applied to the measured head when sizing the fedora (see
+/// `measureHead`). Tunable by eye, but the absolute dimensions follow the model.
+const hat_crown_fit: f32 = 1.05; // crown wall vs measured head radius (>1 = clears it)
+const hat_brim_flare: f32 = 1.35; // brim radius vs crown radius
+const hat_seat_drop_frac: f32 = 0.15; // seat the brim this fraction of head-height below centre
+const hat_top_clearance_m: f32 = 0.05; // crown rises this far above the skull top
 
 /// A regulation size-7 basketball: 74.9 cm circumference (radius = C / 2pi),
 /// 624 g. A dynamic Jolt body — it really bounces on the head and rolls off onto
@@ -179,10 +182,16 @@ const App = struct {
     var ball_indices: [core.sphereIndexCount(sphere_rings, sphere_segments)]u32 = undefined;
 
     // The fedora: a static-mesh ECS entity (geometry in these app buffers) whose
-    // Transform is re-seated on the animated head joint every tick.
+    // Transform is re-seated on the animated head joint every tick. Dimensions
+    // (world metres) and the brim's world-space lift above the head joint are
+    // computed from the model by `measureHead`.
     var hat: core.Entity = undefined;
     var hat_verts: [core.fedoraVertexCount(hat_segments)]core.Vertex = undefined;
     var hat_indices: [core.fedoraIndexCount(hat_segments)]u32 = undefined;
+    var hat_brim_radius: f32 = 0.23;
+    var hat_crown_radius: f32 = 0.135;
+    var hat_crown_height: f32 = 0.14;
+    var hat_seat_world: f32 = 0.17;
 
     // Jolt physics: a sibling world to the ECS. Ground (static), head (kinematic,
     // tracks the animated head joint), ball (dynamic). The app syncs the ball
@@ -213,11 +222,32 @@ fn headColliderTarget() [3]f32 {
     return .{ h[0], h[1] + crown_above_joint_m * dancer_scale - head_radius, h[2] };
 }
 
-/// World-space origin for the fedora's brim plane: the head joint lifted to
-/// roughly forehead height so the crown caps the skull and the brim flares out.
+/// World-space origin for the fedora's brim plane: the head joint lifted by the
+/// measured seat height so the crown caps the skull and the brim flares out.
 fn hatTarget() [3]f32 {
     const h = headJointWorld();
-    return .{ h[0], h[1] + hat_seat_above_joint_m * dancer_scale, h[2] };
+    return .{ h[0], h[1] + App.hat_seat_world, h[2] };
+}
+
+/// Size the fedora from the model's real head geometry, so it actually wraps the
+/// (big) CesiumMan head instead of perching on top. Reads the bind-pose extent of
+/// the head joint's vertices (`core.measureJointBounds`) — `App.pose` must be at
+/// the bind pose when this runs. All outputs are world metres, derived from the
+/// measured head scaled by `dancer_scale`; falls back to the field defaults if
+/// the head can't be measured.
+fn measureHead() void {
+    const b = core.measureJointBounds(&App.model, &App.pose, App.head_node);
+    if (b.count == 0) return; // keep defaults
+
+    const joint_y = App.pose.global[App.head_node].m[13]; // bind head-joint height (model)
+    const head_radius_w = b.radius_xz * dancer_scale; // world horizontal radius
+    const half_height = (b.top - b.bottom) * 0.5;
+    const brim_y = b.centroid.y - hat_seat_drop_frac * half_height; // model-space brim height
+
+    App.hat_seat_world = (brim_y - joint_y) * dancer_scale;
+    App.hat_crown_radius = head_radius_w * hat_crown_fit;
+    App.hat_crown_height = (b.top - brim_y) * dancer_scale + hat_top_clearance_m;
+    App.hat_brim_radius = App.hat_crown_radius * hat_brim_flare;
 }
 
 /// Raise an entity's squash from a real contact's closing speed (m/s), keeping
@@ -278,6 +308,9 @@ fn loadDancer() void {
         }
     }
 
+    // Size the fedora to the head while the pose is still the bind pose.
+    measureHead();
+
     // The basketball ECS entity (drawn via the render queue; positioned from its
     // Jolt body each tick). Flattens a touch on a real contact.
     const ball_mesh = core.uvSphere(ball_radius, sphere_rings, sphere_segments, ball_color, &App.ball_verts, &App.ball_indices);
@@ -288,8 +321,9 @@ fn loadDancer() void {
     App.world.set(core.Squash, ball, .{ .recovery = 11.0 });
     App.ball = ball;
 
-    // The red fedora: built once, then re-seated on the head joint each tick.
-    const hat_mesh = core.fedora(hat_brim_radius, hat_crown_radius, hat_crown_height, hat_segments, hat_color, &App.hat_verts, &App.hat_indices);
+    // The red fedora: built once (sized by measureHead), then re-seated on the
+    // head joint each tick.
+    const hat_mesh = core.fedora(App.hat_brim_radius, App.hat_crown_radius, App.hat_crown_height, hat_segments, hat_color, &App.hat_verts, &App.hat_indices);
     const hat_handle = App.world.meshes.add(hat_mesh);
     const hat = App.world.spawn();
     App.world.set(core.MeshRef, hat, .{ .mesh = hat_handle });
