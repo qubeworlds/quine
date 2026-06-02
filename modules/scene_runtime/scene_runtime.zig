@@ -121,7 +121,57 @@ pub const SceneRuntime = struct {
             }
         }
 
+        // fedora meshes: size each from its parent's real head geometry (so the
+        // hat wraps the head), now that models + parenting are resolved. Mirrors
+        // the app's `measureHead`. Done last because it reads the parent's model.
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .fedora) continue;
+            try self.buildFedora(a, &bindings[i], e, g.fedora);
+        }
+
         self.physics.optimize();
+    }
+
+    /// Build the fedora mesh for entity `i`, sized from its parent's head joint
+    /// bounds (the data-driven form of the app's `measureHead`), and seat it the
+    /// right height above the joint. The parent's pose must still be at its bind
+    /// pose (true at load, before the first `update`).
+    fn buildFedora(
+        self: *SceneRuntime,
+        a: std.mem.Allocator,
+        b: *Binding,
+        e: core.scene.Entity,
+        fed: anytype,
+    ) !void {
+        const pi = b.parent_idx orelse return;
+        const parent = &self.bindings[pi];
+        const model = if (parent.model) |*mdl| mdl else return;
+        const pose = if (parent.pose) |*ps| ps else return;
+        const head_node = parent.head_joint;
+        const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
+
+        const bounds = core.measureJointBounds(model, pose, head_node);
+        if (bounds.count == 0) return; // can't size it; leave bare
+
+        // Sizing in world metres, exactly as measureHead derives it.
+        const head_radius_w = bounds.radius_xz * scale;
+        const half_height = (bounds.top - bounds.bottom) * 0.5;
+        const brim_y = bounds.centroid.y - fed.seat_drop_fraction * half_height; // model space
+        const crown_radius = head_radius_w * fed.crown_fit;
+        const crown_height = (bounds.top - brim_y) * scale + fed.top_clearance;
+        const brim_radius = crown_radius * fed.brim_flare;
+
+        const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
+        const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
+        const mesh = core.fedora(brim_radius, crown_radius, crown_height, fed.segments, color, verts, indices);
+        self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
+
+        // Seat the hat above the head joint (world Y), added to its parent offset
+        // so the per-tick parenting carries it along.
+        const joint_y = pose.global[head_node].m[13];
+        b.parent_offset[1] += (brim_y - joint_y) * scale;
     }
 
     pub fn deinit(self: *SceneRuntime) void {
@@ -427,6 +477,45 @@ test "SceneRuntime parents a kinematic collider to the animated head joint" {
 
     // The collider rose to head height (~1.3–1.5 m), tracking the animated joint.
     try std.testing.expect(rt.physics.bodyPosition(head_body)[1] > 1.0);
+}
+
+test "SceneRuntime sizes + seats a fedora from the head geometry" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "f",
+        .entities = &.{
+            .{
+                .name = "dancer",
+                .transform = .{},
+                .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } },
+                .animation = .{},
+            },
+            .{
+                .name = "fedora",
+                .geometry = .{ .fedora = .{ .fit_to_joint = "head", .segments = 24 } },
+                .material = .{ .color = .{ 0.62, 0.05, 0.07, 1 } },
+                .parent = .{ .entity = "dancer", .joint = "head" },
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const fedora = rt.find("fedora").?;
+    // The hat got a procedural mesh sized from the head, and a seat offset above
+    // the joint, parented to the dancer's head.
+    const mref = rt.world.get(core.MeshRef, fedora.entity);
+    try std.testing.expect(mref != null);
+    try std.testing.expectEqual(core.fedoraVertexCount(24), rt.world.meshes.get(mref.?.mesh).vertices.len);
+    try std.testing.expect(fedora.parent_idx != null);
+    try std.testing.expect(fedora.parent_offset[1] > 0); // seated above the head joint
+
+    // It rides the head: after a few ticks its Transform sits at head height.
+    for (0..10) |_| try rt.update(1.0 / 60.0);
+    try std.testing.expect(rt.world.get(core.Transform, fedora.entity).?.position.y > 1.0);
 }
 
 test "SceneRuntime reports a missing asset" {

@@ -202,11 +202,17 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
         const ent = world.spawn();
         entities[i] = ent;
 
-        if (e.transform) |t| world.set(Transform, ent, .{
-            .position = v3(t.position),
-            .rotation = v3(t.rotation),
-            .scale = v3(t.scale),
-        });
+        if (e.transform) |t| {
+            world.set(Transform, ent, .{
+                .position = v3(t.position),
+                .rotation = v3(t.rotation),
+                .scale = v3(t.scale),
+            });
+        } else if (e.geometry != null) {
+            // A drawable needs a Transform to render even if none was authored
+            // (parenting or physics may drive its position later).
+            world.set(Transform, ent, .{});
+        }
         if (e.spin) |s| world.set(Spin, ent, .{ .velocity = v3(s.velocity) });
         if (e.squash) |sq| {
             const rest = if (sq.rest_scale) |rs|
