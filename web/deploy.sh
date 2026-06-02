@@ -31,8 +31,10 @@ echo "==> Building WebGPU bundle (ReleaseSmall)"
 zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu
 
 # Publish the runtime loader as /index.html; it auto-detects WebGPU and falls
-# back to WebGL2 (override with ?render=webgl|webgpu).
+# back to WebGL2 (override with ?render=webgl|webgpu). editor.html ships
+# alongside it so /editor serves the app too (auto-trailing-slash asset routing).
 cp web/index.html zig-out/web/index.html
+cp web/editor.html zig-out/web/editor.html
 
 echo "==> Deploying Worker + assets"
 npx --yes wrangler@latest deploy

@@ -43,6 +43,8 @@ pub const SkinnedScene = struct {
 /// Lives here because drawing it is a GPU concern; the app owns the metrics.
 pub const HudInfo = struct {
     backend: []const u8,
+    /// App version string (from build.zig.zon, supplied by the app).
+    version: []const u8,
     fps_requested: f32,
     fps_achieved: f32,
     width: i32,
@@ -327,6 +329,7 @@ pub const Renderer = struct {
         sdtx.font(0);
         sdtx.color3b(0x00, 0xFF, 0x66);
         sdtx.print("quine\n", .{});
+        sdtx.print("version  : v{s}\n", .{info.version});
         sdtx.print("renderer : {s}\n", .{info.backend});
         sdtx.print("fps      : {d:.0} ach / {d:.0} req\n", .{ info.fps_achieved, info.fps_requested });
         sdtx.print("size     : {d} x {d}\n", .{ info.width, info.height });

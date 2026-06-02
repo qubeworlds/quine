@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Served at /editor, but the wasm/js bundles live at the site root, so
+       resolve every relative URL (the loader scripts) against / regardless of
+       the route's path or trailing slash. -->
+  <base href="/" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>quine · editor</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; border: 0; outline: none; }
+  </style>
+</head>
+<body>
+  <!-- sokol-app's default canvas selector is "#canvas". -->
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <script type="text/javascript">
+    // The editor route. For now it loads the same app/animation as "/"; it exists
+    // as its own page so editor-specific UI can grow here without touching the
+    // viewer. Backend selection mirrors index.html: WebGPU if the browser grants
+    // an adapter, else WebGL2 (override with ?render=webgl|webgpu).
+    (async function () {
+      function pick(v) {
+        if (!v) return null;
+        v = v.toLowerCase();
+        if (v === "webgl" || v === "webgl2" || v === "gl") return "webgl2";
+        if (v === "webgpu" || v === "gpu" || v === "wgpu") return "webgpu";
+        return null;
+      }
+
+      const forced = pick(new URLSearchParams(location.search).get("render"));
+      let backend = forced || "webgl2";
+      if (!forced && navigator.gpu) {
+        // navigator.gpu can exist but still yield no usable adapter.
+        try {
+          if (await navigator.gpu.requestAdapter()) backend = "webgpu";
+        } catch (e) { /* fall back to webgl2 */ }
+      }
+
+      window.QUINE_BACKEND = backend;
+      window.QUINE_EDITOR = true; // marker for future editor-only behaviour
+      console.log("quine editor: loading " + backend + " bundle" + (forced ? " (forced)" : ""));
+
+      window.Module = {
+        canvas: document.getElementById("canvas"),
+        print: function (t) { console.log(t); },
+        printErr: function (t) { console.error(t); },
+      };
+
+      const s = document.createElement("script");
+      s.async = true;
+      s.src = "quine-" + backend + ".js";
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>

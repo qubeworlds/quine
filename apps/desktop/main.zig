@@ -16,6 +16,7 @@ const m = @import("math");
 const input = @import("input.zig");
 const gizmo = @import("gizmo.zig");
 const orbit = @import("orbit.zig");
+const build_options = @import("build_options");
 
 /// What a pointer drag is currently doing.
 const DragMode = enum { none, gizmo, orbit };
@@ -564,6 +565,7 @@ export fn frame() void {
 
     const hud: ?render.HudInfo = if (App.hud_visible) .{
         .backend = render.backendName(),
+        .version = build_options.version,
         .fps_requested = @floatCast(App.fps_requested),
         .fps_achieved = @floatCast(App.fps_achieved),
         .width = sapp.width(),

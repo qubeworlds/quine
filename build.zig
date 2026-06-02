@@ -150,6 +150,12 @@ pub fn build(b: *Build) !void {
         },
     });
 
+    // --- build options: compile-time values surfaced to the app. The version is
+    // read from build.zig.zon so it stays the single source of truth (shown in
+    // the HUD). ---------------------------------------------------------------
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
+
     // --- app: shared module, built as a native exe or a wasm/web bundle ------
     const mod_app = b.createModule(.{
         .root_source_file = b.path("apps/desktop/main.zig"),
@@ -161,6 +167,7 @@ pub fn build(b: *Build) !void {
             .{ .name = "physics", .module = mod_physics },
             .{ .name = "render", .module = mod_render },
             .{ .name = "math", .module = mod_math },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
     // Embed the character mesh so it ships inside the binary (no filesystem on
