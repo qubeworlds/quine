@@ -102,6 +102,19 @@ pub fn build(b: *Build) !void {
     // The character mesh is also importable from core so its tests can embed it.
     mod_core.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
 
+    // --- scene_runtime: loads core.SceneData into a live World + physics. Sits
+    // above the core->render boundary (imports core + the physics sibling), so
+    // it's where the data-driven replacement for the app's `loadDancer` lives.
+    const mod_scene_runtime = b.createModule(.{
+        .root_source_file = b.path("modules/scene_runtime/scene_runtime.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "core", .module = mod_core },
+            .{ .name = "physics", .module = mod_physics },
+        },
+    });
+
     // --- shader: cross-compiled from shaders/triangle.glsl by sokol-shdc -----
     // The generated Zig lives only in the build cache; regenerate by rebuilding.
     const dep_shdc = dep_sokol.builder.dependency("shdc", .{});
@@ -265,4 +278,8 @@ pub fn build(b: *Build) !void {
     const run_physics_tests = b.addRunArtifact(physics_tests);
     b.step("test-physics", "Run the Jolt physics tests").dependOn(&run_physics_tests.step);
     test_step.dependOn(&run_physics_tests.step);
+
+    // Scene-runtime tests load scene data into a live World + physics (links Jolt).
+    const scene_runtime_tests = b.addTest(.{ .root_module = mod_scene_runtime });
+    test_step.dependOn(&b.addRunArtifact(scene_runtime_tests).step);
 }

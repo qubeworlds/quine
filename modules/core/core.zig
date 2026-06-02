@@ -24,7 +24,9 @@ const systems = @import("systems.zig");
 const render_queue = @import("render_queue.zig");
 const gltf = @import("gltf.zig");
 const anim = @import("anim.zig");
-const scene = @import("scene.zig");
+/// Scene data model + JSON loader (the world↔quine bridge). Public so the
+/// app-side scene runtime can build physics/meshes from the parsed types.
+pub const scene = @import("scene.zig");
 
 // --- public surface (re-exports so callers import only `core`) ---------------
 
