@@ -7,7 +7,7 @@
 #      available on PATH at the right version). On x86_64-linux it pulls a
 #      prebuilt Zig from our CDN first, falling back to ziglang.org.
 #   2. On x86_64-linux, restores a prebuilt *web* buildcache (the Emscripten
-#      SDK + the compiled Jolt physics object) into ./zig-pkg and ./.zig-cache
+#      SDK + the compiled Jolt physics and QuickJS objects) into ./zig-pkg and ./.zig-cache
 #      so the first `zig build -Dtarget=wasm32-emscripten ...` is warm — no
 #      336 MiB emsdk download and no sysroot-lib regeneration. This is what
 #      makes a fresh Claude Code session productive in seconds.
@@ -143,7 +143,7 @@ restore_wasm_buildcache() {
   fi
 
   local name="quine-wasm-buildcache-${arch}-${os}.tar.xz"
-  say "Fetching prebuilt web buildcache (emsdk + compiled Jolt, ~423 MiB) ..."
+  say "Fetching prebuilt web buildcache (emsdk + compiled Jolt + QuickJS) ..."
   local tmp; tmp="$(mktemp -d)"
   curl -fsSL "${CDN_BASE}/SHA256SUMS" -o "${tmp}/SHA256SUMS" 2>/dev/null \
     || warn "could not fetch SHA256SUMS — continuing without integrity checks."
