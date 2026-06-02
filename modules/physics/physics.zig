@@ -64,36 +64,70 @@ const bpli = jolt.BroadPhaseLayerInterface.init(BroadPhaseLayerImpl);
 const obp_filter = jolt.ObjectVsBroadPhaseLayerFilter.init(ObjVsBpFilterImpl);
 const pair_filter = jolt.ObjectLayerPairFilter.init(ObjPairFilterImpl);
 
+// --- data-driven body creation (the scene loader builds these from BodySpec) -
+
+pub const Motion = enum { static, dynamic, kinematic };
+
+pub const Shape = union(enum) {
+    box: struct { half_extents: [3]f32 },
+    sphere: struct { radius: f32 },
+};
+
+/// Everything needed to stand up one body — the physics half of a scene
+/// entity's `body`. `tag` is an opaque id the contact listener attributes
+/// contacts to (the loader uses it to wire `contactImpulse`); the object layer
+/// (moving vs non-moving) is derived from `motion`.
+pub const BodySpec = struct {
+    motion: Motion,
+    shape: Shape,
+    position: [3]f32 = .{ 0, 0, 0 },
+    mass: ?f32 = null, // dynamic only
+    restitution: f32 = 0,
+    friction: f32 = 0.5,
+    tag: u64 = tag_none,
+};
+
 /// Captures real contact events during a step. The vtable `self` is the
-/// embedded `interface`; `@fieldParentPtr` recovers the owning Listener. Stores
-/// the strongest closing speed (m/s along the contact normal) the ball had
-/// against the head and against the ground this step — that's the honest impact
-/// magnitude the squash is driven by.
+/// embedded `interface`; `@fieldParentPtr` recovers the owning Listener. For
+/// every contacting pair this step it keeps the strongest closing speed (m/s
+/// along the contact normal), keyed by the two bodies' tags — the honest impact
+/// magnitude the squash is driven by, queryable for any tagged pair.
+const max_contacts = 64;
+const Contact = struct { a: u64, b: u64, closing: f32 };
+
 const Listener = struct {
     interface: jolt.ContactListener = undefined,
-    impact_head: f32 = 0,
-    impact_ground: f32 = 0,
+    contacts: [max_contacts]Contact = undefined,
+    count: usize = 0,
 
     fn record(self: *Listener, b1: *const jolt.Body, b2: *const jolt.Body, n: [3]f32) void {
-        const tag1 = b1.getUserData();
-        const tag2 = b2.getUserData();
-        var bv: [3]f32 = undefined; // ball velocity
-        var ov: [3]f32 = undefined; // other velocity
-        var other: u64 = tag_none;
-        if (tag1 == tag_ball) {
-            bv = b1.getLinearVelocity();
-            ov = b2.getLinearVelocity();
-            other = tag2;
-        } else if (tag2 == tag_ball) {
-            bv = b2.getLinearVelocity();
-            ov = b1.getLinearVelocity();
-            other = tag1;
-        } else return;
-
-        const rel = [3]f32{ bv[0] - ov[0], bv[1] - ov[1], bv[2] - ov[2] };
+        const v1 = b1.getLinearVelocity();
+        const v2 = b2.getLinearVelocity();
+        const rel = [3]f32{ v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2] };
         const closing = @abs(rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2]);
-        if (other == tag_head) self.impact_head = @max(self.impact_head, closing);
-        if (other == tag_ground) self.impact_ground = @max(self.impact_ground, closing);
+        self.add(b1.getUserData(), b2.getUserData(), closing);
+    }
+
+    /// Accumulate a contact, keeping the max closing speed per unordered pair.
+    fn add(self: *Listener, a: u64, b: u64, closing: f32) void {
+        for (self.contacts[0..self.count]) |*c| {
+            if ((c.a == a and c.b == b) or (c.a == b and c.b == a)) {
+                c.closing = @max(c.closing, closing);
+                return;
+            }
+        }
+        if (self.count < max_contacts) {
+            self.contacts[self.count] = .{ .a = a, .b = b, .closing = closing };
+            self.count += 1;
+        }
+    }
+
+    /// Strongest closing speed recorded between the two tags this step, or 0.
+    fn query(self: *const Listener, a: u64, b: u64) f32 {
+        for (self.contacts[0..self.count]) |c| {
+            if ((c.a == a and c.b == b) or (c.a == b and c.b == a)) return c.closing;
+        }
+        return 0;
     }
 
     pub fn onContactValidate(
@@ -158,53 +192,90 @@ pub const World = struct {
         return self.system.getBodyInterfaceMut();
     }
 
-    /// Large static floor whose top surface sits at y = 0.
+    /// Create + add a body from a spec — the general, data-driven constructor
+    /// the scene loader uses. Object layer is derived from motion (dynamic =
+    /// moving, static/kinematic = non-moving); only dynamic bodies take a mass.
+    pub fn createBody(self: *World, spec: BodySpec) !BodyId {
+        const shape = switch (spec.shape) {
+            .box => |b| blk: {
+                const s = try jolt.BoxShapeSettings.create(b.half_extents);
+                defer s.asShapeSettings().release();
+                break :blk try s.asShapeSettings().createShape();
+            },
+            .sphere => |sp| blk: {
+                const s = try jolt.SphereShapeSettings.create(sp.radius);
+                defer s.asShapeSettings().release();
+                break :blk try s.asShapeSettings().createShape();
+            },
+        };
+        const p = spec.position;
+        return switch (spec.motion) {
+            .static => try self.bi().createAndAddBody(.{
+                .position = .{ p[0], p[1], p[2], 1 },
+                .shape = shape,
+                .motion_type = .static,
+                .object_layer = obj_non_moving,
+                .user_data = spec.tag,
+                .friction = spec.friction,
+                .restitution = spec.restitution,
+            }, .dont_activate),
+            .kinematic => try self.bi().createAndAddBody(.{
+                .position = .{ p[0], p[1], p[2], 1 },
+                .shape = shape,
+                .motion_type = .kinematic,
+                .object_layer = obj_non_moving,
+                .user_data = spec.tag,
+                .friction = spec.friction,
+                .restitution = spec.restitution,
+            }, .activate),
+            .dynamic => try self.bi().createAndAddBody(.{
+                .position = .{ p[0], p[1], p[2], 1 },
+                .shape = shape,
+                .motion_type = .dynamic,
+                .object_layer = obj_moving,
+                .user_data = spec.tag,
+                .friction = spec.friction,
+                .restitution = spec.restitution,
+                .override_mass_properties = .calc_inertia,
+                .mass_properties_override = .{ .mass = spec.mass orelse 1.0 },
+            }, .activate),
+        };
+    }
+
+    /// Large static floor whose top surface sits at y = 0. (Thin wrapper.)
     pub fn addGround(self: *World, half_size: f32, thickness: f32) !BodyId {
-        const settings = try jolt.BoxShapeSettings.create(.{ half_size, thickness, half_size });
-        defer settings.asShapeSettings().release();
-        const shape = try settings.asShapeSettings().createShape();
-        return try self.bi().createAndAddBody(.{
-            .position = .{ 0, -thickness, 0, 1 },
-            .shape = shape,
-            .motion_type = .static,
-            .object_layer = obj_non_moving,
-            .user_data = tag_ground,
+        return self.createBody(.{
+            .motion = .static,
+            .shape = .{ .box = .{ .half_extents = .{ half_size, thickness, half_size } } },
+            .position = .{ 0, -thickness, 0 },
             .friction = 0.4,
-        }, .dont_activate);
+            .tag = tag_ground,
+        });
     }
 
     /// Dynamic sphere (the basketball): `pos`, `restitution`, `mass` (kg).
     pub fn addSphere(self: *World, radius: f32, pos: [3]f32, restitution: f32, mass: f32) !BodyId {
-        const settings = try jolt.SphereShapeSettings.create(radius);
-        defer settings.asShapeSettings().release();
-        const shape = try settings.asShapeSettings().createShape();
-        return try self.bi().createAndAddBody(.{
-            .position = .{ pos[0], pos[1], pos[2], 1 },
-            .shape = shape,
-            .motion_type = .dynamic,
-            .object_layer = obj_moving,
-            .user_data = tag_ball,
+        return self.createBody(.{
+            .motion = .dynamic,
+            .shape = .{ .sphere = .{ .radius = radius } },
+            .position = pos,
             .restitution = restitution,
             .friction = 0.5,
-            .override_mass_properties = .calc_inertia,
-            .mass_properties_override = .{ .mass = mass },
-        }, .activate);
+            .mass = mass,
+            .tag = tag_ball,
+        });
     }
 
     /// Kinematic sphere (the dancer's head): driven each tick by `moveTo`, so it
     /// pushes the ball around as it animates but is unaffected by it.
     pub fn addKinematicSphere(self: *World, radius: f32, pos: [3]f32) !BodyId {
-        const settings = try jolt.SphereShapeSettings.create(radius);
-        defer settings.asShapeSettings().release();
-        const shape = try settings.asShapeSettings().createShape();
-        return try self.bi().createAndAddBody(.{
-            .position = .{ pos[0], pos[1], pos[2], 1 },
-            .shape = shape,
-            .motion_type = .kinematic,
-            .object_layer = obj_non_moving,
-            .user_data = tag_head,
+        return self.createBody(.{
+            .motion = .kinematic,
+            .shape = .{ .sphere = .{ .radius = radius } },
+            .position = pos,
             .friction = 0.5,
-        }, .activate);
+            .tag = tag_head,
+        });
     }
 
     /// Steer a kinematic body toward `target` over `dt` by setting the velocity
@@ -220,11 +291,10 @@ pub const World = struct {
         });
     }
 
-    /// Advance one fixed step. Impact accumulators are reset first, so after the
-    /// call they hold this step's strongest ball contacts.
+    /// Advance one fixed step. The contact table is cleared first, so after the
+    /// call it holds this step's strongest contacts.
     pub fn step(self: *World, dt: f32) !void {
-        self.listener.impact_head = 0;
-        self.listener.impact_ground = 0;
+        self.listener.count = 0;
         try self.system.update(dt, .{});
     }
 
@@ -248,13 +318,20 @@ pub const World = struct {
         self.bi().activate(id);
     }
 
-    /// Closing speed (m/s) of the ball's strongest contact with the head / ground
-    /// during the last `step`. 0 = no contact.
+    /// Strongest closing speed (m/s) recorded between two tagged bodies during
+    /// the last `step`, or 0 if they didn't touch — the general contact query the
+    /// scripting API's `contactImpulse` is backed by.
+    pub fn contactImpulse(self: *const World, a: u64, b: u64) f32 {
+        return self.listener.query(a, b);
+    }
+
+    /// Closing speed of the ball's strongest contact with the head / ground last
+    /// step (thin wrappers over `contactImpulse`).
     pub fn impactHead(self: *const World) f32 {
-        return self.listener.impact_head;
+        return self.contactImpulse(tag_ball, tag_head);
     }
     pub fn impactGround(self: *const World) f32 {
-        return self.listener.impact_ground;
+        return self.contactImpulse(tag_ball, tag_ground);
     }
 };
 
@@ -307,4 +384,40 @@ test "jolt: ball dropped on a head collides (impact reported), then falls off to
     try std.testing.expect(hit_head); // it really struck the head
     // ...and ended up resting on the floor (rolled off the head).
     try std.testing.expectApproxEqAbs(ball_r, w.bodyPosition(ball)[1], 0.05);
+}
+
+test "createBody + contactImpulse: a dynamic sphere lands on a static box, reported for arbitrary tags" {
+    var w: World = undefined;
+    try w.init(std.heap.c_allocator);
+    defer w.deinit();
+
+    // Arbitrary, non-builtin tags — the general data-driven path.
+    const tag_floor: u64 = 100;
+    const tag_drop: u64 = 200;
+
+    _ = try w.createBody(.{
+        .motion = .static,
+        .shape = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } },
+        .position = .{ 0, -1, 0 }, // top at y = 0
+        .friction = 0.4,
+        .tag = tag_floor,
+    });
+    const ball = try w.createBody(.{
+        .motion = .dynamic,
+        .shape = .{ .sphere = .{ .radius = 0.3 } },
+        .position = .{ 0, 3, 0 },
+        .restitution = 0.3,
+        .mass = 1.0,
+        .tag = tag_drop,
+    });
+    w.optimize();
+
+    var hit = false;
+    for (0..300) |_| {
+        try w.step(1.0 / 60.0);
+        if (w.contactImpulse(tag_floor, tag_drop) > 0) hit = true; // order-independent
+    }
+
+    try std.testing.expect(hit); // the general contact query saw the impact
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), w.bodyPosition(ball)[1], 0.05); // resting on the box
 }

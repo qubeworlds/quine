@@ -50,9 +50,10 @@ zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2   # we
 build tools from the public R2 bucket at `cdn.qubeworlds.com/build-tools/`:
 
 - a prebuilt **Zig 0.16.0** (falls back to ziglang.org), and
-- a **web buildcache** — the Emscripten SDK plus the compiled Jolt physics
-  object — unpacked into `./zig-pkg` and `./.zig-cache`. This skips the ~336 MiB
-  emsdk download and the emscripten sysroot-lib regeneration, so the first
+- a **web buildcache** — the Emscripten SDK plus the compiled Jolt physics and
+  QuickJS objects, and every fetched package (sokol, zphysics, quickjs-ng) —
+  unpacked into `./zig-pkg` and `./.zig-cache`. This skips the ~336 MiB emsdk
+  download and the emscripten sysroot-lib regeneration, so the first
   `zig build -Dtarget=wasm32-emscripten ...` is warm.
 
 Env toggles: `QUINE_SKIP_CDN=1` (use ziglang.org for Zig), `QUINE_SKIP_WEB_CACHE=1`
@@ -61,9 +62,12 @@ Env toggles: `QUINE_SKIP_CDN=1` (use ziglang.org for Zig), `QUINE_SKIP_WEB_CACHE
 **Claude Code on the web** runs `init.sh` automatically via the `SessionStart`
 hook in `.claude/` (`.claude/hooks/session-start.sh` + `.claude/settings.json`),
 so a fresh session is build-ready in seconds. To refresh the cached tools after
-a toolchain/dependency change, rebuild the artifacts and re-upload them under the
-`build-tools/` prefix (the buildcache is split into <300 MiB parts for R2's
-single-PUT limit; see the part naming + `SHA256SUMS` in the bucket).
+a toolchain/dependency change, run `scripts/build-web-buildcache.sh` (it warms
+the native + web builds, then packages `zig-pkg/` + `.zig-cache/` into the split
+tarball + `SHA256SUMS` init.sh expects) and upload the result under the
+`build-tools/` prefix with Cloudflare R2 credentials. **Adding a build dependency
+(e.g. quickjs-ng) requires regenerating the cache** — otherwise a fresh session
+restores a `zig-pkg/` without it and the build tries to fetch from the network.
 
 ## Conventions
 
