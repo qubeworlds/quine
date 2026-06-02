@@ -295,10 +295,17 @@ fn bumpSquash(e: core.Entity, speed: f32) void {
 /// The rigged character mesh, embedded at build time (see build.zig).
 const character_glb = @embedFile("character.glb");
 
+// Read a JS global at startup (emscripten only) so an embedding page can boot
+// with the HUD hidden via `window.QUINE_HUD = false`. Standalone keeps it on.
+extern fn emscripten_run_script_int(script: [*:0]const u8) c_int;
+
 export fn init() void {
     App.renderer.setup();
     loadDancer();
     App.camera = findCamera(&App.world);
+    if (builtin.os.tag == .emscripten) {
+        App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===false)?0:1") != 0;
+    }
     // stderr printing pulls in std IO that doesn't build for Emscripten in
     // Zig 0.16.0; skip it there (the browser console isn't the place anyway).
     if (builtin.os.tag != .emscripten) {
