@@ -262,21 +262,31 @@ pub const SceneRuntime = struct {
             const pt = self.world.get(core.Transform, parent.entity) orelse continue;
             var target = [3]f32{ pt.position.x, pt.position.y, pt.position.z };
             var rot: ?m.Vec3 = null;
-            if (b.parent_joint) |jn| if (parent.pose) |*pose| {
-                const jm = pose.global[jn].m; // joint's model-space matrix
-                target = .{
-                    pt.position.x + jm[12] * pt.scale.x,
-                    pt.position.y + jm[13] * pt.scale.y,
-                    pt.position.z + jm[14] * pt.scale.z,
-                };
-                // Follow the joint's rotation *relative to its bind pose*, so a
-                // rigid child (the fedora) turns/nods with the head like the
-                // app's old hatModel — without inheriting the bind orientation.
-                rot = eulerZYX(rotationBasis(pose.global[jn]).mul(parent.head_bind_inv));
-            };
-            target[0] += b.parent_offset[0];
-            target[1] += b.parent_offset[1];
-            target[2] += b.parent_offset[2];
+            var rotated_offset = false;
+            if (b.parent_joint) |jn| {
+                if (parent.pose) |*pose| {
+                    const jm = pose.global[jn].m; // joint's model-space matrix
+                    // Follow the joint's rotation *relative to its bind pose*, so a
+                    // rigid child (the fedora) turns/nods with the head like the
+                    // app's old hatModel — without inheriting the bind orientation.
+                    const delta = rotationBasis(pose.global[jn]).mul(parent.head_bind_inv);
+                    rot = eulerZYX(delta);
+                    // Rotate the seat offset by that delta too, so it shifts with
+                    // the head's tilt (else the skull pokes through the crown).
+                    const off = delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
+                    target = .{
+                        pt.position.x + jm[12] * pt.scale.x + off.x,
+                        pt.position.y + jm[13] * pt.scale.y + off.y,
+                        pt.position.z + jm[14] * pt.scale.z + off.z,
+                    };
+                    rotated_offset = true;
+                }
+            }
+            if (!rotated_offset) {
+                target[0] += b.parent_offset[0];
+                target[1] += b.parent_offset[1];
+                target[2] += b.parent_offset[2];
+            }
 
             if (b.body) |body| self.physics.moveTo(body, target, dt); // kinematic tracking
             if (self.world.get(core.Transform, b.entity)) |t| {
