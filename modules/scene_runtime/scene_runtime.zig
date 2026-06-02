@@ -36,6 +36,8 @@ pub const Binding = struct {
     body: ?phys.BodyId = null,
     /// Dynamic bodies have their Transform synced from physics each tick.
     is_dynamic: bool = false,
+    /// Sphere collider radius (0 for non-sphere / bodiless), for skill geometry.
+    radius: f32 = 0,
     /// Loaded skinned model iff this entity has `gltf` geometry.
     model: ?core.Model = null,
     /// Scratch pose for sampling this model's animation each tick.
@@ -58,6 +60,10 @@ pub const SceneRuntime = struct {
     gravity: [3]f32 = .{ 0, -9.81, 0 },
     /// Accumulated animation/sim time (seconds).
     time: f32 = 0,
+    /// Behaviour hooks, run by `update` before/after the physics step (the seam
+    /// the QuickJS pre/post handlers slot into; a native skill can set them now).
+    pre_step: ?*const fn (*SceneRuntime, f32) void = null,
+    post_step: ?*const fn (*SceneRuntime, f32) void = null,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -83,6 +89,10 @@ pub const SceneRuntime = struct {
                 spec.tag = @intCast(i + 1); // unique, non-zero contact tag per body
                 bnd.tag = spec.tag;
                 bnd.is_dynamic = spec.motion == .dynamic;
+                bnd.radius = switch (spec.shape) {
+                    .sphere => |s| s.radius,
+                    .box => 0,
+                };
                 bnd.body = try self.physics.createBody(spec);
             }
             // glTF geometry: resolve the source bytes, load the skinned model
@@ -232,6 +242,9 @@ pub const SceneRuntime = struct {
             };
         }
 
+        // 1.5 Skill pre-step: position the actor before colliders follow + step.
+        if (self.pre_step) |f| f(self, dt);
+
         // 2. Position joint-parented entities (the head collider tracks the
         //    animated head joint; parented meshes follow it too).
         for (self.bindings) |*b| {
@@ -257,6 +270,9 @@ pub const SceneRuntime = struct {
 
         // 3. Advance physics.
         try self.physics.step(dt);
+
+        // 3.5 Skill post-step: react to the contacts the step produced.
+        if (self.post_step) |f| f(self, dt);
 
         // 4. Sync dynamic bodies back into their Transforms for rendering.
         for (self.bindings) |*b| {
@@ -351,6 +367,84 @@ fn toBodySpec(e: core.scene.Entity) ?phys.BodySpec {
         .restitution = b.restitution,
         .friction = b.friction,
     };
+}
+
+// =============================================================================
+// Native keepie-uppie skill — a stand-in for the QuickJS-loaded keepie-uppie.ts,
+// using the same operations the C-ABI will expose. It proves SceneRuntime gives
+// a skill everything it needs and that the pre/post orchestration reproduces the
+// juggling, ahead of linking the interpreter. (When QuickJS lands, these two
+// functions are replaced by calls into the interpreted script; the host
+// operations they use are unchanged.) Tunables mirror the scene's script.params.
+// =============================================================================
+
+const ku_run_speed: f32 = 3.2;
+const ku_reach: f32 = 2.0;
+const ku_juggle_launch: f32 = 4.2;
+const ku_juggle_h_damp: f32 = 0.4;
+const ku_predict_horizon: f32 = 1.5;
+const ku_squash_per_impact: f32 = 0.04;
+const ku_squash_max: f32 = 0.3;
+
+/// Before the step: see the ball, predict where it falls to head height, and run
+/// the actor so its head ends up under that spot.
+pub fn keepieUppiePreStep(rt: *SceneRuntime, dt: f32) void {
+    const dancer = rt.find("dancer") orelse return;
+    const ball = rt.find("ball") orelse return;
+    const head = rt.find("head") orelse return;
+    const ballb = ball.body orelse return;
+    const headb = head.body orelse return;
+
+    const bp = rt.physics.bodyPosition(ballb);
+    const bv = rt.physics.bodyVelocity(ballb);
+    const hp = rt.physics.bodyPosition(headb);
+    const g = -rt.gravity[1];
+    const catch_y = hp[1] + head.radius + ball.radius;
+
+    const dy = bp[1] - catch_y;
+    const disc = bv[1] * bv[1] + 2.0 * g * dy;
+    const t_land = if (disc > 0) @min((bv[1] + @sqrt(disc)) / g, ku_predict_horizon) else 0;
+    const land_x = bp[0] + bv[0] * t_land;
+    const land_z = bp[2] + bv[2] * t_land;
+
+    const t = rt.world.get(core.Transform, dancer.entity) orelse return;
+    const head_off_x = hp[0] - t.position.x;
+    const head_off_z = hp[2] - t.position.z;
+    const tgt_x = clampf(land_x - head_off_x, -ku_reach, ku_reach);
+    const tgt_z = clampf(land_z - head_off_z, -ku_reach, ku_reach);
+    const step_max = ku_run_speed * dt;
+    t.position.x += clampf(tgt_x - t.position.x, -step_max, step_max);
+    t.position.z += clampf(tgt_z - t.position.z, -step_max, step_max);
+}
+
+/// After the step: on a head touch, bump the ball up and bleed its sideways
+/// drift; squash the actor + ball from the real impact. A ground touch squashes
+/// the ball.
+pub fn keepieUppiePostStep(rt: *SceneRuntime, _: f32) void {
+    const dancer = rt.find("dancer") orelse return;
+    const ball = rt.find("ball") orelse return;
+    const ballb = ball.body orelse return;
+
+    const ih = rt.contactImpulse("ball", "head");
+    const ig = rt.contactImpulse("ball", "ground");
+    if (ih > 0) {
+        const v = rt.physics.bodyVelocity(ballb);
+        rt.physics.setBodyVelocity(ballb, .{ v[0] * ku_juggle_h_damp, ku_juggle_launch, v[2] * ku_juggle_h_damp });
+        bumpSquash(rt, dancer.entity, ih);
+    }
+    const impact = @max(ih, ig);
+    if (impact > 0) bumpSquash(rt, ball.entity, impact);
+}
+
+fn bumpSquash(rt: *SceneRuntime, e: core.Entity, speed: f32) void {
+    if (rt.world.get(core.Squash, e)) |sq| {
+        const bump = @min(ku_squash_max, speed * ku_squash_per_impact);
+        if (bump > sq.value) sq.value = bump;
+    }
+}
+
+fn clampf(v: f32, lo: f32, hi: f32) f32 {
+    return if (v < lo) lo else if (v > hi) hi else v;
 }
 
 // =============================================================================
@@ -584,6 +678,34 @@ test "parity: the real keepie-uppie scene loads loadDancer's setup and runs dete
     try std.testing.expectEqual(a[0], b[0]);
     try std.testing.expectEqual(a[1], b[1]);
     try std.testing.expectEqual(a[2], b[2]);
+}
+
+test "the keepie-uppie skill heads the ball back up repeatedly" {
+    const glb = @embedFile("character.glb");
+    const json = @embedFile("keepie-uppie.scene.json");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+    rt.pre_step = keepieUppiePreStep;
+    rt.post_step = keepieUppiePostStep;
+
+    // Run ~15 s and count distinct head touches (rising edges of contact).
+    var bounces: usize = 0;
+    var touching = false;
+    for (0..900) |_| {
+        try rt.update(1.0 / 60.0);
+        const c = rt.contactImpulse("ball", "head") > 0;
+        if (c and !touching) bounces += 1;
+        touching = c;
+    }
+
+    // With the skill driving it, the actor heads the ball back up many times,
+    // rather than letting it fall to the floor once.
+    try std.testing.expect(bounces >= 3);
 }
 
 test "SceneRuntime reports a missing asset" {
