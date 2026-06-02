@@ -1,0 +1,28 @@
+.{
+    .name = .quine,
+    .version = "0.1.0",
+    .fingerprint = 0xdfd14d9dc061a736,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "modules",
+        "libs",
+        "apps",
+        "shaders",
+        "assets",
+        "init.sh",
+        "README.md",
+        "LICENSE",
+    },
+    .dependencies = .{
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig.git#712ff4bf36761592656a7f648b2e80c59bfa6c95",
+            .hash = "sokol-0.1.0-pb1HK8RqNwCA1y9yR1y0VNeYPv0m2TxtWsQP9y3w6rrS",
+        },
+        .zphysics = .{
+            .url = "git+https://github.com/zig-gamedev/zphysics.git#9797d7bd08e4341410104876eb1896a71714277d",
+            .hash = "zphysics-0.2.0-dev-nZDEANvfQgD04nOPqL9KMokfgjzs_wPtHpoLscZScaOa",
+        },
+    },
+}

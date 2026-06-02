@@ -1,3 +1,21 @@
+# Zig build artifacts
+zig-cache/
 .zig-cache/
 zig-out/
+zig-pkg/
 *.o
+*.obj
+
+# Local Zig toolchain (if vendored via init.sh)
+.zig/
+
+# Cloudflare Wrangler local state / node deps
+.wrangler/
+node_modules/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~

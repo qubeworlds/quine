@@ -1,0 +1,25 @@
+{
+  // Cloudflare Worker that serves the compiled WebAssembly build of quine as
+  // static assets. The bundle is produced by:
+  //   zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall
+  // which emits quine.{html,wasm,js} into ./zig-out/web (see build.zig). The
+  // deploy script (web/deploy.sh) copies quine.html -> index.html so "/" serves
+  // the app, then binds the custom domain.
+  //
+  // NOTE: the custom domain quine.qubeworlds.com is NOT configured here. Binding a
+  // Worker route/custom-domain needs zone-level permissions our deploy token
+  // lacks; the account-level custom-domains API does work, so web/deploy.sh
+  // attaches the domain via that API instead. Keeping `routes` out of this file
+  // lets `wrangler deploy` finish cleanly.
+  //
+  // Deploy with CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the env:
+  //   ./web/deploy.sh
+  "name": "quine",
+  "compatibility_date": "2025-05-01",
+  // Keep the *.workers.dev fallback URL, but no per-deploy preview URLs.
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./zig-out/web"
+  }
+}
