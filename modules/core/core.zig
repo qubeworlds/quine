@@ -208,9 +208,10 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
                 .rotation = v3(t.rotation),
                 .scale = v3(t.scale),
             });
-        } else if (e.geometry != null) {
-            // A drawable needs a Transform to render even if none was authored
-            // (parenting or physics may drive its position later).
+        } else if (e.geometry != null or e.camera != null) {
+            // A drawable needs a Transform to render, and a camera needs one for
+            // its controller to write its position/orientation into — even when
+            // none was authored. Parenting/physics/the controller drive it later.
             world.set(Transform, ent, .{});
         }
         if (e.spin) |s| world.set(Spin, ent, .{ .velocity = v3(s.velocity) });
