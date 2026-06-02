@@ -176,6 +176,70 @@ pub const World = struct {
 };
 
 // =============================================================================
+// Scene construction (world↔quine bridge)
+// =============================================================================
+
+fn v3(a: scene.Vec3) m.Vec3 {
+    return m.Vec3.init(a[0], a[1], a[2]);
+}
+
+/// Build the headless, pure-`core` ECS state of `scene_data` into `world`: spawn
+/// one entity per scene entity and set the data-only components — `Transform`,
+/// `Spin`, `Squash`, `Camera` — plus mesh refs for *builtin* geometry (which
+/// references static data). Returns the spawned entities, parallel to
+/// `scene_data.entities`, so callers can resolve names (see `findEntity`) and
+/// attach the parts that need an allocator or the app: glTF/procedural meshes,
+/// physics bodies, parenting, and `heightMeters`-derived scaling. Those stay out
+/// of `core` so this remains GPU- and physics-free.
+pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneData) ![]Entity {
+    const entities = try allocator.alloc(Entity, scene_data.entities.len);
+    for (scene_data.entities, 0..) |e, i| {
+        const ent = world.spawn();
+        entities[i] = ent;
+
+        if (e.transform) |t| world.set(Transform, ent, .{
+            .position = v3(t.position),
+            .rotation = v3(t.rotation),
+            .scale = v3(t.scale),
+        });
+        if (e.spin) |s| world.set(Spin, ent, .{ .velocity = v3(s.velocity) });
+        if (e.squash) |sq| {
+            const rest = if (sq.rest_scale) |rs|
+                v3(rs)
+            else if (e.transform) |t|
+                v3(t.scale)
+            else
+                m.Vec3.splat(1);
+            world.set(Squash, ent, .{ .rest_scale = rest, .value = sq.value, .recovery = sq.recovery });
+        }
+        if (e.camera) |c| world.set(Camera, ent, .{ .fov_y = c.fov_y, .near = c.near, .far = c.far });
+
+        // Builtin geometry references static mesh data, so it needs no allocator
+        // and can be wired here. glTF/procedural meshes own buffers -> app-side.
+        if (e.geometry) |g| {
+            switch (g) {
+                .builtin => |b| {
+                    if (std.mem.eql(u8, b.id, "triangle")) {
+                        world.set(MeshRef, ent, .{ .mesh = world.meshes.add(assets.triangle_mesh) });
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+    return entities;
+}
+
+/// Resolve a scene entity name to the spawned `Entity` (the array `loadScene`
+/// returned), or null if there is no such name.
+pub fn findEntity(scene_data: SceneData, entities: []const Entity, name: []const u8) ?Entity {
+    for (scene_data.entities, entities) |e, ent| {
+        if (std.mem.eql(u8, e.name, name)) return ent;
+    }
+    return null;
+}
+
+// =============================================================================
 // Tests (headless, no GPU). Generic ECS behaviour is tested in `modules/ecs`;
 // these cover this concrete world. The render queue has its own tests.
 // =============================================================================
@@ -185,6 +249,58 @@ test {
     _ = render_queue;
     _ = anim;
     _ = scene;
+}
+
+test "loadScene builds ECS state from a builtin scene (mesh + spin + camera)" {
+    const sc = SceneData{
+        .schema_version = 1,
+        .name = "t",
+        .entities = &.{
+            .{ .name = "tri", .transform = .{}, .geometry = .{ .builtin = .{ .id = "triangle" } }, .spin = .{ .velocity = .{ 0, 0.6, 0 } } },
+            .{ .name = "cam", .camera = .{} },
+        },
+    };
+    var w: World = .{};
+    const entities = try loadScene(std.testing.allocator, &w, sc);
+    defer std.testing.allocator.free(entities);
+
+    const tri = findEntity(sc, entities, "tri").?;
+    try std.testing.expect(w.get(Spin, tri) != null);
+    try std.testing.expect(w.get(MeshRef, tri) != null);
+    try std.testing.expect(w.get(Camera, findEntity(sc, entities, "cam").?) != null);
+
+    // The drawable extracts and the spin system rotates it — a loaded scene
+    // behaves exactly like a hand-built world.
+    var q: RenderQueue = .{};
+    extract(&w, &w, 1.0, &q);
+    try std.testing.expectEqual(@as(usize, 1), q.len);
+}
+
+test "loadScene builds the keepie-uppie ECS state from the bridge JSON" {
+    const bytes = @embedFile("keepie-uppie.scene.json");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sc = try scene.parse(arena.allocator(), bytes);
+
+    var w: World = .{};
+    const entities = try loadScene(arena.allocator(), &w, sc);
+    try std.testing.expectEqual(@as(usize, 6), entities.len);
+
+    // The camera carries a Camera component.
+    try std.testing.expect(w.get(Camera, findEntity(sc, entities, "camera").?) != null);
+
+    // dancer + ball squash with their authored recovery rates.
+    const dancer = findEntity(sc, entities, "dancer").?;
+    const ball = findEntity(sc, entities, "ball").?;
+    try std.testing.expectEqual(@as(f32, 7), w.get(Squash, dancer).?.recovery);
+    try std.testing.expectEqual(@as(f32, 11), w.get(Squash, ball).?.recovery);
+
+    // The ball's authored transform is applied (drop position above the head).
+    try std.testing.expectEqual(@as(f32, 1.9), w.get(Transform, ball).?.position.y);
+
+    // Geometry that needs owned buffers/physics (gltf/sphere/fedora) is left for
+    // the app loader, so no MeshRef is set here.
+    try std.testing.expect(w.get(MeshRef, dancer) == null);
 }
 
 test "loads CesiumMan skeleton + clip and the sampler moves joints" {
