@@ -51,9 +51,20 @@ pub const Js = struct {
     pub fn loadSkill(self: *Js, src: []const u8) Error!void {
         try self.evalChecked(@embedFile("prelude.js"));
         try self.evalChecked(src);
-        self.scene.skill_ctx = self;
-        self.scene.pre_step = preHook;
-        self.scene.post_step = postHook;
+        self.rebind(self.scene);
+    }
+
+    /// Re-point this context at a freshly rebuilt scene WITHOUT tearing down the
+    /// QuickJS runtime. A scene hot-reload rebuilds `SceneRuntime` (new ECS world,
+    /// new Jolt bodies) but must reuse the one JS runtime — deinit→re-init of
+    /// QuickJS doesn't survive on web (emscripten). The skill's registered
+    /// handlers resolve entities by name every tick, so they drive the new scene
+    /// unchanged; we only swap the scene pointer and re-wire its hooks.
+    pub fn rebind(self: *Js, scene: *SceneRuntime) void {
+        self.scene = scene;
+        scene.skill_ctx = self;
+        scene.pre_step = preHook;
+        scene.post_step = postHook;
     }
 
     fn evalChecked(self: *Js, src: []const u8) Error!void {
@@ -252,6 +263,58 @@ fn jsBumpSquash(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]
 // =============================================================================
 
 const core = @import("core");
+
+/// Read the fedora mesh's first vertex color (the flat material color baked into
+/// the mesh at build time) — what a recolor must change.
+fn fedoraColor(rt: *SceneRuntime) ?[4]f32 {
+    const fed = rt.find("fedora") orelse return null;
+    const mr = rt.world.get(core.MeshRef, fed.entity) orelse return null;
+    const v = rt.world.meshes.get(mr.mesh).vertices[0].color;
+    return .{ v.x, v.y, v.z, v.w };
+}
+
+test "scene hot-reload: rebuild + rebind recolors the fedora, reusing the JS runtime" {
+    const glb = @embedFile("character.glb");
+    const alloc = std.heap.c_allocator;
+    const assets = [_]sr.Asset{.{ .name = "CesiumMan.glb", .bytes = glb }};
+
+    // Two scenes, identical but for the fedora colour. Declared inline so their
+    // `&.{...}` entity arrays live for the whole test (a helper returning them
+    // would dangle once the runtime colour makes the literal non-comptime).
+    const red = core.scene.Scene{ .schema_version = 1, .name = "reload", .entities = &.{
+        .{ .name = "dancer", .transform = .{}, .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } }, .animation = .{} },
+        .{ .name = "fedora", .geometry = .{ .fedora = .{ .fit_to_joint = "head", .segments = 24 } }, .material = .{ .color = .{ 0.62, 0.05, 0.07, 1 } }, .parent = .{ .entity = "dancer", .joint = "head" } },
+    } };
+    const green = core.scene.Scene{ .schema_version = 1, .name = "reload", .entities = &.{
+        .{ .name = "dancer", .transform = .{}, .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } }, .animation = .{} },
+        .{ .name = "fedora", .geometry = .{ .fedora = .{ .fit_to_joint = "head", .segments = 24 } }, .material = .{ .color = .{ 0.05, 0.5, 0.12, 1 } }, .parent = .{ .entity = "dancer", .joint = "head" } },
+    } };
+
+    // Build the RED scene + a JS context bound to it (mirrors the initial web load).
+    var stage: SceneRuntime = undefined;
+    try stage.init(alloc, red, &assets);
+    var js: Js = undefined;
+    try js.init(&stage);
+    defer js.deinit();
+    try js.loadSkill("onPreStep(function(){});"); // a trivial skill, like the real one
+    try std.testing.expectApproxEqAbs(@as(f32, 0.62), (fedoraColor(&stage) orelse @panic("red fedora has no mesh"))[0], 1e-4);
+
+    // Hot-reload to GREEN exactly as `reloadScene` does on web: tear the stage
+    // down, rebuild from the new scene, and rebind the SAME JS runtime (no
+    // deinit/re-init of QuickJS).
+    stage.deinit();
+    try stage.init(alloc, green, &assets);
+    js.rebind(&stage);
+    defer stage.deinit();
+
+    const col = fedoraColor(&stage) orelse @panic("GREEN fedora has no mesh after rebuild");
+    try std.testing.expectApproxEqAbs(@as(f32, 0.05), col[0], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), col[1], 1e-4); // GREEN applied
+    try std.testing.expectApproxEqAbs(@as(f32, 0.12), col[2], 1e-4);
+
+    // And the reused runtime still drives the rebuilt scene (the skill's hooks fire).
+    for (0..10) |_| try stage.update(1.0 / 60.0);
+}
 
 test "quickjs links and evaluates inside the engine" {
     var rt: SceneRuntime = undefined;

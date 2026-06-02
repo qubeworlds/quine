@@ -54,6 +54,12 @@ pub const HudInfo = struct {
     dpi_scale: f32,
     mouse_x: f32,
     mouse_y: f32,
+    /// Diagnostics for scene hot-reload: how many scene reloads the engine has
+    /// applied, and the red channel of the fedora's current mesh colour (-1 if
+    /// the fedora has no mesh). Lets a snapshot confirm a meta push actually
+    /// reached + rebuilt the scene.
+    reloads: u32 = 0,
+    fedora_r: f32 = -1,
 };
 
 /// A translation gizmo to draw at `origin`, with three axis handles of world
@@ -334,6 +340,7 @@ pub const Renderer = struct {
         sdtx.print("fps      : {d:.0} ach / {d:.0} req\n", .{ info.fps_achieved, info.fps_requested });
         sdtx.print("size     : {d} x {d}\n", .{ info.width, info.height });
         sdtx.print("mouse    : {d:.0}, {d:.0}\n", .{ info.mouse_x, info.mouse_y });
+        sdtx.print("reload   : n={d} fedR={d:.2}\n", .{ info.reloads, info.fedora_r });
         sdtx.print("[tab / 3-finger] toggle hud\n", .{});
         sdtx.draw();
     }
