@@ -102,7 +102,20 @@ const App = struct {
     var pan_prev_x: f32 = 0;
     var pan_prev_y: f32 = 0;
     var three_active: bool = false;
+
+    // Scene hot-reload diagnostics, surfaced in the HUD: count of applied scene
+    // reloads, and the fedora's current mesh red channel (-1 = no mesh).
+    var reload_count: u32 = 0;
+    var fedora_r: f32 = -1;
 };
+
+/// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
+/// a cheap, observable proxy for "the scene rebuilt with the pushed material".
+fn fedoraRed() f32 {
+    const fed = App.stage.find("fedora") orelse return -1;
+    const mr = App.stage.world.get(core.MeshRef, fed.entity) orelse return -1;
+    return App.stage.world.meshes.get(mr.mesh).vertices[0].color.x;
+}
 
 export fn init() void {
     App.renderer.setup();
@@ -131,20 +144,22 @@ fn loadScene() void {
 }
 
 /// Tear down the running scene and rebuild it from new scene JSON (web
-/// hot-reload). The renderer persists; we re-upload the actor's skinned mesh.
+/// hot-reload). The QuickJS runtime PERSISTS — we rebuild only the scene and
+/// rebind the existing skill (its handlers resolve entities by name, so they
+/// drive the new scene unchanged). Re-initialising QuickJS doesn't survive on
+/// web, so a scene push must reuse the one runtime. The renderer persists too;
+/// `buildStage` re-uploads the actor's skinned mesh.
 fn reloadScene(json: []const u8) void {
-    App.js.deinit();
+    App.reload_count += 1; // count the attempt (visible in the HUD) before teardown
     App.stage.deinit();
-    loadSceneFrom(json);
+    buildStage(json) catch return;
+    App.js.rebind(&App.stage);
 }
 
+/// Initial scene load: build the stage from data, then create the JS context and
+/// load the behaviour skill into it.
 fn loadSceneFrom(json: []const u8) void {
-    const alloc = std.heap.c_allocator;
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const scene_data = core.parseScene(arena.allocator(), json) catch return;
-
-    App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }}) catch return;
+    buildStage(json) catch return;
     App.js.init(&App.stage) catch return;
     // Skill: web reads the host-provided source (bundled asset); native embedded.
     if (is_web) {
@@ -153,8 +168,21 @@ fn loadSceneFrom(json: []const u8) void {
     } else {
         App.js.loadSkill(skill_js) catch return;
     }
+}
 
-    App.dancer = App.stage.find("dancer") orelse return;
+/// Build the running scene from data and wire up the render specifics (upload the
+/// actor's skinned mesh; init the orbit camera from the scene's camera
+/// controller). Does NOT touch the JS context — the caller owns its lifecycle so
+/// a hot-reload can reuse the QuickJS runtime across scene rebuilds.
+fn buildStage(json: []const u8) !void {
+    const alloc = std.heap.c_allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+
+    try App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }});
+
+    App.dancer = App.stage.find("dancer") orelse return error.NoActor;
     if (App.dancer.model) |*model| App.renderer.uploadSkinned(model.mesh);
     for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
@@ -174,6 +202,8 @@ fn loadSceneFrom(json: []const u8) void {
             },
         }
     }
+
+    App.fedora_r = fedoraRed(); // diagnostic: confirms the rebuilt material colour
 }
 
 fn findCamera(world: *core.World) ?core.Entity {
@@ -295,6 +325,8 @@ export fn frame() void {
         .dpi_scale = dpi,
         .mouse_x = App.mouse_x,
         .mouse_y = App.mouse_y,
+        .reloads = App.reload_count,
+        .fedora_r = App.fedora_r,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
 }
