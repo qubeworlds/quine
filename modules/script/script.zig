@@ -144,13 +144,19 @@ fn undef(ctx: ?*c.JSContext) c.JSValue {
 fn jsOnPreStep(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
     _ = this_val;
     const js = ctxJs(ctx);
-    if (argc >= 1) js.pre_handler = c.JS_DupValue(ctx, argv[0]);
+    if (argc >= 1) {
+        if (js.pre_handler) |old| c.JS_FreeValue(ctx, old); // hot-reload: drop the previous
+        js.pre_handler = c.JS_DupValue(ctx, argv[0]);
+    }
     return undef(ctx);
 }
 fn jsOnPostStep(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
     _ = this_val;
     const js = ctxJs(ctx);
-    if (argc >= 1) js.post_handler = c.JS_DupValue(ctx, argv[0]);
+    if (argc >= 1) {
+        if (js.post_handler) |old| c.JS_FreeValue(ctx, old);
+        js.post_handler = c.JS_DupValue(ctx, argv[0]);
+    }
     return undef(ctx);
 }
 fn jsGravityY(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {

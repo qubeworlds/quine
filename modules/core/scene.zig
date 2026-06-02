@@ -115,7 +115,10 @@ const Value = std.json.Value;
 /// Parse a normalized scene JSON. Allocations go into `arena` (use an
 /// ArenaAllocator and deinit it to free the whole scene).
 pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
-    const root = try std.json.parseFromSliceLeaky(Value, arena, bytes, .{});
+    // alloc_always so parsed strings are copied into `arena` rather than
+    // referencing `bytes` — `bytes` may be a transient host buffer (web
+    // hot-reload reads the scene off a reused emscripten string buffer).
+    const root = try std.json.parseFromSliceLeaky(Value, arena, bytes, .{ .allocate = .alloc_always });
     if (root != .object) return error.InvalidScene;
     const o = root.object;
 

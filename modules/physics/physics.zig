@@ -17,6 +17,9 @@ pub const jolt = @import("jolt");
 
 pub const BodyId = jolt.BodyId;
 
+/// Jolt's global factory is initialized once per process (see `World.init`).
+var jolt_inited: bool = false;
+
 // User-data tags so the contact listener can tell bodies apart.
 pub const tag_none: u64 = 0;
 pub const tag_ball: u64 = 1;
@@ -146,7 +149,7 @@ const Listener = struct {
         manifold: *const jolt.ContactManifold,
         _: *jolt.ContactSettings,
     ) callconv(.c) void {
-        const self: *Listener = @fieldParentPtr("interface", iface);
+        const self: *Listener = @alignCast(@fieldParentPtr("interface", iface));
         self.record(b1, b2, .{ manifold.normal[0], manifold.normal[1], manifold.normal[2] });
     }
     pub fn onContactPersisted(
@@ -156,7 +159,7 @@ const Listener = struct {
         manifold: *const jolt.ContactManifold,
         _: *jolt.ContactSettings,
     ) callconv(.c) void {
-        const self: *Listener = @fieldParentPtr("interface", iface);
+        const self: *Listener = @alignCast(@fieldParentPtr("interface", iface));
         self.record(b1, b2, .{ manifold.normal[0], manifold.normal[1], manifold.normal[2] });
     }
     pub fn onContactRemoved(_: *jolt.ContactListener, _: *const jolt.SubShapeIdPair) callconv(.c) void {}
@@ -170,7 +173,15 @@ pub const World = struct {
     listener: Listener = .{},
 
     pub fn init(self: *World, allocator: std.mem.Allocator) !void {
-        try jolt.init(allocator, .{ .num_threads = 0 }); // single-threaded
+        // Init Jolt once per process. Recreating a `World` (e.g. a web scene
+        // hot-reload) destroys + recreates only the PhysicsSystem below; Jolt's
+        // global factory/allocator stays up, because tearing it down and re-
+        // initing isn't reliable on the emscripten Jolt build (and one global
+        // init + many systems is Jolt's intended usage anyway).
+        if (!jolt_inited) {
+            try jolt.init(allocator, .{ .num_threads = 0 }); // single-threaded
+            jolt_inited = true;
+        }
         self.* = .{
             .system = try jolt.PhysicsSystem.create(&bpli, &obp_filter, &pair_filter, .{
                 .max_bodies = 1024,
@@ -185,7 +196,7 @@ pub const World = struct {
 
     pub fn deinit(self: *World) void {
         self.system.destroy();
-        jolt.deinit();
+        // Jolt itself stays initialized for the process (init-once; see init).
     }
 
     fn bi(self: *World) *jolt.BodyInterface {
