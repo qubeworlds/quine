@@ -34,8 +34,21 @@ pub const Binding = struct {
     /// Non-zero contact tag iff this entity has a physics body.
     tag: u64 = 0,
     body: ?phys.BodyId = null,
+    /// Dynamic bodies have their Transform synced from physics each tick.
+    is_dynamic: bool = false,
     /// Loaded skinned model iff this entity has `gltf` geometry.
     model: ?core.Model = null,
+    /// Scratch pose for sampling this model's animation each tick.
+    pose: ?core.Pose = null,
+    /// Animation clip to play (index), if any.
+    clip: ?usize = null,
+    /// Resolved "head" joint node of this model (topmost in the bind pose).
+    head_joint: u32 = 0,
+    /// Parenting (resolved at load): index of the parent binding, the joint to
+    /// follow on it (if any), and a local offset.
+    parent_idx: ?usize = null,
+    parent_joint: ?u32 = null,
+    parent_offset: [3]f32 = .{ 0, 0, 0 },
 };
 
 pub const SceneRuntime = struct {
@@ -43,6 +56,8 @@ pub const SceneRuntime = struct {
     physics: phys.World = undefined,
     bindings: []Binding = &.{},
     gravity: [3]f32 = .{ 0, -9.81, 0 },
+    /// Accumulated animation/sim time (seconds).
+    time: f32 = 0,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -67,20 +82,45 @@ pub const SceneRuntime = struct {
                 var spec = spec0;
                 spec.tag = @intCast(i + 1); // unique, non-zero contact tag per body
                 bnd.tag = spec.tag;
+                bnd.is_dynamic = spec.motion == .dynamic;
                 bnd.body = try self.physics.createBody(spec);
             }
-            // glTF geometry: resolve the source bytes and load the skinned model
-            // (into the arena, freed with the runtime). Render upload + the
-            // heightMeters/fitToJoint/parenting derivation plug in next.
+            // glTF geometry: resolve the source bytes, load the skinned model
+            // (into the arena, freed with the runtime), scale it, and set up the
+            // scratch pose + head joint for animation and parenting.
             if (e.geometry) |g| if (g == .gltf) {
                 const bytes = resolve(assets, g.gltf.source) orelse return error.AssetNotFound;
                 bnd.model = try core.loadModel(a, bytes);
                 if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
+                var pose = try core.Pose.init(a, bnd.model.?.skeleton.nodes.len);
+                pose.sample(&bnd.model.?.skeleton, null, 0); // bind pose
+                bnd.head_joint = topmostJoint(&bnd.model.?.skeleton, &pose);
+                bnd.pose = pose;
+                if (e.animation) |an| {
+                    if (an.play) bnd.clip = switch (an.clip) {
+                        .index => |idx| idx,
+                        .name => 0, // node names aren't loaded; play clip 0 for now
+                    };
+                }
             };
             try self.buildMesh(a, ent, e);
             bindings[i] = bnd;
         }
         self.bindings = bindings;
+
+        // Resolve parenting now that every binding exists. A joint reference
+        // binds to the parent's head joint (the only joint we resolve by name
+        // today — node names aren't loaded, so "head" = topmost).
+        for (scene_data.entities, 0..) |e, i| {
+            const p = e.parent orelse continue;
+            const pi = findIndex(scene_data, p.entity) orelse continue;
+            bindings[i].parent_idx = pi;
+            bindings[i].parent_offset = p.offset;
+            if (p.joint != null and bindings[pi].pose != null) {
+                bindings[i].parent_joint = bindings[pi].head_joint;
+            }
+        }
+
         self.physics.optimize();
     }
 
@@ -124,6 +164,59 @@ pub const SceneRuntime = struct {
         }
     }
 
+    /// Advance the scene by one fixed step: sample animations, drive joint-
+    /// parented bodies/meshes to follow their parent's joint, step physics, then
+    /// sync dynamic bodies back into their Transforms for rendering. The skill
+    /// (QuickJS pre/post hooks) will interleave around the physics step later.
+    pub fn update(self: *SceneRuntime, dt: f32) !void {
+        self.time += dt;
+
+        // 1. Sample each model's animation into its pose.
+        for (self.bindings) |*b| {
+            if (b.model) |*model| if (b.pose) |*pose| {
+                const clip: ?*const core.Clip = if (b.clip) |ci|
+                    (if (ci < model.clips.len) &model.clips[ci] else null)
+                else
+                    null;
+                pose.sample(&model.skeleton, clip, self.time);
+            };
+        }
+
+        // 2. Position joint-parented entities (the head collider tracks the
+        //    animated head joint; parented meshes follow it too).
+        for (self.bindings) |*b| {
+            const pi = b.parent_idx orelse continue;
+            const parent = &self.bindings[pi];
+            const pt = self.world.get(core.Transform, parent.entity) orelse continue;
+            var target = [3]f32{ pt.position.x, pt.position.y, pt.position.z };
+            if (b.parent_joint) |jn| if (parent.pose) |*pose| {
+                const jm = pose.global[jn].m; // joint's model-space matrix
+                target = .{
+                    pt.position.x + jm[12] * pt.scale.x,
+                    pt.position.y + jm[13] * pt.scale.y,
+                    pt.position.z + jm[14] * pt.scale.z,
+                };
+            };
+            target[0] += b.parent_offset[0];
+            target[1] += b.parent_offset[1];
+            target[2] += b.parent_offset[2];
+
+            if (b.body) |body| self.physics.moveTo(body, target, dt); // kinematic tracking
+            if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(target[0], target[1], target[2]);
+        }
+
+        // 3. Advance physics.
+        try self.physics.step(dt);
+
+        // 4. Sync dynamic bodies back into their Transforms for rendering.
+        for (self.bindings) |*b| {
+            if (!b.is_dynamic) continue;
+            const body = b.body orelse continue;
+            const p = self.physics.bodyPosition(body);
+            if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(p[0], p[1], p[2]);
+        }
+    }
+
     /// Resolve a scene entity name to its binding, or null.
     pub fn find(self: *SceneRuntime, name: []const u8) ?*Binding {
         for (self.bindings) |*b| {
@@ -151,6 +244,28 @@ fn resolve(assets: []const Asset, name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, asset.name, name)) return asset.bytes;
     }
     return null;
+}
+
+fn findIndex(scene_data: core.SceneData, name: []const u8) ?usize {
+    for (scene_data.entities, 0..) |e, i| {
+        if (std.mem.eql(u8, e.name, name)) return i;
+    }
+    return null;
+}
+
+/// The "head" joint: the topmost skin joint in the (sampled) bind pose — the
+/// same heuristic the app's loadDancer used. `pose` must be sampled at bind.
+fn topmostJoint(skel: *const core.Skeleton, pose: *const core.Pose) u32 {
+    var head: u32 = 0;
+    var top: f32 = -std.math.inf(f32);
+    for (skel.joints) |node| {
+        const y = pose.global[node].m[13];
+        if (y > top) {
+            top = y;
+            head = node;
+        }
+    }
+    return head;
 }
 
 /// Translate a scene entity's `body` (if any) to a physics `BodySpec`. The
@@ -279,6 +394,39 @@ test "SceneRuntime resolves and loads a glTF model from an asset" {
     try std.testing.expectEqual(scale.x, scale.z);
     // ...and 1.75 / scale recovers a plausible model height (~1.5 m).
     try std.testing.expectApproxEqAbs(@as(f32, 1.5), 1.75 / scale.y, 0.25);
+}
+
+test "SceneRuntime parents a kinematic collider to the animated head joint" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "p",
+        .entities = &.{
+            .{
+                .name = "dancer",
+                .transform = .{},
+                .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } },
+                .animation = .{},
+            },
+            .{
+                .name = "head",
+                .body = .{ .motion = .kinematic, .collider = .{ .sphere = .{ .radius = 0.13 } }, .tag = "head" },
+                .parent = .{ .entity = "dancer", .joint = "head", .offset = .{ 0, 0, 0 } },
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const head_body = rt.find("head").?.body.?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0), rt.physics.bodyPosition(head_body)[1], 1e-4); // starts at origin
+
+    for (0..30) |_| try rt.update(1.0 / 60.0);
+
+    // The collider rose to head height (~1.3–1.5 m), tracking the animated joint.
+    try std.testing.expect(rt.physics.bodyPosition(head_body)[1] > 1.0);
 }
 
 test "SceneRuntime reports a missing asset" {
