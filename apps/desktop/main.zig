@@ -44,6 +44,20 @@ const dancer_ground_y: f32 = 0.0;
 const head_radius: f32 = 0.13;
 const crown_above_joint_m: f32 = 0.317;
 
+/// The character's red fedora: a procedural hat (see `core.fedora`) parented to
+/// the animated head joint so it rides along as he walks and juggles. Dimensions
+/// are in metres, sized to sit over the ~0.13 m head: the crown wall clears the
+/// skull and the brim flares wider. `seat_above_joint` lifts the brim plane off
+/// the head joint to roughly forehead height; tune by eye in the windowed app.
+/// Colour is a deep felt red. (Flat lit vertex colour — the same path the ball
+/// uses; real PBR materials remain the future work tracked in docs/TODO.md #1.)
+const hat_brim_radius: f32 = 0.23;
+const hat_crown_radius: f32 = 0.135;
+const hat_crown_height: f32 = 0.14;
+const hat_segments = 24;
+const hat_seat_above_joint_m: f32 = 0.17;
+const hat_color = m.Vec4{ .x = 0.62, .y = 0.05, .z = 0.07, .w = 1.0 };
+
 /// A regulation size-7 basketball: 74.9 cm circumference (radius = C / 2pi),
 /// 624 g. A dynamic Jolt body — it really bounces on the head and rolls off onto
 /// the floor. Drawn as a flat-shaded orange sphere (texture/seams come later).
@@ -164,6 +178,12 @@ const App = struct {
     var ball_verts: [core.sphereVertexCount(sphere_rings, sphere_segments)]core.Vertex = undefined;
     var ball_indices: [core.sphereIndexCount(sphere_rings, sphere_segments)]u32 = undefined;
 
+    // The fedora: a static-mesh ECS entity (geometry in these app buffers) whose
+    // Transform is re-seated on the animated head joint every tick.
+    var hat: core.Entity = undefined;
+    var hat_verts: [core.fedoraVertexCount(hat_segments)]core.Vertex = undefined;
+    var hat_indices: [core.fedoraIndexCount(hat_segments)]u32 = undefined;
+
     // Jolt physics: a sibling world to the ECS. Ground (static), head (kinematic,
     // tracks the animated head joint), ball (dynamic). The app syncs the ball
     // body's position into its ECS Transform and raises Squash from contacts.
@@ -172,17 +192,32 @@ const App = struct {
     var ball_body: phys.BodyId = undefined;
 };
 
-/// World-space target for the head collider's centre: the animated head joint
-/// (in the dancer's scaled, translated space) raised so the collider's top
-/// reaches the crown. The pose must already be sampled this frame.
-fn headColliderTarget() [3]f32 {
+/// World-space position of the animated head joint: the joint's model-space
+/// translation lifted into the dancer's scaled, translated space. The pose must
+/// already be sampled this frame. Both the head collider and the fedora hang off
+/// this single point.
+fn headJointWorld() [3]f32 {
     const d = App.world.get(core.Transform, App.dancer).?.position;
     const g = App.pose.global[App.head_node].m; // model-space head-joint matrix
     return .{
         d.x + g[12] * dancer_scale,
-        d.y + g[13] * dancer_scale + crown_above_joint_m * dancer_scale - head_radius,
+        d.y + g[13] * dancer_scale,
         d.z + g[14] * dancer_scale,
     };
+}
+
+/// World-space target for the head collider's centre: the head joint raised so
+/// the collider's top reaches the crown.
+fn headColliderTarget() [3]f32 {
+    const h = headJointWorld();
+    return .{ h[0], h[1] + crown_above_joint_m * dancer_scale - head_radius, h[2] };
+}
+
+/// World-space origin for the fedora's brim plane: the head joint lifted to
+/// roughly forehead height so the crown caps the skull and the brim flares out.
+fn hatTarget() [3]f32 {
+    const h = headJointWorld();
+    return .{ h[0], h[1] + hat_seat_above_joint_m * dancer_scale, h[2] };
 }
 
 /// Raise an entity's squash from a real contact's closing speed (m/s), keeping
@@ -252,6 +287,15 @@ fn loadDancer() void {
     App.world.set(core.Transform, ball, .{});
     App.world.set(core.Squash, ball, .{ .recovery = 11.0 });
     App.ball = ball;
+
+    // The red fedora: built once, then re-seated on the head joint each tick.
+    const hat_mesh = core.fedora(hat_brim_radius, hat_crown_radius, hat_crown_height, hat_segments, hat_color, &App.hat_verts, &App.hat_indices);
+    const hat_handle = App.world.meshes.add(hat_mesh);
+    const hat = App.world.spawn();
+    App.world.set(core.MeshRef, hat, .{ .mesh = hat_handle });
+    const hat0 = hatTarget();
+    App.world.set(core.Transform, hat, .{ .position = m.Vec3.init(hat0[0], hat0[1], hat0[2]) });
+    App.hat = hat;
 
     // Jolt world: floor + kinematic head + dynamic ball dropped above the crown
     // (nudged off-centre so, with honest physics, it strikes and rolls off).
@@ -347,6 +391,10 @@ export fn frame() void {
             // Drive the head to the now-updated joint position, then advance Jolt.
             App.physics.moveTo(App.head_body, headColliderTarget(), fdt);
             App.physics.step(fdt) catch {};
+
+            // Re-seat the fedora on the head joint so it rides along with the walk.
+            const ht = hatTarget();
+            App.world.get(core.Transform, App.hat).?.position = m.Vec3.init(ht[0], ht[1], ht[2]);
 
             // On a head touch: bump the ball up for more hang time and bleed its
             // sideways drift so the juggle stays centered; squash both from the

@@ -144,3 +144,114 @@ pub fn uvSphere(
     }
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
+
+/// Vertices/indices a `fedora` of the given segment count needs, so callers can
+/// size their buffers exactly (the core has no allocator).
+pub fn fedoraVertexCount(segments: u32) usize {
+    const ring = segments + 1;
+    // crown side (bottom+top rings) + top cap (centre + ring) + brim (2 rings).
+    return (ring * 2) + (1 + ring) + (ring * 2);
+}
+pub fn fedoraIndexCount(segments: u32) usize {
+    // crown side quads + top-cap fan triangles + brim annulus quads.
+    return segments * 6 + segments * 3 + segments * 6;
+}
+
+/// Generate a simple fedora into caller-provided buffers (allocator-free, so it
+/// runs in the headless core). The hat is built around +Y in its own space: the
+/// brim is a flat annulus in the y=0 plane, and the crown is a cylinder rising
+/// to `crown_height` with a flat top cap. `brim_radius` is the outer brim;
+/// `crown_radius` is both the crown wall and the brim's inner hole. Every vertex
+/// gets `color`. Buffers must hold at least `fedoraVertexCount` /
+/// `fedoraIndexCount` entries. Returns a `MeshData` viewing the filled prefixes.
+/// Backend culling is off, so winding doesn't matter for visibility.
+pub fn fedora(
+    brim_radius: f32,
+    crown_radius: f32,
+    crown_height: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var ii: usize = 0;
+    const up = m.Vec3.init(0, 1, 0);
+
+    // --- crown side: a vertical cylinder from the brim plane (y=0) to the top.
+    // Two vertices per column (bottom, top); the seam column is duplicated so
+    // every quad has its own pair, matching the UV-sphere's `segments + 1` trick.
+    const side_base: u32 = @intCast(vi);
+    var s: u32 = 0;
+    while (s <= segments) : (s += 1) {
+        const theta = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        const cx = @cos(theta);
+        const cz = @sin(theta);
+        const n = m.Vec3.init(cx, 0, cz); // outward radial normal
+        verts[vi] = .{ .position = m.Vec3.init(cx * crown_radius, 0, cz * crown_radius), .normal = n, .color = color };
+        vi += 1;
+        verts[vi] = .{ .position = m.Vec3.init(cx * crown_radius, crown_height, cz * crown_radius), .normal = n, .color = color };
+        vi += 1;
+    }
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const b0 = side_base + s * 2; // bottom of this column
+        const b1 = b0 + 2; // bottom of next column
+        indices[ii + 0] = b0;
+        indices[ii + 1] = b1;
+        indices[ii + 2] = b0 + 1; // top of this column
+        indices[ii + 3] = b0 + 1;
+        indices[ii + 4] = b1;
+        indices[ii + 5] = b1 + 1; // top of next column
+        ii += 6;
+    }
+
+    // --- crown top cap: a triangle fan in the y=crown_height plane, facing +Y.
+    const cap_center: u32 = @intCast(vi);
+    verts[vi] = .{ .position = m.Vec3.init(0, crown_height, 0), .normal = up, .color = color };
+    vi += 1;
+    const cap_ring: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const theta = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, crown_height, @sin(theta) * crown_radius), .normal = up, .color = color };
+        vi += 1;
+    }
+    s = 0;
+    while (s < segments) : (s += 1) {
+        indices[ii + 0] = cap_center;
+        indices[ii + 1] = cap_ring + s;
+        indices[ii + 2] = cap_ring + s + 1;
+        ii += 3;
+    }
+
+    // --- brim: a flat annulus in the y=0 plane (inner = crown, outer = brim).
+    const brim_inner: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const theta = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, 0, @sin(theta) * crown_radius), .normal = up, .color = color };
+        vi += 1;
+    }
+    const brim_outer: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const theta = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * brim_radius, 0, @sin(theta) * brim_radius), .normal = up, .color = color };
+        vi += 1;
+    }
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const in0 = brim_inner + s;
+        const out0 = brim_outer + s;
+        indices[ii + 0] = in0;
+        indices[ii + 1] = out0;
+        indices[ii + 2] = in0 + 1;
+        indices[ii + 3] = in0 + 1;
+        indices[ii + 4] = out0;
+        indices[ii + 5] = out0 + 1;
+        ii += 6;
+    }
+
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}

@@ -41,6 +41,9 @@ pub const SkinnedMeshData = assets.SkinnedMeshData;
 pub const uvSphere = assets.uvSphere;
 pub const sphereVertexCount = assets.sphereVertexCount;
 pub const sphereIndexCount = assets.sphereIndexCount;
+pub const fedora = assets.fedora;
+pub const fedoraVertexCount = assets.fedoraVertexCount;
+pub const fedoraIndexCount = assets.fedoraIndexCount;
 
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;
