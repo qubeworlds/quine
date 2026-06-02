@@ -191,7 +191,9 @@ const App = struct {
     var hat_brim_radius: f32 = 0.23;
     var hat_crown_radius: f32 = 0.135;
     var hat_crown_height: f32 = 0.14;
-    var hat_seat_world: f32 = 0.17;
+    // Brim height above the head joint in *model* units, so applying the dancer's
+    // live transform (squash included) lowers the hat as the body compresses.
+    var hat_seat_model: f32 = 0.12;
 
     // Jolt physics: a sibling world to the ECS. Ground (static), head (kinematic,
     // tracks the animated head joint), ball (dynamic). The app syncs the ball
@@ -223,10 +225,16 @@ fn headColliderTarget() [3]f32 {
 }
 
 /// World-space origin for the fedora's brim plane: the head joint lifted by the
-/// measured seat height so the crown caps the skull and the brim flares out.
+/// measured seat height, then placed through the dancer's *live* transform. Using
+/// the live matrix (not the constant `dancer_scale`) means the Squash that
+/// compresses the body on a ball strike also lowers the hat, so it stays on the
+/// head instead of floating where the un-squashed head used to be.
 fn hatTarget() [3]f32 {
-    const h = headJointWorld();
-    return .{ h[0], h[1] + App.hat_seat_world, h[2] };
+    const tf = App.world.get(core.Transform, App.dancer).?.*;
+    const g = App.pose.global[App.head_node].m; // model-space head joint
+    const brim_local = m.Vec3.init(g[12], g[13] + App.hat_seat_model, g[14]);
+    const w = tf.matrix().transformPoint(brim_local);
+    return .{ w.x, w.y, w.z };
 }
 
 /// Size the fedora from the model's real head geometry, so it actually wraps the
@@ -244,7 +252,7 @@ fn measureHead() void {
     const half_height = (b.top - b.bottom) * 0.5;
     const brim_y = b.centroid.y - hat_seat_drop_frac * half_height; // model-space brim height
 
-    App.hat_seat_world = (brim_y - joint_y) * dancer_scale;
+    App.hat_seat_model = brim_y - joint_y; // model units; scaled by the live transform
     App.hat_crown_radius = head_radius_w * hat_crown_fit;
     App.hat_crown_height = (b.top - brim_y) * dancer_scale + hat_top_clearance_m;
     App.hat_brim_radius = App.hat_crown_radius * hat_brim_flare;
