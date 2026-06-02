@@ -1,8 +1,8 @@
-// keepie-uppie skill — the interpreted form of keepie-uppie.ts, running in
-// QuickJS against the quine_* host natives. The actor sees the ball, runs under
-// its predicted landing, and heads it back up on each touch. (This is the plain
-// JS the editor's keepie-uppie.ts compiles to; the @world/shared/runtime facade
-// would normally wrap these natives, but the logic is identical.)
+// keepie-uppie skill — the interpreted form of the editor's keepie-uppie.ts,
+// running in QuickJS against the prelude facade. The actor sees the ball, runs
+// under its predicted landing, and heads it back up on each touch. Apart from
+// the IIFE wrapper (no ES module loader), this is the same code as
+// keepie-uppie.ts using the same world.get(...)/entity.body API.
 (function () {
   var RUN_SPEED = 3.2,
     REACH = 2.0,
@@ -16,56 +16,47 @@
     return v < lo ? lo : v > hi ? hi : v;
   }
 
+  var dancer = world.get("dancer"),
+    ball = world.get("ball"),
+    head = world.get("head"),
+    ground = world.get("ground");
+
   // Before the step: predict where the ball falls to head height and run the
   // actor so its head ends up under that spot.
-  __quine_onPreStep(function (dt) {
-    var bpx = __quine_bodyPos("ball", 0),
-      bpy = __quine_bodyPos("ball", 1),
-      bpz = __quine_bodyPos("ball", 2);
-    var bvx = __quine_bodyVel("ball", 0),
-      bvy = __quine_bodyVel("ball", 1),
-      bvz = __quine_bodyVel("ball", 2);
-    var hpx = __quine_bodyPos("head", 0),
-      hpy = __quine_bodyPos("head", 1),
-      hpz = __quine_bodyPos("head", 2);
+  onPreStep(function (dt) {
+    var bp = ball.body.position,
+      bv = ball.body.velocity,
+      hp = head.body.position;
+    var g = -world.gravity.y;
+    var catchY = hp.y + head.body.radius + ball.body.radius;
+    var dy = bp.y - catchY;
+    var disc = bv.y * bv.y + 2 * g * dy;
+    var tLand = disc > 0 ? Math.min((bv.y + Math.sqrt(disc)) / g, PREDICT_HORIZON) : 0;
+    var landX = bp.x + bv.x * tLand;
+    var landZ = bp.z + bv.z * tLand;
 
-    var g = -__quine_gravityY();
-    var catchY = hpy + __quine_radius("head") + __quine_radius("ball");
-    var dy = bpy - catchY;
-    var disc = bvy * bvy + 2 * g * dy;
-    var tLand = disc > 0 ? Math.min((bvy + Math.sqrt(disc)) / g, PREDICT_HORIZON) : 0;
-    var landX = bpx + bvx * tLand;
-    var landZ = bpz + bvz * tLand;
-
-    var px = __quine_transformPos("dancer", 0),
-      py = __quine_transformPos("dancer", 1),
-      pz = __quine_transformPos("dancer", 2);
-    var tgtX = clamp(landX - (hpx - px), -REACH, REACH);
-    var tgtZ = clamp(landZ - (hpz - pz), -REACH, REACH);
+    var pos = dancer.transform.position;
+    var tgtX = clamp(landX - (hp.x - pos.x), -REACH, REACH);
+    var tgtZ = clamp(landZ - (hp.z - pos.z), -REACH, REACH);
     var stepMax = RUN_SPEED * dt;
-    __quine_setTransformPos(
-      "dancer",
-      px + clamp(tgtX - px, -stepMax, stepMax),
-      py,
-      pz + clamp(tgtZ - pz, -stepMax, stepMax),
-    );
+    dancer.transform.position = {
+      x: pos.x + clamp(tgtX - pos.x, -stepMax, stepMax),
+      y: pos.y,
+      z: pos.z + clamp(tgtZ - pos.z, -stepMax, stepMax),
+    };
   });
 
   // After the step: head a touched ball back up + damp its drift, and squash the
   // actor + ball from the real impact. A ground touch squashes the ball.
-  __quine_onPostStep(function (dt) {
-    var ih = __quine_contact("ball", "head");
-    var ig = __quine_contact("ball", "ground");
+  onPostStep(function () {
+    var ih = world.contactImpulse(ball, head);
+    var ig = world.contactImpulse(ball, ground);
     if (ih > 0) {
-      __quine_setBodyVel(
-        "ball",
-        __quine_bodyVel("ball", 0) * JUGGLE_H_DAMP,
-        JUGGLE_LAUNCH,
-        __quine_bodyVel("ball", 2) * JUGGLE_H_DAMP,
-      );
-      __quine_bumpSquash("dancer", Math.min(ih * SQUASH_PER_IMPACT, SQUASH_MAX));
+      var v = ball.body.velocity;
+      ball.body.velocity = { x: v.x * JUGGLE_H_DAMP, y: JUGGLE_LAUNCH, z: v.z * JUGGLE_H_DAMP };
+      dancer.squash.value = Math.min(dancer.squash.value + ih * SQUASH_PER_IMPACT, SQUASH_MAX);
     }
     var impact = Math.max(ih, ig);
-    if (impact > 0) __quine_bumpSquash("ball", Math.min(impact * SQUASH_PER_IMPACT, SQUASH_MAX));
+    if (impact > 0) ball.squash.value = Math.min(ball.squash.value + impact * SQUASH_PER_IMPACT, SQUASH_MAX);
   });
 })();

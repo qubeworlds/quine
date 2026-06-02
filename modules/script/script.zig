@@ -45,15 +45,21 @@ pub const Js = struct {
         c.JS_FreeRuntime(self.rt);
     }
 
-    /// Load + run a skill (the script registers its pre/post handlers), then wire
-    /// the SceneRuntime's hooks to drive them each tick.
+    /// Load + run a skill: first the JS prelude (the Roblox-style `world`/Entity
+    /// facade over the `quine_*` natives), then the skill itself (which registers
+    /// its pre/post handlers), then wire the SceneRuntime's hooks to drive them.
     pub fn loadSkill(self: *Js, src: []const u8) Error!void {
-        const v = c.JS_Eval(self.ctx, src.ptr, src.len, "<skill>", c.JS_EVAL_TYPE_GLOBAL);
-        defer c.JS_FreeValue(self.ctx, v);
-        if (c.JS_IsException(v)) return error.SkillError;
+        try self.evalChecked(@embedFile("prelude.js"));
+        try self.evalChecked(src);
         self.scene.skill_ctx = self;
         self.scene.pre_step = preHook;
         self.scene.post_step = postHook;
+    }
+
+    fn evalChecked(self: *Js, src: []const u8) Error!void {
+        const v = c.JS_Eval(self.ctx, src.ptr, src.len, "<skill>", c.JS_EVAL_TYPE_GLOBAL);
+        defer c.JS_FreeValue(self.ctx, v);
+        if (c.JS_IsException(v)) return error.SkillError;
     }
 
     fn registerNatives(self: *Js) void {
@@ -67,6 +73,7 @@ pub const Js = struct {
         self.def("__quine_setTransformPos", jsSetTransformPos, 4);
         self.def("__quine_radius", jsRadius, 1);
         self.def("__quine_contact", jsContact, 2);
+        self.def("__quine_squashValue", jsSquashValue, 1);
         self.def("__quine_bumpSquash", jsBumpSquash, 2);
     }
 
@@ -213,6 +220,14 @@ fn jsContact(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.J
     if (bb == null) return undef(ctx);
     defer c.JS_FreeCString(ctx, bb);
     return c.JS_NewFloat64(ctx, js.scene.contactImpulse(std.mem.sliceTo(a, 0), std.mem.sliceTo(bb, 0)));
+}
+fn jsSquashValue(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 1) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    if (js.scene.world.get(@import("core").Squash, b.entity)) |sq| return c.JS_NewFloat64(ctx, sq.value);
+    return c.JS_NewFloat64(ctx, 0);
 }
 fn jsBumpSquash(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
     _ = this_val;
