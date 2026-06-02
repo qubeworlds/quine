@@ -156,6 +156,8 @@ pub fn build(b: *Build) !void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "quickjs", .module = qjs_bindings.createModule() },
+            .{ .name = "scene_runtime", .module = mod_scene_runtime },
+            .{ .name = "core", .module = mod_core },
         },
     });
     mod_script.linkLibrary(lib_quickjs);
