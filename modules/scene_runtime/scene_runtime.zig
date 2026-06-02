@@ -768,6 +768,26 @@ test "the keepie-uppie skill heads the ball back up repeatedly" {
     try std.testing.expect(bounces >= 3);
 }
 
+test "SceneRuntime tears down and rebuilds in place (hot-reload path)" {
+    const glb = @embedFile("character.glb");
+    const json = @embedFile("keepie-uppie.scene.json");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sc = try core.parseScene(arena.allocator(), json);
+    const assets = [_]Asset{.{ .name = "CesiumMan.glb", .bytes = glb }};
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &assets);
+    try std.testing.expect(rt.find("ball").?.body != null);
+    rt.deinit();
+
+    // Rebuild the same instance (what reloadScene does on a scene push).
+    try rt.init(std.heap.c_allocator, sc, &assets);
+    defer rt.deinit();
+    try std.testing.expect(rt.find("ball").?.body != null);
+    for (0..30) |_| try rt.update(1.0 / 60.0); // and it still runs
+}
+
 test "SceneRuntime reports a missing asset" {
     const sc = core.scene.Scene{
         .schema_version = 1,
