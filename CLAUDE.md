@@ -41,7 +41,29 @@ zig build run        # build + run the windowed app (native backend)
 zig build            # build only
 zig build test       # run headless core unit tests (no GPU)
 zig build -Dtarget=x86_64-windows   # cross-compile check for Windows
+zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2   # web (wasm) build
 ```
+
+## Environment setup & web build cache
+
+`init.sh` is the single setup entry point. On **x86_64-linux** it pulls prebuilt
+build tools from the public R2 bucket at `cdn.qubeworlds.com/build-tools/`:
+
+- a prebuilt **Zig 0.16.0** (falls back to ziglang.org), and
+- a **web buildcache** — the Emscripten SDK plus the compiled Jolt physics
+  object — unpacked into `./zig-pkg` and `./.zig-cache`. This skips the ~336 MiB
+  emsdk download and the emscripten sysroot-lib regeneration, so the first
+  `zig build -Dtarget=wasm32-emscripten ...` is warm.
+
+Env toggles: `QUINE_SKIP_CDN=1` (use ziglang.org for Zig), `QUINE_SKIP_WEB_CACHE=1`
+(don't fetch the web buildcache), `QUINE_CDN_BASE=<url>` (override the CDN).
+
+**Claude Code on the web** runs `init.sh` automatically via the `SessionStart`
+hook in `.claude/` (`.claude/hooks/session-start.sh` + `.claude/settings.json`),
+so a fresh session is build-ready in seconds. To refresh the cached tools after
+a toolchain/dependency change, rebuild the artifacts and re-upload them under the
+`build-tools/` prefix (the buildcache is split into <300 MiB parts for R2's
+single-PUT limit; see the part naming + `SHA256SUMS` in the bucket).
 
 ## Conventions
 
