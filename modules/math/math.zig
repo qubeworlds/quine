@@ -143,6 +143,53 @@ pub const Mat4 = extern struct {
         };
     }
 
+    /// Inverse of an affine transform (last row assumed `[0,0,0,1]`): inverts the
+    /// upper-left 3x3 and the translation. Used to express a child's placement in
+    /// a parent's local frame. Returns identity if the 3x3 is singular.
+    pub fn affineInverse(self: Mat4) Mat4 {
+        const a = self.m;
+        // Upper-left 3x3, column-major: a[col*4 + row].
+        const a00 = a[0];
+        const a10 = a[1];
+        const a20 = a[2];
+        const a01 = a[4];
+        const a11 = a[5];
+        const a21 = a[6];
+        const a02 = a[8];
+        const a12 = a[9];
+        const a22 = a[10];
+
+        // Cofactors for the determinant / adjugate.
+        const c00 = a11 * a22 - a12 * a21;
+        const c01 = a12 * a20 - a10 * a22;
+        const c02 = a10 * a21 - a11 * a20;
+        const det = a00 * c00 + a01 * c01 + a02 * c02;
+        if (@abs(det) < 1e-12) return Mat4.identity;
+        const id = 1.0 / det;
+
+        // Inverse 3x3 (b[row][col]) = adjugate / det.
+        const b00 = c00 * id;
+        const b01 = (a02 * a21 - a01 * a22) * id;
+        const b02 = (a01 * a12 - a02 * a11) * id;
+        const b10 = c01 * id;
+        const b11 = (a00 * a22 - a02 * a20) * id;
+        const b12 = (a02 * a10 - a00 * a12) * id;
+        const b20 = c02 * id;
+        const b21 = (a01 * a20 - a00 * a21) * id;
+        const b22 = (a00 * a11 - a01 * a10) * id;
+
+        // Inverted translation: -B * t.
+        const tx = a[12];
+        const ty = a[13];
+        const tz = a[14];
+        return .{ .m = .{
+            b00,                              b10,                              b20,                              0,
+            b01,                              b11,                              b21,                              0,
+            b02,                              b12,                              b22,                              0,
+            -(b00 * tx + b01 * ty + b02 * tz), -(b10 * tx + b11 * ty + b12 * tz), -(b20 * tx + b21 * ty + b22 * tz), 1,
+        } };
+    }
+
     pub fn scaling(s: Vec3) Mat4 {
         var r = Mat4.identity;
         r.m[0] = s.x;
@@ -390,4 +437,21 @@ test "fromTRS places translation and scales" {
     try testing.expectApproxEqAbs(@as(f32, 1), t.m[12], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 2), t.m[13], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 2), t.m[0], 1e-6); // x scale on basis
+}
+
+test "affineInverse undoes a rotate-scale-translate" {
+    const q = Quat.fromAxisAngle(Vec3.init(0.3, 1, 0.2).normalize(), 0.7);
+    const mat = Mat4.fromTRS(Vec3.init(1, -2, 3), q, Vec3.init(1.5, 0.5, 2));
+    const inv = mat.affineInverse();
+
+    // mat * inv == identity.
+    const prod = mat.mul(inv);
+    for (Mat4.identity.m, prod.m) |e, a| try testing.expectApproxEqAbs(e, a, 1e-4);
+
+    // And it actually round-trips a point.
+    const p = Vec3.init(0.4, 5, -1.2);
+    const back = inv.transformPoint(mat.transformPoint(p));
+    try testing.expectApproxEqAbs(p.x, back.x, 1e-4);
+    try testing.expectApproxEqAbs(p.y, back.y, 1e-4);
+    try testing.expectApproxEqAbs(p.z, back.z, 1e-4);
 }

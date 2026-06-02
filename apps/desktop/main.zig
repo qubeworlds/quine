@@ -181,19 +181,21 @@ const App = struct {
     var ball_verts: [core.sphereVertexCount(sphere_rings, sphere_segments)]core.Vertex = undefined;
     var ball_indices: [core.sphereIndexCount(sphere_rings, sphere_segments)]u32 = undefined;
 
-    // The fedora: a static-mesh ECS entity (geometry in these app buffers) whose
-    // Transform is re-seated on the animated head joint every tick. Dimensions
-    // (world metres) and the brim's world-space lift above the head joint are
-    // computed from the model by `measureHead`.
-    var hat: core.Entity = undefined;
+    // The fedora: a rigid hard hat parented to the head joint. Geometry lives in
+    // these app buffers (dimensions in world metres, sized by `measureHead`) and
+    // is drawn via the render queue. `hat_attach` is the constant placement of the
+    // hat in the head joint's local frame (built at load), so each frame the live
+    // head joint carries the hat's position *and* orientation — it turns and nods
+    // with the head — while the hat's own scale stays 1 (it doesn't squash).
+    var hat_mesh: core.MeshHandle = undefined;
     var hat_verts: [core.fedoraVertexCount(hat_segments)]core.Vertex = undefined;
     var hat_indices: [core.fedoraIndexCount(hat_segments)]u32 = undefined;
     var hat_brim_radius: f32 = 0.23;
     var hat_crown_radius: f32 = 0.135;
     var hat_crown_height: f32 = 0.14;
-    // Brim height above the head joint in *model* units, so applying the dancer's
-    // live transform (squash included) lowers the hat as the body compresses.
+    // Brim height above the head joint in *model* units (set by `measureHead`).
     var hat_seat_model: f32 = 0.12;
+    var hat_attach: m.Mat4 = m.Mat4.identity;
 
     // Jolt physics: a sibling world to the ECS. Ground (static), head (kinematic,
     // tracks the animated head joint), ball (dynamic). The app syncs the ball
@@ -224,17 +226,39 @@ fn headColliderTarget() [3]f32 {
     return .{ h[0], h[1] + crown_above_joint_m * dancer_scale - head_radius, h[2] };
 }
 
-/// World-space origin for the fedora's brim plane: the head joint lifted by the
-/// measured seat height, then placed through the dancer's *live* transform. Using
-/// the live matrix (not the constant `dancer_scale`) means the Squash that
-/// compresses the body on a ball strike also lowers the hat, so it stays on the
-/// head instead of floating where the un-squashed head used to be.
-fn hatTarget() [3]f32 {
+/// The rotation-only basis of `mat`: its upper-left 3x3 with each column scaled
+/// to unit length (dropping scale/shear), packed into a Mat4 with no translation.
+/// Lets the rigid hat inherit the head's orientation without inheriting the
+/// body's squash scale.
+fn rotationBasis(mat: m.Mat4) m.Mat4 {
+    var r = m.Mat4.identity;
+    inline for (0..3) |c| {
+        const x = mat.m[c * 4 + 0];
+        const y = mat.m[c * 4 + 1];
+        const z = mat.m[c * 4 + 2];
+        const len = @sqrt(x * x + y * y + z * z);
+        const inv: f32 = if (len > 1e-6) 1.0 / len else 0;
+        r.m[c * 4 + 0] = x * inv;
+        r.m[c * 4 + 1] = y * inv;
+        r.m[c * 4 + 2] = z * inv;
+    }
+    return r;
+}
+
+/// Model matrix for the fedora this frame, as a true child of the head joint.
+/// `J_cur · hat_attach` reproduces the seated bind placement carried by the live
+/// head joint (so it turns/nods with the head); the dancer's live transform then
+/// supplies the world position — including the Squash that lowers the head — while
+/// the orientation is taken rotation-only so the rigid hat never scales/squashes.
+fn hatModel() m.Mat4 {
+    const local = App.pose.global[App.head_node].mul(App.hat_attach);
     const tf = App.world.get(core.Transform, App.dancer).?.*;
-    const g = App.pose.global[App.head_node].m; // model-space head joint
-    const brim_local = m.Vec3.init(g[12], g[13] + App.hat_seat_model, g[14]);
-    const w = tf.matrix().transformPoint(brim_local);
-    return .{ w.x, w.y, w.z };
+    const world_pos = tf.matrix().mul(local); // squash-aware world placement
+    var model = rotationBasis(local); // head orientation, no scale
+    model.m[12] = world_pos.m[12];
+    model.m[13] = world_pos.m[13];
+    model.m[14] = world_pos.m[14];
+    return model;
 }
 
 /// Size the fedora from the model's real head geometry, so it actually wraps the
@@ -329,15 +353,15 @@ fn loadDancer() void {
     App.world.set(core.Squash, ball, .{ .recovery = 11.0 });
     App.ball = ball;
 
-    // The red fedora: built once (sized by measureHead), then re-seated on the
-    // head joint each tick.
-    const hat_mesh = core.fedora(App.hat_brim_radius, App.hat_crown_radius, App.hat_crown_height, hat_segments, hat_color, &App.hat_verts, &App.hat_indices);
-    const hat_handle = App.world.meshes.add(hat_mesh);
-    const hat = App.world.spawn();
-    App.world.set(core.MeshRef, hat, .{ .mesh = hat_handle });
-    const hat0 = hatTarget();
-    App.world.set(core.Transform, hat, .{ .position = m.Vec3.init(hat0[0], hat0[1], hat0[2]) });
-    App.hat = hat;
+    // The red fedora: built once (sized by measureHead) and drawn each frame as a
+    // rigid child of the head joint (see hatModel). `hat_attach` is the hat's
+    // placement in the head joint's local frame, derived so that at the bind pose
+    // it sits upright at the measured seat height; the live joint then carries it.
+    const hat = core.fedora(App.hat_brim_radius, App.hat_crown_radius, App.hat_crown_height, hat_segments, hat_color, &App.hat_verts, &App.hat_indices);
+    App.hat_mesh = App.world.meshes.add(hat);
+    const jb = App.pose.global[App.head_node]; // bind head joint (pose still bind here)
+    const seat = m.Mat4.translation(m.Vec3.init(jb.m[12], jb.m[13] + App.hat_seat_model, jb.m[14]));
+    App.hat_attach = jb.affineInverse().mul(seat);
 
     // Jolt world: floor + kinematic head + dynamic ball dropped above the crown
     // (nudged off-centre so, with honest physics, it strikes and rolls off).
@@ -434,10 +458,6 @@ export fn frame() void {
             App.physics.moveTo(App.head_body, headColliderTarget(), fdt);
             App.physics.step(fdt) catch {};
 
-            // Re-seat the fedora on the head joint so it rides along with the walk.
-            const ht = hatTarget();
-            App.world.get(core.Transform, App.hat).?.position = m.Vec3.init(ht[0], ht[1], ht[2]);
-
             // On a head touch: bump the ball up for more hang time and bleed its
             // sideways drift so the juggle stays centered; squash both from the
             // real impact. Ground contacts still squash the ball.
@@ -522,6 +542,15 @@ export fn frame() void {
     // sees the queue (+ the mesh registry it uploads from). The projection's
     // clip space is the render layer's concern, so it takes the aspect ratio.
     core.extract(&App.prev, &App.world, alpha, &App.queue);
+
+    // The fedora rides the head joint as a rigid child. It's drawn from the live
+    // pose (matching the skinned dancer, which is also posed this frame rather
+    // than interpolated), so it's appended to the queue after extraction.
+    if (App.model_loaded) {
+        App.queue.items[App.queue.len] = .{ .mesh = App.hat_mesh, .model = hatModel() };
+        App.queue.len += 1;
+    }
+
     App.last_vp = render.viewProj(&App.queue, aspect);
 
     // Place the skinned dancer at its (squash-scaled) Transform. The palette was
