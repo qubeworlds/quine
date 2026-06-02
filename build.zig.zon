@@ -24,5 +24,12 @@
             .url = "git+https://github.com/zig-gamedev/zphysics.git#9797d7bd08e4341410104876eb1896a71714277d",
             .hash = "zphysics-0.2.0-dev-nZDEANvfQgD04nOPqL9KMokfgjzs_wPtHpoLscZScaOa",
         },
+        // quickjs-ng C source. The allyourcodebase Zig package wraps this same
+        // pinned source, but its build.zig targets Zig 0.14's API; we compile it
+        // with our own (0.16-correct) rules in build.zig instead.
+        .@"quickjs-ng" = .{
+            .url = "git+https://github.com/quickjs-ng/quickjs/?ref=v0.10.1#5299e09100b97a5dd0ea0e73fa5caa4aa0b2d97c",
+            .hash = "N-V-__8AAJ6ZOwAqRvY64qRhZ9KrT8YuUvtVQxBECJxJwPyd",
+        },
     },
 }

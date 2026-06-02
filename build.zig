@@ -120,6 +120,46 @@ pub fn build(b: *Build) !void {
     mod_scene_runtime.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
     mod_scene_runtime.addAnonymousImport("keepie-uppie.scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
 
+    // --- script: QuickJS interpreter binding (the host side of behaviour
+    // scripts). We compile the pinned quickjs-ng C source into a static lib and
+    // translate-c its header for the Zig bindings. The C-ABI the script calls
+    // and skill loading build on this.
+    const dep_quickjs = b.dependency("quickjs-ng", .{});
+    const qjs_cflags = &.{
+        "-Wno-implicit-fallthrough", "-Wno-sign-compare",        "-Wno-missing-field-initializers",
+        "-Wno-unused-parameter",     "-Wno-unused-but-set-variable", "-Wno-array-bounds",
+        "-Wno-format-truncation",    "-funsigned-char",           "-fwrapv",
+    };
+    const lib_quickjs = b.addLibrary(.{
+        .name = "quickjs",
+        .linkage = .static,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+    });
+    lib_quickjs.root_module.addCSourceFiles(.{
+        .root = dep_quickjs.path("."),
+        .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "cutils.c", "xsum.c" },
+        .flags = qjs_cflags,
+    });
+    lib_quickjs.root_module.addCMacro("CONFIG_BIGNUM", "1");
+    lib_quickjs.root_module.addCMacro("_GNU_SOURCE", "1");
+
+    const qjs_bindings = b.addTranslateC(.{
+        .root_source_file = dep_quickjs.path("quickjs.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const mod_script = b.createModule(.{
+        .root_source_file = b.path("modules/script/script.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "quickjs", .module = qjs_bindings.createModule() },
+        },
+    });
+    mod_script.linkLibrary(lib_quickjs);
+
     // --- shader: cross-compiled from shaders/triangle.glsl by sokol-shdc -----
     // The generated Zig lives only in the build cache; regenerate by rebuilding.
     const dep_shdc = dep_sokol.builder.dependency("shdc", .{});
@@ -287,4 +327,10 @@ pub fn build(b: *Build) !void {
     // Scene-runtime tests load scene data into a live World + physics (links Jolt).
     const scene_runtime_tests = b.addTest(.{ .root_module = mod_scene_runtime });
     test_step.dependOn(&b.addRunArtifact(scene_runtime_tests).step);
+
+    // Script tests link QuickJS and evaluate inside the engine.
+    const script_tests = b.addTest(.{ .root_module = mod_script });
+    const run_script_tests = b.addRunArtifact(script_tests);
+    b.step("test-script", "Run the QuickJS binding tests").dependOn(&run_script_tests.step);
+    test_step.dependOn(&run_script_tests.step);
 }
