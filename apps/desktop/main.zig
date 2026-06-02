@@ -59,8 +59,12 @@ const max_ticks_per_frame: u32 = 8;
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
 const character_glb = @embedFile("character.glb");
-const scene_json = @embedFile("scene.json");
-const skill_js = @embedFile("skill.js");
+// On web the scene + skill are *bundled* assets the host hands over at runtime
+// (and edits over the WebSocket) — not compiled in. Native embeds them so the
+// desktop app runs standalone.
+const is_web = builtin.os.tag == .emscripten;
+const scene_json = if (is_web) "" else @embedFile("scene.json");
+const skill_js = if (is_web) "" else @embedFile("skill.js");
 
 const App = struct {
     /// The loaded, running scene: ECS world + Jolt physics + meshes + models,
@@ -115,14 +119,40 @@ export fn init() void {
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
 fn loadScene() void {
+    if (is_web) {
+        // The editor (host) fetches the bundled scene + sets it on window before
+        // booting us. If it isn't there yet, boot empty — checkHotReload picks up
+        // the first push.
+        const json = std.mem.span(emscripten_run_script_string("(window.QUINE_SCENE_JSON||'')"));
+        if (json.len > 0) loadSceneFrom(json);
+        return;
+    }
+    loadSceneFrom(scene_json);
+}
+
+/// Tear down the running scene and rebuild it from new scene JSON (web
+/// hot-reload). The renderer persists; we re-upload the actor's skinned mesh.
+fn reloadScene(json: []const u8) void {
+    App.js.deinit();
+    App.stage.deinit();
+    loadSceneFrom(json);
+}
+
+fn loadSceneFrom(json: []const u8) void {
     const alloc = std.heap.c_allocator;
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
-    const scene_data = core.parseScene(arena.allocator(), scene_json) catch return;
+    const scene_data = core.parseScene(arena.allocator(), json) catch return;
 
     App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }}) catch return;
     App.js.init(&App.stage) catch return;
-    App.js.loadSkill(skill_js) catch return;
+    // Skill: web reads the host-provided source (bundled asset); native embedded.
+    if (is_web) {
+        const skill = std.mem.span(emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')"));
+        if (skill.len > 0) App.js.loadSkill(skill) catch {};
+    } else {
+        App.js.loadSkill(skill_js) catch return;
+    }
 
     App.dancer = App.stage.find("dancer") orelse return;
     if (App.dancer.model) |*model| App.renderer.uploadSkinned(model.mesh);
@@ -151,7 +181,25 @@ fn findCamera(world: *core.World) ?core.Entity {
     return it.next();
 }
 
+/// Web hot-reload: the editor pushes a new skill (or scene) over the room
+/// WebSocket and stashes it on `window`; we pick it up here and reload live, so
+/// iterating on behaviour/scene is a data push — no rebuild. (Web only.)
+fn checkHotReload() void {
+    if (builtin.os.tag != .emscripten) return;
+    if (emscripten_run_script_int("(window.QUINE_RELOAD_SKILL?1:0)") != 0) {
+        const code = emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')");
+        App.js.loadSkill(std.mem.span(code)) catch {};
+        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SKILL=0,0)");
+    }
+    if (emscripten_run_script_int("(window.QUINE_RELOAD_SCENE?1:0)") != 0) {
+        const json = emscripten_run_script_string("(window.QUINE_SCENE_JSON||'')");
+        reloadScene(std.mem.span(json));
+        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SCENE=0,0)");
+    }
+}
+
 export fn frame() void {
+    checkHotReload();
     const frame_dt = sapp.frameDuration();
     if (frame_dt > 0) {
         const inst = 1.0 / frame_dt;
@@ -334,6 +382,7 @@ export fn event(ev: [*c]const sapp.Event) void {
 }
 
 extern fn emscripten_run_script_int(script_src: [*:0]const u8) c_int;
+extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 
 pub fn main() void {
     sapp.run(.{
