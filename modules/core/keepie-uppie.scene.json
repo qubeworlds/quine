@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "name": "keepie-uppie",
+  "script": {
+    "source": "./keepie-uppie.ts",
+    "params": {
+      "runSpeed": 3.2,
+      "reach": 2,
+      "juggleLaunch": 4.2,
+      "juggleHDamp": 0.4,
+      "predictHorizon": 1.5,
+      "squashPerImpact": 0.04,
+      "squashMax": 0.3
+    }
+  },
+  "gravity": [
+    0,
+    -9.81,
+    0
+  ],
+  "entities": [
+    {
+      "name": "dancer",
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "geometry": {
+        "kind": "gltf",
+        "source": "CesiumMan.glb",
+        "heightMeters": 1.75
+      },
+      "animation": {
+        "clip": 0,
+        "play": true,
+        "loop": true
+      },
+      "squash": {
+        "value": 0,
+        "recovery": 7
+      }
+    },
+    {
+      "name": "fedora",
+      "geometry": {
+        "kind": "fedora",
+        "fitToJoint": "head",
+        "segments": 24,
+        "crownFit": 1.05,
+        "brimFlare": 1.35,
+        "seatDropFraction": 0.15,
+        "topClearance": 0.05
+      },
+      "material": {
+        "color": [
+          0.62,
+          0.05,
+          0.07,
+          1
+        ]
+      },
+      "parent": {
+        "entity": "dancer",
+        "joint": "head",
+        "offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "ball",
+      "transform": {
+        "position": [
+          0.02,
+          1.9,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "geometry": {
+        "kind": "sphere",
+        "radius": 0.1192,
+        "rings": 16,
+        "segments": 24
+      },
+      "material": {
+        "color": [
+          1,
+          0.4,
+          0.05,
+          1
+        ]
+      },
+      "body": {
+        "motion": "dynamic",
+        "collider": {
+          "kind": "sphere",
+          "radius": 0.1192
+        },
+        "mass": 0.624,
+        "restitution": 0.6,
+        "friction": 0.5,
+        "tag": "ball"
+      },
+      "squash": {
+        "value": 0,
+        "recovery": 11
+      }
+    },
+    {
+      "name": "head",
+      "body": {
+        "motion": "kinematic",
+        "collider": {
+          "kind": "sphere",
+          "radius": 0.13
+        },
+        "restitution": 0,
+        "friction": 0.5,
+        "tag": "head"
+      },
+      "parent": {
+        "entity": "dancer",
+        "joint": "head",
+        "offset": [
+          0,
+          0.187,
+          0
+        ]
+      }
+    },
+    {
+      "name": "ground",
+      "transform": {
+        "position": [
+          0,
+          -1,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "body": {
+        "motion": "static",
+        "collider": {
+          "kind": "box",
+          "halfExtents": [
+            50,
+            1,
+            50
+          ]
+        },
+        "restitution": 0,
+        "friction": 0.4,
+        "tag": "ground"
+      }
+    },
+    {
+      "name": "camera",
+      "camera": {
+        "fovY": 1.047,
+        "near": 0.1,
+        "far": 100,
+        "controller": {
+          "kind": "orbit",
+          "target": [
+            0,
+            1.1,
+            0
+          ],
+          "distance": 5,
+          "yaw": 0,
+          "pitch": 0.2
+        }
+      }
+    }
+  ]
+}

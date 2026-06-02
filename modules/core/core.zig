@@ -24,6 +24,7 @@ const systems = @import("systems.zig");
 const render_queue = @import("render_queue.zig");
 const gltf = @import("gltf.zig");
 const anim = @import("anim.zig");
+const scene = @import("scene.zig");
 
 // --- public surface (re-exports so callers import only `core`) ---------------
 
@@ -72,6 +73,13 @@ pub const Model = anim.Model;
 /// a hat to the head). See `anim.measureJointBounds`.
 pub const JointBounds = anim.JointBounds;
 pub const measureJointBounds = anim.measureJointBounds;
+
+/// Scene data model + JSON loader — the normalized scene the engine consumes
+/// (the world↔quine bridge). `SceneData` is the parsed scene; `parseScene`
+/// builds it from normalized JSON bytes. Construction of a `World` from it
+/// lands next.
+pub const SceneData = scene.Scene;
+pub const parseScene = scene.parse;
 
 /// Maximum number of live entities. Fixed so the core needs no allocator and
 /// `World` stays a plain value type.
@@ -173,9 +181,10 @@ pub const World = struct {
 // =============================================================================
 
 test {
-    // Pull in the render-queue + animation tests under `zig build test`.
+    // Pull in the render-queue + animation + scene-loader tests under `zig build test`.
     _ = render_queue;
     _ = anim;
+    _ = scene;
 }
 
 test "loads CesiumMan skeleton + clip and the sampler moves joints" {
