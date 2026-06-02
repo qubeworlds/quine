@@ -231,21 +231,28 @@ pub fn build(b: *Build) !void {
             .{ .name = "physics", .module = mod_physics },
             .{ .name = "render", .module = mod_render },
             .{ .name = "math", .module = mod_math },
+            .{ .name = "scene_runtime", .module = mod_scene_runtime },
+            .{ .name = "script", .module = mod_script },
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
-    // Embed the character mesh so it ships inside the binary (no filesystem on
-    // web). Accessed via `@embedFile("character.glb")`.
+    // Embed the character mesh, the normalized scene, and the behaviour skill so
+    // they ship inside the binary (no filesystem on web).
     mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_app.addAnonymousImport("scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
+    mod_app.addAnonymousImport("skill.js", .{ .root_source_file = b.path("modules/script/keepie-uppie.skill.js") });
     // Link the QuickJS interpreter into the app (native + web) so behaviour
     // scripts run in-engine on both hosts.
     mod_app.linkLibrary(lib_quickjs);
 
     if (is_web) {
-        // QuickJS is plain C; for wasm it compiles against Emscripten's libc
+        // QuickJS is plain C; for wasm both its compile AND the translate-c of
+        // quickjs.h (which includes <stdio.h> etc.) need Emscripten's libc
         // headers — the same sysroot Jolt uses below.
         const dep_emsdk_qjs = dep_sokol.builder.dependency("emsdk", .{});
-        lib_quickjs.root_module.addSystemIncludePath(dep_emsdk_qjs.path("upstream/emscripten/cache/sysroot/include"));
+        const qjs_sysroot = dep_emsdk_qjs.path("upstream/emscripten/cache/sysroot/include");
+        lib_quickjs.root_module.addSystemIncludePath(qjs_sysroot);
+        qjs_bindings.addSystemIncludePath(qjs_sysroot);
     }
 
     if (is_web) {
