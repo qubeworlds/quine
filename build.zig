@@ -237,6 +237,16 @@ pub fn build(b: *Build) !void {
     // Embed the character mesh so it ships inside the binary (no filesystem on
     // web). Accessed via `@embedFile("character.glb")`.
     mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    // Link the QuickJS interpreter into the app (native + web) so behaviour
+    // scripts run in-engine on both hosts.
+    mod_app.linkLibrary(lib_quickjs);
+
+    if (is_web) {
+        // QuickJS is plain C; for wasm it compiles against Emscripten's libc
+        // headers — the same sysroot Jolt uses below.
+        const dep_emsdk_qjs = dep_sokol.builder.dependency("emsdk", .{});
+        lib_quickjs.root_module.addSystemIncludePath(dep_emsdk_qjs.path("upstream/emscripten/cache/sysroot/include"));
+    }
 
     if (is_web) {
         // Web build: the Zig code compiles to a static library which the

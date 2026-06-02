@@ -146,7 +146,7 @@ const Listener = struct {
         manifold: *const jolt.ContactManifold,
         _: *jolt.ContactSettings,
     ) callconv(.c) void {
-        const self: *Listener = @fieldParentPtr("interface", iface);
+        const self: *Listener = @alignCast(@fieldParentPtr("interface", iface));
         self.record(b1, b2, .{ manifold.normal[0], manifold.normal[1], manifold.normal[2] });
     }
     pub fn onContactPersisted(
@@ -156,7 +156,7 @@ const Listener = struct {
         manifold: *const jolt.ContactManifold,
         _: *jolt.ContactSettings,
     ) callconv(.c) void {
-        const self: *Listener = @fieldParentPtr("interface", iface);
+        const self: *Listener = @alignCast(@fieldParentPtr("interface", iface));
         self.record(b1, b2, .{ manifold.normal[0], manifold.normal[1], manifold.normal[2] });
     }
     pub fn onContactRemoved(_: *jolt.ContactListener, _: *const jolt.SubShapeIdPair) callconv(.c) void {}
