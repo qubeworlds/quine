@@ -161,6 +161,10 @@ pub fn build(b: *Build) !void {
         },
     });
     mod_script.linkLibrary(lib_quickjs);
+    // The character mesh + the real bridge scene, so the script tests can run the
+    // actual keepie-uppie scene + skill end-to-end.
+    mod_script.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_script.addAnonymousImport("keepie-uppie.scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
 
     // --- shader: cross-compiled from shaders/triangle.glsl by sokol-shdc -----
     // The generated Zig lives only in the build cache; regenerate by rebuilding.

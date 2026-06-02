@@ -47,7 +47,7 @@ pub const Js = struct {
 
     /// Load + run a skill (the script registers its pre/post handlers), then wire
     /// the SceneRuntime's hooks to drive them each tick.
-    pub fn loadSkill(self: *Js, src: [:0]const u8) Error!void {
+    pub fn loadSkill(self: *Js, src: []const u8) Error!void {
         const v = c.JS_Eval(self.ctx, src.ptr, src.len, "<skill>", c.JS_EVAL_TYPE_GLOBAL);
         defer c.JS_FreeValue(self.ctx, v);
         if (c.JS_IsException(v)) return error.SkillError;
@@ -83,7 +83,7 @@ pub const Js = struct {
     }
 
     /// Evaluate a snippet and return its number result (smoke checks / tests).
-    pub fn evalFloat(self: *Js, src: [:0]const u8) !f64 {
+    pub fn evalFloat(self: *Js, src: []const u8) !f64 {
         const v = c.JS_Eval(self.ctx, src.ptr, src.len, "<eval>", c.JS_EVAL_TYPE_GLOBAL);
         defer c.JS_FreeValue(self.ctx, v);
         var out: f64 = 0;
@@ -273,4 +273,35 @@ test "an interpreted skill drives the scene through pre/post-step hooks" {
     for (0..30) |_| try rt.update(1.0 / 60.0);
     const y1 = rt.physics.bodyPosition(rt.find("ball").?.body.?)[1];
     try std.testing.expect(y1 > y0); // the script lifted it
+}
+
+test "the interpreted keepie-uppie.js skill heads the ball back up repeatedly" {
+    const glb = @embedFile("character.glb");
+    const json = @embedFile("keepie-uppie.scene.json");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // Load the real skill (the JS the editor's keepie-uppie.ts compiles to).
+    try js.loadSkill(@embedFile("keepie-uppie.skill.js"));
+
+    var bounces: usize = 0;
+    var touching = false;
+    for (0..900) |_| {
+        try rt.update(1.0 / 60.0);
+        const c2 = rt.contactImpulse("ball", "head") > 0;
+        if (c2 and !touching) bounces += 1;
+        touching = c2;
+    }
+
+    // The interpreted skill drives the actor to head the ball back up many times
+    // — the same keepie-uppie the native stand-in produces, now from a JS script.
+    try std.testing.expect(bounces >= 3);
 }
