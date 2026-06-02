@@ -51,6 +51,9 @@ pub const Binding = struct {
     parent_idx: ?usize = null,
     parent_joint: ?u32 = null,
     parent_offset: [3]f32 = .{ 0, 0, 0 },
+    /// Inverse of the bind-pose head-joint orientation (for a model), so a
+    /// child of that joint can follow its rotation *relative to bind*.
+    head_bind_inv: m.Mat4 = m.Mat4.identity,
 };
 
 pub const SceneRuntime = struct {
@@ -107,6 +110,7 @@ pub const SceneRuntime = struct {
                 var pose = try core.Pose.init(a, bnd.model.?.skeleton.nodes.len);
                 pose.sample(&bnd.model.?.skeleton, null, 0); // bind pose
                 bnd.head_joint = topmostJoint(&bnd.model.?.skeleton, &pose);
+                bnd.head_bind_inv = rotationBasis(pose.global[bnd.head_joint]).affineInverse();
                 bnd.pose = pose;
                 if (e.animation) |an| {
                     if (an.play) bnd.clip = switch (an.clip) {
@@ -224,6 +228,9 @@ pub const SceneRuntime = struct {
         } else {
             self.world.set(core.Transform, ent, .{ .scale = s });
         }
+        // Pin the squash rest-scale to the scaled size, so the squash system
+        // relaxes back to 1.75 m rather than the unit scene scale.
+        if (self.world.get(core.Squash, ent)) |sq| sq.rest_scale = s;
     }
 
     /// Advance the scene by one fixed step: sample animations, drive joint-
@@ -254,6 +261,7 @@ pub const SceneRuntime = struct {
             const parent = &self.bindings[pi];
             const pt = self.world.get(core.Transform, parent.entity) orelse continue;
             var target = [3]f32{ pt.position.x, pt.position.y, pt.position.z };
+            var rot: ?m.Vec3 = null;
             if (b.parent_joint) |jn| if (parent.pose) |*pose| {
                 const jm = pose.global[jn].m; // joint's model-space matrix
                 target = .{
@@ -261,13 +269,20 @@ pub const SceneRuntime = struct {
                     pt.position.y + jm[13] * pt.scale.y,
                     pt.position.z + jm[14] * pt.scale.z,
                 };
+                // Follow the joint's rotation *relative to its bind pose*, so a
+                // rigid child (the fedora) turns/nods with the head like the
+                // app's old hatModel — without inheriting the bind orientation.
+                rot = eulerZYX(rotationBasis(pose.global[jn]).mul(parent.head_bind_inv));
             };
             target[0] += b.parent_offset[0];
             target[1] += b.parent_offset[1];
             target[2] += b.parent_offset[2];
 
             if (b.body) |body| self.physics.moveTo(body, target, dt); // kinematic tracking
-            if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(target[0], target[1], target[2]);
+            if (self.world.get(core.Transform, b.entity)) |t| {
+                t.position = m.Vec3.init(target[0], target[1], target[2]);
+                if (rot) |r| t.rotation = r;
+            }
         }
 
         // 3. Advance physics.
@@ -275,6 +290,10 @@ pub const SceneRuntime = struct {
 
         // 3.5 Skill post-step: react to the contacts the step produced.
         if (self.post_step) |f| f(self, dt);
+
+        // Run the ECS systems (spin, squash): applies the squash the skill bumped
+        // to the scale, and relaxes it back toward rest each tick.
+        self.world.tick(dt);
 
         // 4. Sync dynamic bodies back into their Transforms for rendering.
         for (self.bindings) |*b| {
@@ -329,6 +348,35 @@ fn finalBallPos(scene_data: core.SceneData, glb: []const u8, ticks: usize) ![3]f
     defer rt.deinit();
     for (0..ticks) |_| try rt.update(1.0 / 60.0);
     return rt.physics.bodyPosition(rt.find("ball").?.body.?);
+}
+
+/// The rotation-only basis of `mat`: its upper-left 3x3 with unit-length columns
+/// (drops scale/shear), as a Mat4 with no translation. (Ported from the app's
+/// old hatModel so a rigid child can inherit a joint's orientation, not scale.)
+fn rotationBasis(mat: m.Mat4) m.Mat4 {
+    var r = m.Mat4.identity;
+    inline for (0..3) |col| {
+        const x = mat.m[col * 4 + 0];
+        const y = mat.m[col * 4 + 1];
+        const z = mat.m[col * 4 + 2];
+        const len = @sqrt(x * x + y * y + z * z);
+        const inv: f32 = if (len > 1e-6) 1.0 / len else 0;
+        r.m[col * 4 + 0] = x * inv;
+        r.m[col * 4 + 1] = y * inv;
+        r.m[col * 4 + 2] = z * inv;
+    }
+    return r;
+}
+
+/// Euler angles (radians, the Z-Y-X order `components.Transform.matrix` rebuilds)
+/// from a column-major pure-rotation matrix.
+fn eulerZYX(rot: m.Mat4) m.Vec3 {
+    const mm = rot.m; // column-major: R[row][col] = mm[col*4 + row]
+    return m.Vec3.init(
+        std.math.atan2(mm[6], mm[10]), // x = atan2(R21, R22)
+        std.math.asin(std.math.clamp(-mm[2], -1.0, 1.0)), // y = asin(-R20)
+        std.math.atan2(mm[1], mm[0]), // z = atan2(R10, R00)
+    );
 }
 
 /// The "head" joint: the topmost skin joint in the (sampled) bind pose — the
