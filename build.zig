@@ -115,8 +115,10 @@ pub fn build(b: *Build) !void {
             .{ .name = "math", .module = mod_math },
         },
     });
-    // The character mesh, so the scene-runtime tests can resolve a glTF asset.
+    // The character mesh + the real bridge scene, so the scene-runtime tests can
+    // resolve a glTF asset and run the actual keepie-uppie scene end-to-end.
     mod_scene_runtime.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_scene_runtime.addAnonymousImport("keepie-uppie.scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
 
     // --- shader: cross-compiled from shaders/triangle.glsl by sokol-shdc -----
     // The generated Zig lives only in the build cache; regenerate by rebuilding.

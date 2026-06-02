@@ -303,6 +303,16 @@ fn findIndex(scene_data: core.SceneData, name: []const u8) ?usize {
     return null;
 }
 
+/// Load the scene, run `ticks` fixed steps, and return the ball body's final
+/// position — a small helper for the determinism parity check.
+fn finalBallPos(scene_data: core.SceneData, glb: []const u8, ticks: usize) ![3]f32 {
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+    for (0..ticks) |_| try rt.update(1.0 / 60.0);
+    return rt.physics.bodyPosition(rt.find("ball").?.body.?);
+}
+
 /// The "head" joint: the topmost skin joint in the (sampled) bind pose — the
 /// same heuristic the app's loadDancer used. `pose` must be sampled at bind.
 fn topmostJoint(skel: *const core.Skeleton, pose: *const core.Pose) u32 {
@@ -516,6 +526,64 @@ test "SceneRuntime sizes + seats a fedora from the head geometry" {
     // It rides the head: after a few ticks its Transform sits at head height.
     for (0..10) |_| try rt.update(1.0 / 60.0);
     try std.testing.expect(rt.world.get(core.Transform, fedora.entity).?.position.y > 1.0);
+}
+
+test "parity: the real keepie-uppie scene loads loadDancer's setup and runs deterministically" {
+    const glb = @embedFile("character.glb");
+    const json = @embedFile("keepie-uppie.scene.json");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+
+    // --- the loaded structure reproduces what loadDancer builds by hand ---
+    {
+        var rt: SceneRuntime = undefined;
+        try rt.init(std.heap.c_allocator, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+        defer rt.deinit();
+
+        try std.testing.expectEqual(@as(usize, 6), rt.bindings.len);
+
+        // dancer: skinned model, scaled to ~1.75 m.
+        const dancer = rt.find("dancer").?;
+        try std.testing.expectEqual(@as(usize, 19), dancer.model.?.skeleton.jointCount());
+        const dscale = rt.world.get(core.Transform, dancer.entity).?.scale.x;
+        try std.testing.expect(dscale > 1.0 and dscale < 1.4);
+
+        // ball: dynamic sphere, drawn, dropped above the head (~1.9 m).
+        const ball = rt.find("ball").?;
+        try std.testing.expect(ball.is_dynamic);
+        try std.testing.expect(rt.world.get(core.MeshRef, ball.entity) != null);
+        try std.testing.expectApproxEqAbs(@as(f32, 1.9), rt.physics.bodyPosition(ball.body.?)[1], 1e-3);
+
+        // head: kinematic collider, parented to the head joint.
+        const head = rt.find("head").?;
+        try std.testing.expect(head.body != null and !head.is_dynamic);
+        try std.testing.expect(head.parent_idx != null);
+
+        // fedora: sized from the head, seated above the joint.
+        const fedora = rt.find("fedora").?;
+        try std.testing.expect(rt.world.get(core.MeshRef, fedora.entity) != null);
+        try std.testing.expect(fedora.parent_offset[1] > 0);
+
+        // ground has a body; the camera doesn't.
+        try std.testing.expect(rt.find("ground").?.body != null);
+        try std.testing.expect(rt.find("camera").?.body == null);
+
+        // Run it: the actor animates, the head rises to track the joint, and the
+        // ball falls under real gravity (no skill yet, so it isn't juggled).
+        const ball_y0 = rt.physics.bodyPosition(ball.body.?)[1];
+        for (0..120) |_| try rt.update(1.0 / 60.0);
+        try std.testing.expect(rt.physics.bodyPosition(ball.body.?)[1] < ball_y0);
+        try std.testing.expect(rt.physics.bodyPosition(head.body.?)[1] > 1.0);
+    }
+
+    // --- determinism: same scene + same tick count -> identical result ---
+    const a = try finalBallPos(scene_data, glb, 120);
+    const b = try finalBallPos(scene_data, glb, 120);
+    try std.testing.expectEqual(a[0], b[0]);
+    try std.testing.expectEqual(a[1], b[1]);
+    try std.testing.expectEqual(a[2], b[2]);
 }
 
 test "SceneRuntime reports a missing asset" {
