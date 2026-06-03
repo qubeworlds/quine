@@ -330,7 +330,15 @@ export fn frame() void {
     if (frame_dt > 0) {
         const inst = 1.0 / frame_dt;
         App.fps_achieved += (inst - App.fps_achieved) * 0.1;
-        App.fps_requested = @max(App.fps_requested * 0.999, inst);
+        // `fps_requested` tracks the display's refresh rate as the decaying peak
+        // of instantaneous fps. Reject sub-2ms frames (>500 fps): those are
+        // timer glitches — post-stall catch-up, a tab refocus, a hot-reload
+        // hitch — whose 1/dt spike would otherwise latch a "funny" peak in the
+        // thousands and bleed off over minutes. A slightly faster decay also
+        // lets it follow a genuine refresh change instead of sticking high.
+        if (frame_dt >= 0.002) {
+            App.fps_requested = @max(App.fps_requested * 0.95, inst);
+        }
     }
 
     // Drain the fixed-step accumulator: each step advances the scene (animation,
