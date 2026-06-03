@@ -139,9 +139,12 @@ pub const Renderer = struct {
     /// Draw the world-space reference grid. Off for clean material thumbnails.
     draw_grid: bool = true,
     /// Preview mode (material thumbnails): draws a studio backdrop and tells the
-    /// mesh shader to apply golf-ball dimples + staging lights to the body. Off
-    /// for the live engine, so normal geometry is rendered plainly.
+    /// mesh shader to apply the staging lights (fill/rim/softboxes) to the body.
+    /// Off for the live engine, so normal geometry is rendered plainly.
     preview: bool = false,
+    /// Golf-ball dimples on the preview body — only meaningful for the sphere
+    /// material ball, not the fedora or other shapes.
+    preview_dimples: bool = false,
     /// Vertex-less fullscreen pipeline for the preview backdrop.
     bg_pip: sg.Pipeline = .{},
 
@@ -324,7 +327,8 @@ pub const Renderer = struct {
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             var fsp = materialParams(item.material);
-            if (self.preview) fsp.pbr[2] = 1; // golf-ball dimples + staging lights
+            if (self.preview) fsp.pbr[2] = 1; // staging lights (fill/rim/softboxes)
+            if (self.preview_dimples) fsp.pbr[3] = 1; // golf-ball dimples (sphere ball)
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {

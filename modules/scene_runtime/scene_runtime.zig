@@ -151,6 +151,7 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const g = e.geometry orelse continue;
             if (g != .fedora) continue;
+            if (g.fedora.fit_to_joint == null) continue; // standalone built in buildMesh
             try self.buildFedora(a, &bindings[i], g.fedora);
         }
 
@@ -217,7 +218,18 @@ pub const SceneRuntime = struct {
                 const mesh = core.uvSphere(sp.radius, sp.rings, sp.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
-            else => {}, // builtin handled in core.loadScene; gltf/fedora next.
+            .fedora => |fed| {
+                // Standalone fedora (no head to fit): build straight from the
+                // explicit dimensions. The worn case (fit_to_joint set) is sized
+                // from the head later in buildFedora.
+                if (fed.fit_to_joint != null) return;
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
+                const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
+                const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
+                const mesh = core.fedora(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            else => {}, // builtin handled in core.loadScene; gltf next.
         }
     }
 

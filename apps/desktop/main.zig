@@ -154,10 +154,11 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
-    if (thumb_cfg != null) {
+    if (thumb_cfg) |t| {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
-        App.renderer.preview = true; // golf-ball dimples + studio backdrop
+        App.renderer.preview = true; // studio backdrop + staging lights
+        App.renderer.preview_dimples = (t.geo == .sphere); // golf-ball ball only
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
@@ -586,7 +587,8 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // single sphere with that material, then writes a PPM to stdout and quits. Run
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3 };
+const ThumbGeo = enum { sphere, fedora };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -615,19 +617,37 @@ fn readThumbEnv() void {
         .metallic = envF32("QUINE_THUMB_METAL"),
         .roughness = envF32("QUINE_THUMB_ROUGH"),
         .emissive = .{ .x = envF32("QUINE_THUMB_ER"), .y = envF32("QUINE_THUMB_EG"), .z = envF32("QUINE_THUMB_EB") },
+        .geo = geo: {
+            const g = std.c.getenv("QUINE_THUMB_GEO") orelse break :geo .sphere;
+            break :geo if (std.mem.eql(u8, std.mem.span(g), "fedora")) .fedora else .sphere;
+        },
     };
 }
 
-/// A one-sphere scene with the requested material, framed by an orbit camera.
+/// A single-object scene with the requested material, framed by an orbit camera.
+/// The object is a high-res sphere (the default material ball) or a procedural
+/// fedora, depending on `t.geo`.
 fn thumbSceneJson(t: ThumbCfg) []const u8 {
-    return std.fmt.allocPrint(std.heap.c_allocator,
-        \\{{ "schemaVersion":1, "name":"thumb", "entities":[
-        \\ {{ "name":"ball", "geometry":{{"kind":"sphere","radius":1,"rings":64,"segments":96}},
-        \\    "material":{{"color":[{d:.5},{d:.5},{d:.5},1],"metallic":{d:.5},"roughness":{d:.5},"emissive":[{d:.5},{d:.5},{d:.5}]}} }},
-        \\ {{ "name":"camera", "transform":{{"position":[1.2,0.8,2.4]}},
-        \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0,0],"distance":2.7,"yaw":0.5,"pitch":0.32}}}} }}
-        \\] }}
-    , .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z }) catch "";
+    const a = std.heap.c_allocator;
+    const mat = std.fmt.allocPrint(a, "\"material\":{{\"color\":[{d:.5},{d:.5},{d:.5},1],\"metallic\":{d:.5},\"roughness\":{d:.5},\"emissive\":[{d:.5},{d:.5},{d:.5}]}}", .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z }) catch return "";
+    return switch (t.geo) {
+        .sphere => std.fmt.allocPrint(a,
+            \\{{ "schemaVersion":1, "name":"thumb", "entities":[
+            \\ {{ "name":"ball", "geometry":{{"kind":"sphere","radius":1,"rings":64,"segments":96}}, {s} }},
+            \\ {{ "name":"camera", "transform":{{"position":[1.2,0.8,2.4]}},
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0,0],"distance":2.7,"yaw":0.5,"pitch":0.32}}}} }}
+            \\] }}
+        , .{mat}) catch "",
+        // Fedora: wider than tall, so frame it from a bit further out and lower the
+        // orbit target onto the crown; a slightly raised pitch shows the dent.
+        .fedora => std.fmt.allocPrint(a,
+            \\{{ "schemaVersion":1, "name":"thumb", "entities":[
+            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.72,"brimRadius":1.15,"segments":96}}, {s} }},
+            \\ {{ "name":"camera", "transform":{{"position":[1.6,1.1,2.6]}},
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.35,0],"distance":2.9,"yaw":0.6,"pitch":0.34}}}} }}
+            \\] }}
+        , .{mat}) catch "",
+    };
 }
 
 /// Read back the framebuffer and write it to `out` as a (top-down RGB) PPM via

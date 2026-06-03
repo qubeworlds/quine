@@ -36,7 +36,7 @@ void main() {
 // white default.
 layout(binding=1) uniform fs_params {
     vec4 base_color;   // albedo rgba
-    vec4 pbr;          // x = metallic, y = roughness, z = preview flag (w reserved)
+    vec4 pbr;          // x = metallic, y = roughness, z = preview staging, w = dimples
     vec4 emissive;     // rgb emissive (a reserved)
 };
 
@@ -110,8 +110,9 @@ vec3 dimpleNormal(vec3 n) {
 
 void main() {
     vec3 n = normalize(world_normal);
-    bool preview = pbr.z > 0.5;
-    if (preview) n = dimpleNormal(n);
+    bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
+    bool dimpled = pbr.w > 0.5;  // golf-ball dimples: the sphere material ball only
+    if (dimpled) n = dimpleNormal(n);
     vec3 v = normalize(view_dir);
     // Live key light is roughly co-axial with the camera (fine for the editor).
     // For previews that flattens the body and puts a central blob on metals, so

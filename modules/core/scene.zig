@@ -32,7 +32,14 @@ pub const Geometry = union(enum) {
     gltf: struct { source: []const u8, height_meters: ?f32 = null },
     sphere: struct { radius: f32, rings: u32 = 16, segments: u32 = 24 },
     fedora: struct {
-        fit_to_joint: []const u8,
+        /// When set, the hat is sized from this joint's head bounds and seated on
+        /// it (the worn case). When null, it's a standalone mesh built straight
+        /// from the explicit `*_radius`/`crown_height` dimensions below — so the
+        /// fedora can be previewed or placed without a character.
+        fit_to_joint: ?[]const u8 = null,
+        crown_radius: f32 = 0.45,
+        crown_height: f32 = 0.5,
+        brim_radius: f32 = 0.75,
         segments: u32 = 24,
         crown_fit: f32 = 1.05,
         brim_flare: f32 = 1.35,
@@ -216,7 +223,11 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("segments")) |x| g.sphere.segments = try asU32(x);
         return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
-        var g = Geometry{ .fedora = .{ .fit_to_joint = try asStr(o.get("fitToJoint") orelse return error.InvalidScene) } };
+        var g = Geometry{ .fedora = .{} };
+        if (o.get("fitToJoint")) |x| g.fedora.fit_to_joint = try asStr(x);
+        if (o.get("crownRadius")) |x| g.fedora.crown_radius = try asF32(x);
+        if (o.get("crownHeight")) |x| g.fedora.crown_height = try asF32(x);
+        if (o.get("brimRadius")) |x| g.fedora.brim_radius = try asF32(x);
         if (o.get("segments")) |x| g.fedora.segments = try asU32(x);
         if (o.get("crownFit")) |x| g.fedora.crown_fit = try asF32(x);
         if (o.get("brimFlare")) |x| g.fedora.brim_flare = try asF32(x);
