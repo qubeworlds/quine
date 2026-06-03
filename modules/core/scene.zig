@@ -98,6 +98,11 @@ pub const Geometry = union(enum) {
     /// entities. Standalone — no skeleton needed; the face entity's transform
     /// places/orients it (+Z forward). All sizes are fractions of `head_radius`.
     face: struct {
+        /// When set, use this glTF asset as the (sculpted) head base instead of
+        /// the procedural oval head — the eyes seat in its sockets, the fedora on
+        /// its crown, and the procedural nose/brows/lips are dropped (the mesh has
+        /// them). Scaled to `head_height` and centred.
+        head_mesh: ?[]const u8 = null,
         head_radius: f32 = 0.12,
         head_height: f32 = 0.32,
         chin: f32 = 0.4,
@@ -349,6 +354,7 @@ fn parseGeometry(v: Value) !Geometry {
     } else if (std.mem.eql(u8, kind, "face")) {
         var g = Geometry{ .face = .{} };
         const f = &g.face;
+        if (o.get("headMesh")) |x| f.head_mesh = try asStr(x);
         if (o.get("headRadius")) |x| f.head_radius = try asF32(x);
         if (o.get("headHeight")) |x| f.head_height = try asF32(x);
         if (o.get("chin")) |x| f.chin = try asF32(x);

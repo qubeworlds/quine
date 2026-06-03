@@ -59,6 +59,7 @@ const max_ticks_per_frame: u32 = 8;
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
 const character_glb = @embedFile("character.glb");
+const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY) — the `face` headMesh base
 // On web the scene + skill are *bundled* assets the host hands over at runtime
 // (and edits over the WebSocket) — not compiled in. Native embeds them so the
 // desktop app runs standalone.
@@ -233,7 +234,10 @@ fn buildStage(json: []const u8) !void {
     defer arena.deinit();
     const scene_data = try core.parseScene(arena.allocator(), json);
 
-    try App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }});
+    try App.stage.init(alloc, scene_data, &.{
+        .{ .name = "CesiumMan.glb", .bytes = character_glb },
+        .{ .name = "head.glb", .bytes = head_glb },
+    });
 
     // Optional: a material-preview / asset scene has no skinned actor.
     App.dancer = App.stage.find("dancer");

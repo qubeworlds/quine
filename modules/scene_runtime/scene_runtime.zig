@@ -186,7 +186,7 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const g = e.geometry orelse continue;
             if (g != .face) continue;
-            try self.buildFace(a, i, g.face, all, &cursor);
+            try self.buildFace(a, i, g.face, assets, all, &cursor);
         }
         self.bindings = all[0..cursor];
 
@@ -405,20 +405,44 @@ pub const SceneRuntime = struct {
     /// Build a whole procedural face on its entity: the oval head goes on the
     /// face entity itself; the eyes, nose, eyebrows, lips and fedora become child
     /// parts seated in the head-local frame (centre at origin, +Z forward, +Y up).
-    fn buildFace(self: *SceneRuntime, a: std.mem.Allocator, face_idx: usize, f: anytype, all: []Binding, cursor: *usize) !void {
-        const R = f.head_radius;
+    fn buildFace(self: *SceneRuntime, a: std.mem.Allocator, face_idx: usize, f: anytype, assets: []const Asset, all: []Binding, cursor: *usize) !void {
         const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const ent = self.bindings[face_idx].entity;
+        const skin = core.Material{ .base_color = vec4(f.skin_color), .roughness = 0.6 };
 
-        // Head mesh on the face entity itself.
-        {
+        // Head: a sculpted glTF mesh (scaled + centred), or the procedural oval.
+        // `R` is the resulting head's horizontal radius — the unit the face parts
+        // are placed in.
+        var R = f.head_radius;
+        if (f.head_mesh) |src| {
+            const bytes = resolve(assets, src) orelse return error.AssetNotFound;
+            const mesh = try core.loadGlbMesh(a, bytes); // static (unrigged) mesh
+            // Measure bounds, then bake a scale-to-head_height + centre into the
+            // vertices (children are placed in this normalised frame).
+            var lo = m.Vec3.init(std.math.inf(f32), std.math.inf(f32), std.math.inf(f32));
+            var hi = m.Vec3.init(-std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32));
+            for (mesh.vertices) |v| {
+                lo = m.Vec3.init(@min(lo.x, v.position.x), @min(lo.y, v.position.y), @min(lo.z, v.position.z));
+                hi = m.Vec3.init(@max(hi.x, v.position.x), @max(hi.y, v.position.y), @max(hi.z, v.position.z));
+            }
+            const h = hi.y - lo.y;
+            const s = if (h > 1e-6) f.head_height / h else 1.0;
+            const c = m.Vec3.init((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5);
+            for (@constCast(mesh.vertices)) |*v| {
+                v.position = m.Vec3.init((v.position.x - c.x) * s, (v.position.y - c.y) * s, (v.position.z - c.z) * s);
+            }
+            R = @max(hi.x - lo.x, hi.z - lo.z) * 0.5 * s;
+            self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            self.world.set(core.Material, ent, skin);
+        } else {
             const rings: u32 = f.segments;
             const verts = try a.alloc(core.Vertex, core.headVertexCount(rings, f.segments));
             const idx = try a.alloc(u32, core.headIndexCount(rings, f.segments));
             const mesh = core.ovalHead(R, f.head_height, f.chin, rings, f.segments, white, verts, idx);
-            const ent = self.bindings[face_idx].entity;
             self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
-            self.world.set(core.Material, ent, .{ .base_color = vec4(f.skin_color), .roughness = 0.6 });
+            self.world.set(core.Material, ent, skin);
         }
+        const sculpted = f.head_mesh != null; // the mesh already has nose/brows/lips
 
         const eyeball_r = f.eye_size_fraction * R;
         const eye_x = 0.5 * f.eye_spacing_fraction * R;
@@ -444,36 +468,39 @@ pub const SceneRuntime = struct {
             }
         }
 
-        // Nose: bridge at eye level on the centreline, running down + forward.
-        {
-            const verts = try a.alloc(core.Vertex, core.noseVertexCount(10, f.segments));
-            const idx = try a.alloc(u32, core.noseIndexCount(10, f.segments));
-            const mesh = core.nose(f.nose_length_fraction * R, f.nose_width_fraction * R, f.nose_projection_fraction * R, 10, f.segments, white, verts, idx);
-            const skin = core.Material{ .base_color = vec4(f.skin_color), .roughness = 0.6 };
-            try self.addFaceChild(a, all, cursor, face_idx, mesh, skin, .{ 0, eye_y, eye_z }, m.Vec3.splat(1), null);
-        }
+        // Nose / eyebrows / lips: only for the PROCEDURAL head — a sculpted head
+        // mesh already carries them, so we'd just double them up.
+        if (!sculpted) {
+            // Nose: bridge at eye level on the centreline, running down + forward.
+            {
+                const verts = try a.alloc(core.Vertex, core.noseVertexCount(10, f.segments));
+                const idx = try a.alloc(u32, core.noseIndexCount(10, f.segments));
+                const mesh = core.nose(f.nose_length_fraction * R, f.nose_width_fraction * R, f.nose_projection_fraction * R, 10, f.segments, white, verts, idx);
+                try self.addFaceChild(a, all, cursor, face_idx, mesh, skin, .{ 0, eye_y, eye_z }, m.Vec3.splat(1), null);
+            }
 
-        // Eyebrows: a thin, wide sphere (bar) just above each eye.
-        const brow_mat = core.Material{ .base_color = vec4(f.brow_color), .roughness = 0.7 };
-        for ([_]f32{ -1, 1 }) |sx| {
-            const verts = try a.alloc(core.Vertex, core.sphereVertexCount(8, 12));
-            const idx = try a.alloc(u32, core.sphereIndexCount(8, 12));
-            const mesh = core.uvSphere(eyeball_r, 8, 12, white, verts, idx);
-            try self.addFaceChild(a, all, cursor, face_idx, mesh, brow_mat, .{ sx * eye_x, eye_y + eyeball_r * 1.3, eye_z * 0.98 }, m.Vec3.init(1.7, 0.32, 0.5), null);
-        }
+            // Eyebrows: a thin, wide sphere (bar) just above each eye.
+            const brow_mat = core.Material{ .base_color = vec4(f.brow_color), .roughness = 0.7 };
+            for ([_]f32{ -1, 1 }) |sx| {
+                const verts = try a.alloc(core.Vertex, core.sphereVertexCount(8, 12));
+                const idx = try a.alloc(u32, core.sphereIndexCount(8, 12));
+                const mesh = core.uvSphere(eyeball_r, 8, 12, white, verts, idx);
+                try self.addFaceChild(a, all, cursor, face_idx, mesh, brow_mat, .{ sx * eye_x, eye_y + eyeball_r * 1.3, eye_z * 0.98 }, m.Vec3.init(1.7, 0.32, 0.5), null);
+            }
 
-        // Lips: two wide, flat spheres (upper + lower) below the nose.
-        const lip_mat = core.Material{ .base_color = vec4(f.lip_color), .roughness = 0.35 };
-        const lips_y = eye_y - (f.nose_length_fraction * R + 0.14 * R);
-        {
-            const up_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
-            const up_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
-            const upper = core.uvSphere(eyeball_r, 8, 14, white, up_v, up_i);
-            try self.addFaceChild(a, all, cursor, face_idx, upper, lip_mat, .{ 0, lips_y + 0.05 * R, eye_z * 0.95 }, m.Vec3.init(2.4, 0.5, 0.5), null);
-            const lo_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
-            const lo_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
-            const lower = core.uvSphere(eyeball_r, 8, 14, white, lo_v, lo_i);
-            try self.addFaceChild(a, all, cursor, face_idx, lower, lip_mat, .{ 0, lips_y - 0.04 * R, eye_z * 0.93 }, m.Vec3.init(2.6, 0.6, 0.5), null);
+            // Lips: two wide, flat spheres (upper + lower) below the nose.
+            const lip_mat = core.Material{ .base_color = vec4(f.lip_color), .roughness = 0.35 };
+            const lips_y = eye_y - (f.nose_length_fraction * R + 0.14 * R);
+            {
+                const up_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
+                const up_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
+                const upper = core.uvSphere(eyeball_r, 8, 14, white, up_v, up_i);
+                try self.addFaceChild(a, all, cursor, face_idx, upper, lip_mat, .{ 0, lips_y + 0.05 * R, eye_z * 0.95 }, m.Vec3.init(2.4, 0.5, 0.5), null);
+                const lo_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
+                const lo_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
+                const lower = core.uvSphere(eyeball_r, 8, 14, white, lo_v, lo_i);
+                try self.addFaceChild(a, all, cursor, face_idx, lower, lip_mat, .{ 0, lips_y - 0.04 * R, eye_z * 0.93 }, m.Vec3.init(2.6, 0.6, 0.5), null);
+            }
         }
 
         // Fedora instead of hair: seated near the crown.
@@ -1106,6 +1133,45 @@ test "a face composite builds an oval head + its parts in one frame (no skeleton
     for (0..3) |_| try rt.update(1.0 / 60.0);
     const cy = rt.world.get(core.Transform, a_child.?).?.position.y;
     try std.testing.expect(cy > 0.5 and cy < 1.5); // anchored around the face at y=1
+}
+
+test "a face with a sculpted headMesh loads the head + eyes (no doubled nose/brows/lips)" {
+    const head = @embedFile("head.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "facemesh",
+        .entities = &.{
+            .{ .name = "face", .transform = .{ .position = .{ 0, 1, 0 } }, .geometry = .{ .face = .{ .head_mesh = "head.glb", .head_height = 0.32 } } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "head.glb", .bytes = head }});
+    defer rt.deinit();
+
+    // The face entity carries the sculpted head mesh (a real scan → many verts).
+    const face = rt.find("face").?;
+    const mref = rt.world.get(core.MeshRef, face.entity).?;
+    try std.testing.expect(rt.world.meshes.get(mref.mesh).vertices.len > 1000);
+    // Scaled to ~head_height: no vertex is far outside a 0.32 m head.
+    for (rt.world.meshes.get(mref.mesh).vertices) |v| {
+        try std.testing.expect(@abs(v.position.y) < 0.4 and @abs(v.position.x) < 0.4);
+    }
+
+    var face_index: usize = 0;
+    for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
+        face_index = i;
+    };
+    var children: usize = 0;
+    var gaze_parts: usize = 0;
+    for (rt.bindings) |bnd| {
+        if (bnd.parent_idx) |pi| if (pi == face_index) {
+            children += 1;
+            if (rt.world.get(core.Gaze, bnd.entity) != null) gaze_parts += 1;
+        };
+    }
+    // Sculpted head → 10 eye parts + fedora = 11 (NOT the 16 of the procedural face).
+    try std.testing.expectEqual(@as(usize, 11), children);
+    try std.testing.expectEqual(@as(usize, 6), gaze_parts);
 }
 
 test "gaze eases the eye toward a look target and swings the iris orientation" {
