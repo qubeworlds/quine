@@ -469,14 +469,21 @@ pub const SceneRuntime = struct {
 
             R = f.head_radius;
             // Tunable from the scene (the measured eye line is the origin): size,
-            // spacing, a small vertical nudge, and a recess so the eyeball nestles
-            // INTO the socket rather than bulging proud.
+            // spacing, a small vertical nudge. Mesh is already scaled+centred.
             eyeball_r = f.eye_size_fraction * R;
             eye_x = 0.5 * f.eye_spacing_fraction * R;
             eye_y = f.eye_level_fraction * R;
-            eye_z = face_front_mesh * s - eyeball_r * 1.15;
-            // Seat the hat brim a bit below the crown top so it sits ON the head
-            // (wraps the temples) instead of floating at the highest point.
+            // Depth: measure the face surface AT the eye position (the lid — more
+            // recessed than the nose bridge) and seat the eyeball so it only just
+            // pokes through, rather than bulging proud off the bridge depth.
+            var socket_z: f32 = 0;
+            for (mesh.vertices) |v| {
+                if (@abs(@abs(v.position.x) - eye_x) < 0.18 * R and @abs(v.position.y - eye_y) < 0.16 * R) {
+                    socket_z = @max(socket_z, v.position.z);
+                }
+            }
+            eye_z = socket_z - eyeball_r * 1.1; // sink most of the ball behind the lid
+            // Seat the hat brim a bit below the crown top so it sits ON the head.
             crown_y = (hi.y - eye_y_mesh) * s - 0.42 * R;
         } else {
             const rings: u32 = f.segments;
@@ -548,7 +555,7 @@ pub const SceneRuntime = struct {
         if (f.fedora) {
             const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(f.segments));
             const idx = try a.alloc(u32, core.fedoraIndexCount(f.segments));
-            const mesh = core.fedora(R * 1.4, R * 1.02, R * 0.9, f.segments, white, verts, idx);
+            const mesh = core.fedora(R * 1.6, R * 1.12, R * 1.0, f.segments, white, verts, idx);
             const hat = core.Material{ .base_color = vec4(f.fedora_color), .roughness = 0.5 };
             try self.addFaceChild(a, all, cursor, face_idx, mesh, hat, .{ 0, crown_y, 0 }, m.Vec3.splat(1), null);
         }
