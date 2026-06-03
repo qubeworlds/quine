@@ -555,6 +555,73 @@ pub fn nose(
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
 
+// -----------------------------------------------------------------------------
+// Oval head — an egg/ellipsoid built around +Y up, +Z forward (the face). Taller
+// than wide, with the lower half tapered inward toward a smaller chin, so it
+// reads as a head rather than a plain sphere. The face features (eyes/nose/brows/
+// lips) anchor to this in the same +Z-forward frame.
+// -----------------------------------------------------------------------------
+
+pub fn headVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn headIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// Generate an oval head of horizontal `radius` and full `height` (Y). `chin`
+/// (0..1) tapers the lower half inward toward the jaw — 0 is a plain ellipsoid,
+/// ~0.4 gives a clear chin. Buffers must hold head{Vertex,Index}Count entries.
+pub fn ovalHead(
+    radius: f32,
+    height: f32,
+    chin: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const theta = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)) * std.math.pi; // 0 top → pi bottom
+        const yu = @cos(theta); // +1 top, −1 bottom
+        const ring_r = @sin(theta);
+        // Taper the lower half toward the chin: 0 at the equator, 1 at the very
+        // bottom, eased — so the jaw narrows and the crown stays full.
+        const lower = std.math.clamp(-yu, 0.0, 1.0);
+        const taper = 1.0 - chin * lower * lower;
+        const y = yu * height * 0.5;
+        const hr = radius * ring_r * taper;
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+            verts[vi] = .{ .position = m.Vec3.init(hr * @cos(phi), y, hr * @sin(phi)), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = r * stride + s;
+            const b = a + stride;
+            indices[ii + 0] = a;
+            indices[ii + 1] = b;
+            indices[ii + 2] = a + 1;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b;
+            indices[ii + 5] = b + 1;
+            ii += 6;
+        }
+    }
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -648,4 +715,27 @@ test "nose fills noseCount, runs bridge→base down -Y and bulges +Z, with unit 
     }
     try std.testing.expect(min_y < -0.25); // runs down toward the base
     try std.testing.expect(max_z > 0.1); // bulges forward
+}
+
+test "ovalHead: taller than wide, chin narrower than the crown" {
+    const rings: u32 = 16;
+    const segments: u32 = 16;
+    var verts: [headVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [headIndexCount(rings, segments)]u32 = undefined;
+    const mesh = ovalHead(0.12, 0.32, 0.4, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(headVertexCount(rings, segments), mesh.vertices.len);
+    var max_y: f32 = -1e9;
+    var min_y: f32 = 1e9;
+    var crown_r: f32 = 0; // horizontal radius in the upper third
+    var chin_r: f32 = 0; // horizontal radius near the bottom
+    for (mesh.vertices) |v| {
+        if (v.position.y > max_y) max_y = v.position.y;
+        if (v.position.y < min_y) min_y = v.position.y;
+        const hr = @sqrt(v.position.x * v.position.x + v.position.z * v.position.z);
+        if (v.position.y > 0.06 and hr > crown_r) crown_r = hr;
+        if (v.position.y < -0.10 and hr > chin_r) chin_r = hr;
+    }
+    try std.testing.expectApproxEqAbs(@as(f32, 0.32), max_y - min_y, 1e-4); // full height
+    try std.testing.expect(0.32 > 2 * 0.12); // taller than wide
+    try std.testing.expect(chin_r < crown_r); // chin tapered in
 }
