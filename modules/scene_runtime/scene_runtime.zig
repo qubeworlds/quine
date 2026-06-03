@@ -468,21 +468,48 @@ pub const SceneRuntime = struct {
             self.world.set(core.Material, ent, skin);
 
             R = f.head_radius;
-            // Tunable from the scene (the measured eye line is the origin): size,
-            // spacing, a small vertical nudge. Mesh is already scaled+centred.
-            eyeball_r = f.eye_size_fraction * R;
-            eye_x = 0.5 * f.eye_spacing_fraction * R;
-            eye_y = f.eye_level_fraction * R;
-            // Depth: measure the face surface AT the eye position (the lid — more
-            // recessed than the nose bridge) and seat the eyeball so it only just
-            // pokes through, rather than bulging proud off the bridge depth.
-            var socket_z: f32 = 0;
+            // Measure the eye SOCKET (mesh is scaled + centred on the eye line):
+            // the nose-bridge peak, then walk outward to find the socket's inner
+            // edge (where the surface leaves the bridge) and outer edge (where it
+            // drops to the temple). Centre + width + depth size and seat the eyes.
+            const band = 0.22 * R; // eye-line vertical window
+            var peak_z: f32 = 0;
             for (mesh.vertices) |v| {
-                if (@abs(@abs(v.position.x) - eye_x) < 0.18 * R and @abs(v.position.y - eye_y) < 0.16 * R) {
-                    socket_z = @max(socket_z, v.position.z);
+                if (@abs(v.position.y) < band and @abs(v.position.x) < 0.12 * R) peak_z = @max(peak_z, v.position.z);
+            }
+            var inner_x: f32 = 0.30 * R; // fallbacks if the walk finds nothing
+            var outer_x: f32 = 0.85 * R;
+            {
+                const steps = 48;
+                var found_inner = false;
+                var k: i32 = 1;
+                while (k <= steps) : (k += 1) {
+                    const x = -1.3 * R * @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(steps));
+                    var zc: f32 = -1e9;
+                    for (mesh.vertices) |v| {
+                        if (@abs(v.position.y) < band and @abs(v.position.x - x) < 0.045 * R) zc = @max(zc, v.position.z);
+                    }
+                    if (zc < -1e8) continue;
+                    if (!found_inner) {
+                        if (zc < 0.92 * peak_z) {
+                            inner_x = -x;
+                            found_inner = true;
+                        }
+                    } else if (zc < 0.50 * peak_z) {
+                        outer_x = -x;
+                        break;
+                    }
                 }
             }
-            eye_z = socket_z - eyeball_r * 1.1; // sink most of the ball behind the lid
+            eye_x = (inner_x + outer_x) * 0.5; // socket centre
+            eyeball_r = (outer_x - inner_x) * 0.42 * f.eye_size_fraction / 0.16; // fit the opening (size = fine-tune)
+            eye_y = f.eye_level_fraction * R;
+            // Depth at the socket centre, sink the ball so it sits IN the socket.
+            var depth_c: f32 = peak_z * 0.85;
+            for (mesh.vertices) |v| {
+                if (@abs(v.position.y - eye_y) < band and @abs(@abs(v.position.x) - eye_x) < 0.06 * R) depth_c = @max(depth_c, v.position.z);
+            }
+            eye_z = depth_c - eyeball_r * 1.2;
             // Seat the hat brim a bit below the crown top so it sits ON the head.
             crown_y = (hi.y - eye_y_mesh) * s - 0.42 * R;
         } else {
@@ -1178,7 +1205,7 @@ test "sculpted face is correctly proportioned: head ~ headRadius, eyes small + o
         const part = rt.world.meshes.get(rt.world.get(core.MeshRef, bnd.entity).?.mesh);
         var rad: f32 = 0;
         for (part.vertices) |v| rad = @max(rad, v.position.length());
-        try std.testing.expect(rad < 0.25 * head_radius); // small eye, not a beach ball
+        try std.testing.expect(rad < 0.4 * head_radius); // socket-sized eye, not a beach ball
         const p = rt.world.get(core.Transform, bnd.entity).?.position;
         const rel = p.sub(face_pos);
         try std.testing.expect(rel.z > 0); // on the front of the face
