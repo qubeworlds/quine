@@ -310,7 +310,17 @@ pub fn build(b: *Build) !void {
             // front, which overflows Emscripten's default fixed heap, and the
             // solver uses a deep call stack. Allow the heap to grow and give a
             // generous stack, or Jolt traps at init (silent under our wasm panic).
-            .extra_args = &.{ "-sALLOW_MEMORY_GROWTH=1", "-sSTACK_SIZE=8388608" },
+            //
+            // `quine_enqueue` is the inbound-message entry point the editor calls
+            // (Module.ccall) to push WebSocket frames into the engine's queue, so
+            // it must survive dead-stripping/closure; `ccall` exposes the marshal
+            // helper. `_main` stays the program entry.
+            .extra_args = &.{
+                "-sALLOW_MEMORY_GROWTH=1",
+                "-sSTACK_SIZE=8388608",
+                "-sEXPORTED_RUNTIME_METHODS=ccall",
+                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue",
+            },
         });
         // `zig build` emits the web bundle into zig-out/web.
         b.getInstallStep().dependOn(&link.step);

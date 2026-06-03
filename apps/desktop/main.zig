@@ -107,11 +107,34 @@ const App = struct {
     // reloads, and the fedora's current mesh red channel (-1 = no mesh).
     var reload_count: u32 = 0;
     var fedora_r: f32 = -1;
-    // Count of frames the editor has received over the room WebSocket, read off
-    // `window.QUINE_MSG_COUNT` each frame (web only). Surfaced in the HUD as an
-    // end-to-end check that the JS→wasm poll bridge is actually delivering.
+    // Count of inbound frames the engine has received from the editor over the
+    // room WebSocket (incremented in `quine_enqueue`). Surfaced in the HUD as an
+    // end-to-end check that the JS→wasm push bridge is actually delivering.
     var ws_msgs: u32 = 0;
+
+    /// Inbound message queue: typed JSON frames the editor pushes from the room
+    /// WebSocket via the exported `quine_enqueue`, drained in arrival order each
+    /// frame. A real FIFO — not a single coalesced global — so nothing is dropped
+    /// or reordered. A multiplayer sim needs every frame (inputs, events), not
+    /// just the latest scene, so the transport has to be lossless and ordered.
+    var msg_queue: std.ArrayListUnmanaged([]u8) = .empty;
 };
+
+/// Push one inbound message frame (a JSON envelope `{"type":...}`) from the
+/// editor host onto the queue; `drainMessages` consumes it on the next frame.
+/// Called from JS via `Module.ccall("quine_enqueue", null, ["string"], [frame])`.
+/// We copy the bytes into engine-owned memory (the JS buffer is transient). Web
+/// only — native has no host pushing live messages. Runs on the main thread
+/// between frames, so no locking is needed against `drainMessages`.
+export fn quine_enqueue(msg: [*:0]const u8) void {
+    const src = std.mem.span(msg);
+    const copy = std.heap.c_allocator.dupe(u8, src) catch return; // drop on OOM
+    App.msg_queue.append(std.heap.c_allocator, copy) catch {
+        std.heap.c_allocator.free(copy);
+        return;
+    };
+    App.ws_msgs +%= 1;
+}
 
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
@@ -215,28 +238,43 @@ fn findCamera(world: *core.World) ?core.Entity {
     return it.next();
 }
 
-/// Web hot-reload: the editor pushes a new skill (or scene) over the room
-/// WebSocket and stashes it on `window`; we pick it up here and reload live, so
-/// iterating on behaviour/scene is a data push — no rebuild. (Web only.)
-fn checkHotReload() void {
-    if (builtin.os.tag != .emscripten) return;
-    // Mirror the editor's WebSocket frame count into the HUD (diagnostic): proves
-    // the JS→wasm poll bridge can read `window` at all, independent of reloads.
-    App.ws_msgs = @intCast(emscripten_run_script_int("(window.QUINE_MSG_COUNT|0)"));
-    if (emscripten_run_script_int("(window.QUINE_RELOAD_SKILL?1:0)") != 0) {
-        const code = emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')");
-        App.js.loadSkill(std.mem.span(code)) catch {};
-        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SKILL=0,0)");
+/// Drain the inbound message queue in arrival order, applying each frame's
+/// effect. Runs at the top of `frame()` so a reload lands at a safe point, never
+/// reentrantly mid-tick. The editor pushes live edits (and, later, gameplay
+/// frames) over the room WebSocket — applying them is a data push, no rebuild.
+/// (Web only — the queue is never fed on native.)
+fn drainMessages() void {
+    if (App.msg_queue.items.len == 0) return;
+    for (App.msg_queue.items) |raw| {
+        dispatchMessage(raw);
+        std.heap.c_allocator.free(raw);
     }
-    if (emscripten_run_script_int("(window.QUINE_RELOAD_SCENE?1:0)") != 0) {
-        const json = emscripten_run_script_string("(window.QUINE_SCENE_JSON||'')");
-        reloadScene(std.mem.span(json));
-        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SCENE=0,0)");
+    App.msg_queue.clearRetainingCapacity();
+}
+
+/// Apply one inbound message frame by its `type`. Scene/skill frames hot-reload
+/// the running sim; host-only frames (capture/reload/snap/chat) are ignored —
+/// the editor handles those. Unknown/malformed frames are dropped silently.
+fn dispatchMessage(raw: []const u8) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena.deinit();
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), raw, .{}) catch return;
+    if (v != .object) return;
+    const tv = v.object.get("type") orelse return;
+    if (tv != .string) return;
+    if (std.mem.eql(u8, tv.string, "scene")) {
+        if (v.object.get("json")) |j| {
+            if (j == .string) reloadScene(j.string);
+        }
+    } else if (std.mem.eql(u8, tv.string, "skill")) {
+        if (v.object.get("code")) |c2| {
+            if (c2 == .string) App.js.loadSkill(c2.string) catch {};
+        }
     }
 }
 
 export fn frame() void {
-    checkHotReload();
+    drainMessages();
     const frame_dt = sapp.frameDuration();
     if (frame_dt > 0) {
         const inst = 1.0 / frame_dt;
