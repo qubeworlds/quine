@@ -585,7 +585,7 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // single sphere with that material, then writes a PPM to stdout and quits. Run
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32 };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3 };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -605,6 +605,7 @@ fn readThumbEnv() void {
         .color = .{ .x = envF32("QUINE_THUMB_R"), .y = envF32("QUINE_THUMB_G"), .z = envF32("QUINE_THUMB_B"), .w = 1 },
         .metallic = envF32("QUINE_THUMB_METAL"),
         .roughness = envF32("QUINE_THUMB_ROUGH"),
+        .emissive = .{ .x = envF32("QUINE_THUMB_ER"), .y = envF32("QUINE_THUMB_EG"), .z = envF32("QUINE_THUMB_EB") },
     };
 }
 
@@ -613,11 +614,11 @@ fn thumbSceneJson(t: ThumbCfg) []const u8 {
     return std.fmt.allocPrint(std.heap.c_allocator,
         \\{{ "schemaVersion":1, "name":"thumb", "entities":[
         \\ {{ "name":"ball", "geometry":{{"kind":"sphere","radius":1,"rings":64,"segments":96}},
-        \\    "material":{{"color":[{d:.5},{d:.5},{d:.5},1],"metallic":{d:.5},"roughness":{d:.5}}} }},
+        \\    "material":{{"color":[{d:.5},{d:.5},{d:.5},1],"metallic":{d:.5},"roughness":{d:.5},"emissive":[{d:.5},{d:.5},{d:.5}]}} }},
         \\ {{ "name":"camera", "transform":{{"position":[1.2,0.8,2.4]}},
         \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0,0],"distance":2.7,"yaw":0.5,"pitch":0.32}}}} }}
         \\] }}
-    , .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness }) catch "";
+    , .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z }) catch "";
 }
 
 /// Read back the framebuffer and write it to `out` as a (top-down RGB) PPM via
