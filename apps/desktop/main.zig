@@ -598,6 +598,14 @@ fn envF32(name: [*:0]const u8) f32 {
     return std.fmt.parseFloat(f32, std.mem.span(v)) catch 0;
 }
 
+/// Thumbnail render resolution (square). Rendered large and downscaled by the
+/// caller for supersampled anti-aliasing — the dimple rims and silhouette are
+/// high-frequency and alias badly on Retina at 1:1. Default 1024.
+fn thumbSize() c_int {
+    const v = std.c.getenv("QUINE_THUMB_SIZE") orelse return 1024;
+    return std.fmt.parseInt(c_int, std.mem.span(v), 10) catch 1024;
+}
+
 fn readThumbEnv() void {
     if (std.c.getenv("QUINE_THUMB") == null) return;
     const out: [*:0]const u8 = std.c.getenv("QUINE_THUMB_OUT") orelse "thumb.ppm";
@@ -657,13 +665,14 @@ fn captureThumb(out: [*:0]const u8) void {
 pub fn main() void {
     readThumbEnv();
     const tn = thumb_cfg != null;
+    const tsz = if (tn) thumbSize() else 0;
     sapp.run(.{
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .width = if (tn) 512 else 640,
-        .height = if (tn) 512 else 480,
+        .width = if (tn) tsz else 640,
+        .height = if (tn) tsz else 480,
         .fullscreen = !tn,
         .high_dpi = !tn,
         .icon = .{ .sokol_default = true },
