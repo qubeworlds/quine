@@ -408,6 +408,23 @@ fn dispatchMessage(raw: []const u8) void {
             if (parseRgba(x)) |e| mat.emissive = .{ .x = e.x, .y = e.y, .z = e.z };
         }
         if (std.mem.eql(u8, nv.string, "fedora")) App.fedora_r = mat.base_color.x;
+    } else if (std.mem.eql(u8, tv.string, "gaze")) {
+        // Live, in-place eye direction: update one entity's Gaze target without
+        // rebuilding the world — the gaze system eases toward it and the eye
+        // bones follow each tick. This is the per-frame channel an animator (or a
+        // "look at the target" skill) drives, so eyes can move smoothly with no
+        // scene reload / mesh re-upload. Shape:
+        //   {type:"gaze", entity:"dancer", dir:[x,y,z]}  (head-local, +Z ahead)
+        const nv = v.object.get("entity") orelse return;
+        if (nv != .string) return;
+        const b = App.stage.find(nv.string) orelse return;
+        const d = parseRgba(v.object.get("dir") orelse return) orelse return;
+        const dir = m.Vec3{ .x = d.x, .y = d.y, .z = d.z };
+        if (App.stage.world.get(core.Gaze, b.entity)) |g| {
+            g.target = dir; // ease toward the new look point
+        } else {
+            App.stage.world.set(core.Gaze, b.entity, .{ .target = dir, .dir = dir });
+        }
     }
 }
 
