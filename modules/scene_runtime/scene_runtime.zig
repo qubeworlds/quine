@@ -183,6 +183,15 @@ pub const SceneRuntime = struct {
         }
         self.bindings = all[0..cursor];
 
+        // nose meshes: built on their own entity (like the fedora), seated in the
+        // same facial frame as the eyes so the whole face lines up.
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .nose) continue;
+            if (g.nose.fit_to_joint == null) continue;
+            try self.buildNose(a, &self.bindings[i], g.nose);
+        }
+
         self.physics.optimize();
     }
 
@@ -311,6 +320,50 @@ pub const SceneRuntime = struct {
                 cursor.* += 1;
             }
         }
+    }
+
+    /// Build the nose mesh on its own entity (like the fedora — one mesh, no
+    /// children), seated in the SAME facial frame the eyes use: anchored on the
+    /// skull centroid, bridge dropped to eye level, pushed forward onto the face.
+    /// So the nose sits centred on the bridge between the eyes.
+    fn buildNose(self: *SceneRuntime, a: std.mem.Allocator, b: *Binding, ny: anytype) !void {
+        const pi = b.parent_idx orelse return;
+        const parent = &self.bindings[pi];
+        const pose = if (parent.pose) |*ps| ps else return;
+        const head_node = parent.head_joint;
+        const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
+
+        const bounds = core.measureJointBounds(if (parent.model) |*mdl| mdl else return, pose, head_node);
+        if (bounds.count == 0) return;
+        const head_radius_w = bounds.radius_xz * scale;
+        if (head_radius_w <= 0) return;
+
+        const base_x = (bounds.centroid.x - pose.global[head_node].m[12]) * scale;
+        const base_y = (bounds.centroid.y - pose.global[head_node].m[13]) * scale;
+        const base_z = (bounds.centroid.z - pose.global[head_node].m[14]) * scale;
+
+        const verts = try a.alloc(core.Vertex, core.noseVertexCount(ny.rings, ny.segments));
+        const indices = try a.alloc(u32, core.noseIndexCount(ny.rings, ny.segments));
+        const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const mesh = core.nose(
+            ny.length_fraction * head_radius_w,
+            ny.width_fraction * head_radius_w,
+            ny.projection_fraction * head_radius_w,
+            ny.rings,
+            ny.segments,
+            white,
+            verts,
+            indices,
+        );
+        self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
+        self.world.set(core.Material, b.entity, .{ .base_color = vec4(ny.color), .roughness = 0.5 });
+
+        // Seat the bridge at eye level (same drop as the eyes), on the face surface.
+        b.parent_offset = .{
+            base_x,
+            base_y - ny.bridge_drop_fraction * head_radius_w,
+            base_z + ny.forward_fraction * head_radius_w,
+        };
     }
 
     pub fn deinit(self: *SceneRuntime) void {

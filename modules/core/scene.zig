@@ -72,6 +72,26 @@ pub const Geometry = union(enum) {
         iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
         segments: u32 = 24,
     },
+    /// A stylised nose, fitted to a head joint like the eyes and seated in the
+    /// same facial frame (centred on the bridge between the eyes). Built by
+    /// `core.nose`; placed by `scene_runtime` so it shares the eyes' anchor.
+    nose: struct {
+        fit_to_joint: ?[]const u8 = null,
+        /// Bridge (top) height: fraction of head radius below the skull centroid
+        /// — match the eyes' `drop_fraction` so the bridge sits at eye level.
+        bridge_drop_fraction: f32 = 0.3,
+        /// Vertical length (bridge→base) as a fraction of head radius.
+        length_fraction: f32 = 0.5,
+        /// Half-width at the nostrils as a fraction of head radius.
+        width_fraction: f32 = 0.28,
+        /// Forward protrusion of the tip beyond the face, as a fraction of head radius.
+        projection_fraction: f32 = 0.45,
+        /// Face-surface depth (matches the eyes' `forward_fraction`).
+        forward_fraction: f32 = 0.9,
+        color: Rgba = .{ 0.85, 0.7, 0.62, 1 }, // skin-ish
+        segments: u32 = 16,
+        rings: u32 = 10,
+    },
 };
 
 /// PBR material (metallic-roughness). `color` is the base colour (albedo);
@@ -281,6 +301,18 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("scleraColor")) |x| g.eyes.sclera_color = try asRgba(x);
         if (o.get("irisColor")) |x| g.eyes.iris_color = try asRgba(x);
         if (o.get("segments")) |x| g.eyes.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "nose")) {
+        var g = Geometry{ .nose = .{} };
+        if (o.get("fitToJoint")) |x| g.nose.fit_to_joint = try asStr(x);
+        if (o.get("bridgeDropFraction")) |x| g.nose.bridge_drop_fraction = try asF32(x);
+        if (o.get("lengthFraction")) |x| g.nose.length_fraction = try asF32(x);
+        if (o.get("widthFraction")) |x| g.nose.width_fraction = try asF32(x);
+        if (o.get("projectionFraction")) |x| g.nose.projection_fraction = try asF32(x);
+        if (o.get("forwardFraction")) |x| g.nose.forward_fraction = try asF32(x);
+        if (o.get("color")) |x| g.nose.color = try asRgba(x);
+        if (o.get("segments")) |x| g.nose.segments = try asU32(x);
+        if (o.get("rings")) |x| g.nose.rings = try asU32(x);
         return g;
     }
     return error.InvalidScene;

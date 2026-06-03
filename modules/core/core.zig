@@ -47,6 +47,9 @@ pub const sphereIndexCount = assets.sphereIndexCount;
 pub const fedora = assets.fedora;
 pub const fedoraVertexCount = assets.fedoraVertexCount;
 pub const fedoraIndexCount = assets.fedoraIndexCount;
+pub const nose = assets.nose;
+pub const noseVertexCount = assets.noseVertexCount;
+pub const noseIndexCount = assets.noseIndexCount;
 
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;

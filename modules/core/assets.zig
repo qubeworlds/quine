@@ -487,6 +487,74 @@ pub fn annulus(
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
 
+// -----------------------------------------------------------------------------
+// Nose — a stylised lofted ridge built in its own local space: the bridge at the
+// origin, running DOWN -Y to the base, bulging +Z (forward). Front-half arcs
+// (`segments` across the face) stacked over `rings` vertical stations; smooth
+// normals so it shades as a rounded form. Like the eye parts, +Z is the face
+// normal so it composes with the same facial frame.
+// -----------------------------------------------------------------------------
+
+pub fn noseVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn noseIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// Generate a nose of `length` (bridge→base, down -Y), `base_width` (half-width
+/// at the nostrils) and `projection` (how far the tip bulges +Z). The protrusion
+/// grows from the bridge to a peak near the tip; the width grows toward the
+/// base. Buffers must hold nose{Vertex,Index}Count entries.
+pub fn nose(
+    length: f32,
+    base_width: f32,
+    projection: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const t = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)); // 0 bridge → 1 base
+        const y = -t * length;
+        const proj = projection * (0.2 + 0.8 * @sin(t * std.math.pi * 0.85)); // bulge, peaks near the tip
+        const half_w = base_width * (0.25 + 0.75 * t); // narrow at the bridge, wide at the nostrils
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const a = -std.math.pi * 0.5 + @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * std.math.pi; // front half −90..+90
+            const x = half_w * @sin(a);
+            const z = proj * @cos(a); // most forward on the centreline
+            verts[vi] = .{ .position = m.Vec3.init(x, y, z), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const av = r * stride + s;
+            const bv = av + stride;
+            indices[ii + 0] = av;
+            indices[ii + 1] = av + 1;
+            indices[ii + 2] = bv;
+            indices[ii + 3] = av + 1;
+            indices[ii + 4] = bv + 1;
+            indices[ii + 5] = bv;
+            ii += 6;
+        }
+    }
+
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -561,4 +629,23 @@ test "ring fills ringCount with inner/outer radii in z=0" {
         try std.testing.expectApproxEqAbs(@as(f32, 0.4), inr, 1e-5);
         try std.testing.expectApproxEqAbs(@as(f32, 0.5), outr, 1e-5);
     }
+}
+
+test "nose fills noseCount, runs bridge→base down -Y and bulges +Z, with unit normals" {
+    const rings: u32 = 8;
+    const segments: u32 = 10;
+    var verts: [noseVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [noseIndexCount(rings, segments)]u32 = undefined;
+    const mesh = nose(0.3, 0.12, 0.16, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(noseVertexCount(rings, segments), mesh.vertices.len);
+    try std.testing.expectEqual(noseIndexCount(rings, segments), mesh.indices.len);
+    var min_y: f32 = 0;
+    var max_z: f32 = 0;
+    for (mesh.vertices) |v| {
+        if (v.position.y < min_y) min_y = v.position.y;
+        if (v.position.z > max_z) max_z = v.position.z;
+        try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-4);
+    }
+    try std.testing.expect(min_y < -0.25); // runs down toward the base
+    try std.testing.expect(max_z > 0.1); // bulges forward
 }
