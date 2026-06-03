@@ -101,6 +101,7 @@ pub fn build(b: *Build) !void {
     });
     // The character mesh is also importable from core so its tests can embed it.
     mod_core.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_core.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-half-body.glb") });
 
     // --- scene_runtime: loads core.SceneData into a live World + physics. Sits
     // above the core->render boundary (imports core + the physics sibling), so
@@ -241,6 +242,7 @@ pub fn build(b: *Build) !void {
     // they ship inside the binary (no filesystem on web).
     mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
     mod_app.addAnonymousImport("head.glb", .{ .root_source_file = b.path("assets/head.glb") });
+    mod_app.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-half-body.glb") });
     mod_app.addAnonymousImport("scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
     mod_app.addAnonymousImport("skill.js", .{ .root_source_file = b.path("modules/script/keepie-uppie.skill.js") });
     // Link the QuickJS interpreter into the app (native + web) so behaviour

@@ -231,6 +231,9 @@ pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
             if (nobj.get("rotation")) |r| node.rotation = .{ .x = jfloat(r.array.items[0]), .y = jfloat(r.array.items[1]), .z = jfloat(r.array.items[2]), .w = jfloat(r.array.items[3]) };
             if (nobj.get("scale")) |s| node.scale = .{ .x = jfloat(s.array.items[0]), .y = jfloat(s.array.items[1]), .z = jfloat(s.array.items[2]) };
         }
+        if (nobj.get("name")) |nm| if (nm == .string) {
+            node.name = try allocator.dupe(u8, nm.string);
+        };
         nodes[i] = node;
     }
     for (nodes_json.items, 0..) |nv, i| {

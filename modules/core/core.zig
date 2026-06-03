@@ -375,6 +375,31 @@ test "loads CesiumMan skeleton + clip and the sampler moves joints" {
     try std.testing.expect(diff > 0.01);
 }
 
+test "RPM avatar exposes named eye bones — eye positions straight from the rig" {
+    const glb = @embedFile("rpm.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // The rig names its eye bones — no socket-measuring or carving needed.
+    const le = model.skeleton.findNode("LeftEye") orelse return error.NoLeftEye;
+    const re = model.skeleton.findNode("RightEye") orelse return error.NoRightEye;
+
+    var pose = try anim.Pose.init(alloc, model.skeleton.nodes.len);
+    defer pose.deinit(alloc);
+    pose.sample(&model.skeleton, null, 0); // bind pose
+
+    const lp = pose.global[le].m;
+    const rp = pose.global[re].m;
+    std.debug.print("\nRPM eye bones (bind, world): LeftEye=({d:.3},{d:.3},{d:.3}) RightEye=({d:.3},{d:.3},{d:.3})\n", .{ lp[12], lp[13], lp[14], rp[12], rp[13], rp[14] });
+
+    // Two distinct eyes, symmetric about the centreline (~same height), set apart.
+    try std.testing.expect(@abs(lp[12] - rp[12]) > 0.02); // apart in X
+    try std.testing.expectApproxEqAbs(lp[13], rp[13], 0.02); // same height
+    try std.testing.expect(@abs(lp[12] + rp[12]) < 0.03); // symmetric about x=0
+    try std.testing.expect(lp[13] > 0.3); // up at head height (half-body avatar; origin near the chest)
+}
+
 test "measureJointBounds finds a head-sized region on CesiumMan" {
     const glb = @embedFile("character.glb");
     const alloc = std.testing.allocator;

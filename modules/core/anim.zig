@@ -38,6 +38,9 @@ pub const Node = struct {
     scale: m.Vec3 = m.Vec3.splat(1),
     has_matrix: bool = false,
     matrix: m.Mat4 = m.Mat4.identity,
+    /// glTF node name (e.g. "LeftEye"), duped into the model's allocator. Empty
+    /// if unnamed. Lets callers find rig bones by name (eye bones, humanoid map).
+    name: []const u8 = "",
 };
 
 /// The skeleton: every node (for hierarchy), the skin's joint node indices, and
@@ -50,6 +53,15 @@ pub const Skeleton = struct {
     pub fn jointCount(self: Skeleton) usize {
         return self.joints.len;
     }
+
+    /// Node index of the first node named `name`, or null. For finding rig bones
+    /// by name (e.g. "LeftEye"/"RightEye" on a Ready-Player-Me-style avatar).
+    pub fn findNode(self: Skeleton, name: []const u8) ?u32 {
+        for (self.nodes, 0..) |n, i| {
+            if (std.mem.eql(u8, n.name, name)) return @intCast(i);
+        }
+        return null;
+    }
 };
 
 /// A loaded character: skinned mesh + skeleton + animation clips.
@@ -61,6 +73,7 @@ pub const Model = struct {
     pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
         allocator.free(self.mesh.vertices);
         if (self.mesh.indices.len > 0) allocator.free(self.mesh.indices);
+        for (self.skeleton.nodes) |n| if (n.name.len > 0) allocator.free(@constCast(n.name));
         allocator.free(self.skeleton.nodes);
         allocator.free(self.skeleton.joints);
         allocator.free(self.skeleton.inverse_bind);
