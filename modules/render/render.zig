@@ -60,6 +60,11 @@ pub const HudInfo = struct {
     /// reached + rebuilt the scene.
     reloads: u32 = 0,
     fedora_r: f32 = -1,
+    /// Count of frames the editor has received over the room WebSocket (read off
+    /// `window.QUINE_MSG_COUNT`). If this climbs in a snapshot, the JS→wasm poll
+    /// bridge is delivering; if it stays 0 while the editor's activity dot
+    /// flashes, the messages reach JS but not the engine.
+    ws_msgs: u32 = 0,
 };
 
 /// A translation gizmo to draw at `origin`, with three axis handles of world
@@ -331,7 +336,12 @@ pub const Renderer = struct {
         // blurry low-res overlay.
         const scale = 2.0 * info.dpi_scale;
         sdtx.canvas(@as(f32, @floatFromInt(info.width)) / scale, @as(f32, @floatFromInt(info.height)) / scale);
-        sdtx.origin(0.5, 0.5);
+        // Top margin of ~3.5 character cells (~56 CSS px). One cell is 8 canvas
+        // px, and the canvas-to-CSS scaling cancels DPI, so a cell is ~16 CSS px
+        // regardless of display. This clears the editor's overlay top bar, whose
+        // header would otherwise clip the first HUD lines (it's hidden in full
+        // screen, which is why the HUD looks fine there).
+        sdtx.origin(0.5, 3.5);
         sdtx.font(0);
         sdtx.color3b(0x00, 0xFF, 0x66);
         sdtx.print("quine\n", .{});
@@ -341,6 +351,7 @@ pub const Renderer = struct {
         sdtx.print("size     : {d} x {d}\n", .{ info.width, info.height });
         sdtx.print("mouse    : {d:.0}, {d:.0}\n", .{ info.mouse_x, info.mouse_y });
         sdtx.print("reload   : n={d} fedR={d:.2}\n", .{ info.reloads, info.fedora_r });
+        sdtx.print("messages : {d}\n", .{info.ws_msgs});
         sdtx.print("[tab / 3-finger] toggle hud\n", .{});
         sdtx.draw();
     }

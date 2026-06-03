@@ -107,6 +107,10 @@ const App = struct {
     // reloads, and the fedora's current mesh red channel (-1 = no mesh).
     var reload_count: u32 = 0;
     var fedora_r: f32 = -1;
+    // Count of frames the editor has received over the room WebSocket, read off
+    // `window.QUINE_MSG_COUNT` each frame (web only). Surfaced in the HUD as an
+    // end-to-end check that the JS→wasm poll bridge is actually delivering.
+    var ws_msgs: u32 = 0;
 };
 
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
@@ -216,6 +220,9 @@ fn findCamera(world: *core.World) ?core.Entity {
 /// iterating on behaviour/scene is a data push — no rebuild. (Web only.)
 fn checkHotReload() void {
     if (builtin.os.tag != .emscripten) return;
+    // Mirror the editor's WebSocket frame count into the HUD (diagnostic): proves
+    // the JS→wasm poll bridge can read `window` at all, independent of reloads.
+    App.ws_msgs = @intCast(emscripten_run_script_int("(window.QUINE_MSG_COUNT|0)"));
     if (emscripten_run_script_int("(window.QUINE_RELOAD_SKILL?1:0)") != 0) {
         const code = emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')");
         App.js.loadSkill(std.mem.span(code)) catch {};
@@ -327,6 +334,7 @@ export fn frame() void {
         .mouse_y = App.mouse_y,
         .reloads = App.reload_count,
         .fedora_r = App.fedora_r,
+        .ws_msgs = App.ws_msgs,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
 }
