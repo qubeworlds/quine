@@ -41,21 +41,89 @@ The **next major effort is PBR**: albedo / metallic / roughness as material
 retires the per-vertex recolour path and its re-upload. See §1 (Materials &
 textures) for the existing breakdown.
 
-## 1. Materials & textures
+## 1. Materials & textures (PBR maps)
 
-Goal: surfaces carry real materials/textures, not just a flat vertex colour.
+Goal: surfaces carry real **textured** PBR materials, not a flat per-draw colour.
+The shader already does the PBR *math* (GGX + Smith + Fresnel + ambient env) but
+reads base-colour / metallic / roughness / emissive as **scalar uniforms** — so
+every surface is one colour + one roughness, no per-pixel detail. This is what
+makes a real head (or our procedural one) look like plastic, not skin. The work
+is to feed that BRDF from **texture maps**, sampled per pixel. (This is also "the
+material server" referenced elsewhere.)
 
-- [ ] **glTF: load UVs + base-colour texture.** CesiumMan *is* textured — our
-      loader (`modules/core/gltf.zig`) currently drops UVs and the image. Read
-      `TEXCOORD_0` and the material's base-colour texture/image bytes.
-- [ ] **Material component + texture registry.** A `Material` (base colour,
-      texture handle, later metallic/roughness) on entities; a CPU-side texture
-      registry in `core` mirroring `MeshRegistry` (handles, no GPU dep), so
-      headless/batch still works.
-- [ ] **Render: upload + sample textures.** Texture upload + bind in
-      `modules/render`; extend the shaders (`shaders/*.glsl`) to sample the
-      albedo texture. Vertex layout gains UVs (static + skinned).
-- [ ] Decide the lighting target: keep simple lit, or step toward PBR (later).
+The maps, and what each unlocks on a face:
+
+| Map | Stores | Effect | Notes |
+|---|---|---|---|
+| **Base colour** (albedo) | sRGB colour, no lighting | skin/lip/brow colour | decode **sRGB→linear** before lighting |
+| **Normal** | tangent-space normal (RGB) | pores, wrinkles, lip creases on low-poly | needs **per-vertex tangents** |
+| **Metallic-roughness** | M in blue, R in green (glTF packs them) | wet lips/eyes vs matte skin | linear data, no sRGB |
+| **Ambient occlusion** | baked soft shadow | depth in nostrils/sockets/under-lip | often packed in the R channel |
+| **Emissive** | glow colour | (none for skin) | sRGB |
+
+Work, smallest-first:
+
+- [ ] **glTF: load UVs + samplers + image bytes.** `modules/core/gltf.zig`
+      currently drops `TEXCOORD_0` and the images. Read UVs and the material's
+      texture references (base-colour first, then MR/normal/AO/emissive) + the
+      embedded/we-referenced image bytes. CesiumMan is already textured — use it
+      as the first real case.
+- [ ] **Image decode (wasm-safe).** Decode PNG/JPG to RGBA. Options: `zigimg`
+      (pure Zig, no C — simplest for wasm) or `stb_image` (single-header C, builds
+      via Zig like miniaudio). Pick one; verify the Emscripten build early.
+- [ ] **CPU texture registry in `core`.** Mirror `MeshRegistry`: handles → CPU
+      image data (no GPU dep), with a revision counter for live edits, so
+      headless/batch/replay still works.
+- [ ] **Material gains texture handles.** Extend `components.Material` with
+      optional handles per map (albedo, MR, normal, AO, emissive) alongside the
+      existing scalar factors (factor × sampled texel, the glTF convention).
+- [ ] **Vertex layout: UVs + tangents.** Add `TEXCOORD_0` (static + skinned
+      vertex formats) and **tangents** (needed for normal mapping; either read
+      from glTF or generate from positions+UVs).
+- [ ] **Render: upload + bind + sample.** Upload textures to sokol images
+      (cache by handle+revision like meshes); bind per draw; extend
+      `shaders/triangle.glsl` (+ skinned) to sample albedo (sRGB→linear), apply
+      the **normal map** in tangent space, read **metallic-roughness** and **AO**,
+      and feed the existing BRDF. Mind colour spaces (sRGB albedo/emissive vs
+      linear normal/MR/AO).
+- [ ] **Retire the per-vertex recolour path** (`MeshRegistry.setColor` + its
+      re-upload) once colour is a material uniform/texture, not baked per-vertex.
+- [ ] *(later, for skin specifically)* **subsurface scattering / translucency** —
+      cheap wrap-diffuse or a SSS approximation, so skin reads as skin not vinyl.
+
+## 1b. Procedural characters & faces
+
+Goal: build characters from **data-driven procedural parts** (no bespoke meshes),
+so a face is authored, tunable live, and riggable — and so we *understand* every
+piece. Shipped this milestone (see the `/docs/eyes` playground):
+
+- [x] **Eye system** — `core.eye`: a 5-part eye (sclera, iris, shallow-bulge
+      cornea (**transparent**, real alpha-blended pass with back-to-front sort),
+      pupil disc, tear-line ring) sized from a head joint, plus a driven **`Gaze`**
+      component/system the skill can aim. Primitives in `assets.zig`
+      (`sphericalCap`/`disk`/`annulus`).
+- [x] **Nose / oval head primitives** (`nose`, `ovalHead` — egg shape, tapered
+      chin) and a **`kind:"face"` composite** that seats head + eyes + nose +
+      brows + lips + a (green) fedora in one shared facial frame, expanding into
+      individually-riggable sub-entities.
+- [x] **SDF + surface-nets mesher** (`core.sdf`) — the continuous-surface path.
+
+Open work:
+- [ ] **SDF face** — compose the head as ONE blended field (ellipsoid skull
+      `smin` nose/brow/lips, eye sockets `smax`-carved) and mesh it, so the face
+      is a single continuous skin instead of intersecting primitives (the current
+      composite reads as "assembled lumps"). The mesher is built; the field
+      composition + tuning is the work. Eyes stay as placed spheres in the sockets.
+- [ ] **Real head-mesh option.** Alternative to the SDF: load a sculpted,
+      **properly-licensed** (CC0/CC-BY) head `.glb` as the face base and seat the
+      procedural eyes in its sockets + fedora on top. Needs the glTF **texture**
+      work above to look right (geometry-only = flat skin). Source the asset
+      legitimately — Sketchfab "view-only" models are not usable.
+- [ ] **Rig the face onto the animated dancer.** Mount the `face` on CesiumMan's
+      head joint with a fixed *face-mount* rotation (its bone frame is rotated:
+      local X=world-up, Y=world-right, Z=world-back), so the face rides the walk.
+- [ ] **Bake good playground values** into the schema defaults once the look is
+      dialed; let a **look-at skill** drive `Gaze` (track the ball).
 
 ## 2. Scenes — preserve & combine
 
