@@ -123,10 +123,9 @@ const App = struct {
     /// clock a multiplayer sim is keyed on — messages carry the tick they belong
     /// to so a late/reordered one can be dropped instead of clobbering newer state.
     var world_tick: u64 = 0;
-    /// Newest message tick applied. A frame whose tick is <= this is "too late"
-    /// (stale or out of order) and ignored. Counted for the HUD diagnostic.
-    var last_msg_tick: u64 = 0;
-    var dropped_msgs: u32 = 0;
+    /// Gates inbound frames by their tick: anything not strictly newer than the
+    /// last accepted is "too late" and dropped (see core.TickGate).
+    var tick_gate: core.TickGate = .{};
 };
 
 /// Push one inbound message frame (a JSON envelope `{"type":...}`) from the
@@ -284,11 +283,7 @@ fn dispatchMessage(raw: []const u8) void {
             .float => |x| if (x > 0) @intFromFloat(x) else 0,
             else => 0,
         };
-        if (t <= App.last_msg_tick) {
-            App.dropped_msgs +%= 1;
-            return;
-        }
-        App.last_msg_tick = t;
+        if (!App.tick_gate.accept(t)) return; // too late / reordered — drop
     }
     if (std.mem.eql(u8, tv.string, "scene")) {
         if (v.object.get("json")) |j| {
@@ -458,8 +453,8 @@ export fn frame() void {
         .fedora_r = App.fedora_r,
         .ws_msgs = App.ws_msgs,
         .world_tick = App.world_tick,
-        .msg_tick = App.last_msg_tick,
-        .dropped = App.dropped_msgs,
+        .msg_tick = App.tick_gate.last,
+        .dropped = App.tick_gate.dropped,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
 }

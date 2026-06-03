@@ -58,6 +58,14 @@ pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
 
+/// World-tick gate: drops inbound frames whose tick has already passed.
+pub const TickGate = @import("tick.zig").TickGate;
+
+test {
+    // Pull in the sibling files' unit tests so `zig build test` runs them.
+    _ = @import("tick.zig");
+}
+
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.
 pub const loadGlbMesh = gltf.loadStaticMesh;

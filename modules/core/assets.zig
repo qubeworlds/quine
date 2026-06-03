@@ -276,3 +276,30 @@ pub fn fedora(
 
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "MeshRegistry.setColor recolours every vertex in place and bumps the revision" {
+    var reg: MeshRegistry = .{};
+    // Mutable vertex backing (setColor edits in place via @constCast).
+    var verts = [_]Vertex{
+        .{ .position = .{}, .normal = .{}, .color = .{ .x = 1, .y = 0, .z = 0, .w = 1 } },
+        .{ .position = .{}, .normal = .{}, .color = .{ .x = 1, .y = 0, .z = 0, .w = 1 } },
+        .{ .position = .{}, .normal = .{}, .color = .{ .x = 1, .y = 0, .z = 0, .w = 1 } },
+    };
+    const h = reg.add(.{ .vertices = &verts });
+    try std.testing.expectEqual(@as(u32, 0), reg.rev(h)); // fresh
+
+    reg.setColor(h, 0.1, 0.7, 0.2, 1.0);
+    try std.testing.expectEqual(@as(u32, 1), reg.rev(h)); // bumped -> render re-uploads
+    for (reg.get(h).vertices) |v| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.1), v.color.x, 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.7), v.color.y, 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.2), v.color.z, 1e-6);
+    }
+
+    reg.setColor(h, 0.0, 0.0, 1.0, 1.0);
+    try std.testing.expectEqual(@as(u32, 2), reg.rev(h)); // each edit bumps again
+}
