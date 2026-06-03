@@ -55,6 +55,12 @@ pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;
+pub const Gaze = components.Gaze;
+
+/// Eye anatomy as engine knowledge: one `eye.Spec` expands into the five parts
+/// (sclera/iris/cornea/pupil/tear-line) as primitives + materials + flags. The
+/// scene runtime uses it to expand a `kind:"eyes"` entity, sized from the head.
+pub const eye = @import("eye.zig");
 
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
@@ -66,6 +72,7 @@ pub const TickGate = @import("tick.zig").TickGate;
 test {
     // Pull in the sibling files' unit tests so `zig build test` runs them.
     _ = @import("tick.zig");
+    _ = @import("eye.zig");
 }
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
@@ -102,7 +109,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze }, max_entities);
 
 // =============================================================================
 // World
@@ -187,6 +194,7 @@ pub const World = struct {
         self.time += dt;
         systems.spin(self, dt);
         systems.squash(self, dt);
+        systems.gaze(self, dt);
     }
 };
 

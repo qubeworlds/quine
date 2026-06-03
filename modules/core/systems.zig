@@ -11,10 +11,13 @@
 //! kinematic spin, and squash-and-stretch relaxation (whose impulses the app
 //! raises from real Jolt contacts).
 
+const std = @import("std");
+const m = @import("math");
 const components = @import("components.zig");
 const Transform = components.Transform;
 const Spin = components.Spin;
 const Squash = components.Squash;
+const Gaze = components.Gaze;
 
 /// Advance the rotation of every entity that carries a `Spin`, by its own
 /// angular velocity. Entities without a `Spin` (e.g. the camera) are left
@@ -49,5 +52,37 @@ pub fn squash(world: anytype, dt: f64) void {
             .y = sq.rest_scale.y * (1.0 - v),
             .z = sq.rest_scale.z * (1.0 + 0.5 * v),
         };
+    }
+}
+
+/// Clamp a look direction into the forward cone of half-angle `max_angle` around
+/// +Z: directions already inside pass through; ones outside are pulled back to
+/// the cone wall keeping their azimuth, so the eye never rolls past its limit.
+fn clampToCone(dir: m.Vec3, max_angle: f32) m.Vec3 {
+    const fwd = m.Vec3.init(0, 0, 1);
+    const n = dir.normalize();
+    const cos_a = n.dot(fwd);
+    const max_cos = @cos(max_angle);
+    if (cos_a >= max_cos) return n; // inside the cone
+    // Lateral (off-axis) component; if we're pointing nearly straight back it's
+    // degenerate, so snap to forward.
+    const lateral = n.sub(fwd.scale(cos_a));
+    const ll = lateral.length();
+    if (ll < 1e-5) return fwd;
+    return fwd.scale(max_cos).add(lateral.scale(@sin(max_angle) / ll));
+}
+
+/// Ease each `Gaze`'s current `dir` toward its (cone-clamped) `target`. The eye
+/// parts' orientation is composed from `dir` by `scene_runtime` during the
+/// joint-follow step, so this only has to maintain the smoothed direction. A
+/// skill sets `target` (e.g. the heading to the ball); the eyes chase it.
+pub fn gaze(world: anytype, dt: f64) void {
+    const dt32: f32 = @floatCast(dt);
+    var it = world.query(&.{Gaze});
+    while (it.next()) |e| {
+        const g = world.get(Gaze, e).?;
+        const tgt = clampToCone(g.target, g.max_angle);
+        const a = @min(@as(f32, 1.0), g.ease * dt32);
+        g.dir = g.dir.lerp(tgt, a).normalize();
     }
 }
