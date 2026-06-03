@@ -465,10 +465,13 @@ pub const SceneRuntime = struct {
             self.world.set(core.Material, ent, skin);
 
             R = f.head_radius;
-            eyeball_r = 0.12 * R; // a real eye is ~1/8 of the head radius
-            eye_x = 0.42 * f.eye_spacing_fraction * R;
-            eye_y = 0; // the measured eye line is the origin
-            eye_z = face_front_mesh * s - eyeball_r * 0.8; // nestle into the socket
+            // Tunable from the scene (the measured eye line is the origin): size,
+            // spacing, a small vertical nudge, and a recess so the eyeball nestles
+            // INTO the socket rather than bulging proud.
+            eyeball_r = f.eye_size_fraction * R;
+            eye_x = 0.5 * f.eye_spacing_fraction * R;
+            eye_y = f.eye_level_fraction * R;
+            eye_z = face_front_mesh * s - eyeball_r * 1.15;
             crown_y = (hi.y - eye_y_mesh) * s;
         } else {
             const rings: u32 = f.segments;
@@ -480,6 +483,7 @@ pub const SceneRuntime = struct {
         }
 
         // Eyes: the five parts per side, in the eye-local frame at each eye centre.
+        // Skipped when `eyes` is off (a sculpted head with its own eyes).
         const spec = core.eye.Spec{
             .radius = eyeball_r,
             .pupil_scale = f.pupil_scale,
@@ -487,13 +491,15 @@ pub const SceneRuntime = struct {
             .iris_color = vec4(f.iris_color),
             .segments = f.segments,
         };
-        for ([_]f32{ -1, 1 }) |sx| {
-            for (core.eye.all_parts) |part| {
-                const g = core.eye.partGeom(spec, part);
-                const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
-                const idx = try a.alloc(u32, core.eye.partIndexCount(g));
-                const mesh = core.eye.buildPart(g, verts, idx);
-                try self.addFaceChild(a, all, cursor, face_idx, mesh, g.material, .{ sx * eye_x, eye_y, eye_z }, m.Vec3.splat(1), if (g.gaze) gaze_dir else null);
+        if (f.eyes) {
+            for ([_]f32{ -1, 1 }) |sx| {
+                for (core.eye.all_parts) |part| {
+                    const g = core.eye.partGeom(spec, part);
+                    const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
+                    const idx = try a.alloc(u32, core.eye.partIndexCount(g));
+                    const mesh = core.eye.buildPart(g, verts, idx);
+                    try self.addFaceChild(a, all, cursor, face_idx, mesh, g.material, .{ sx * eye_x, eye_y, eye_z }, m.Vec3.splat(1), if (g.gaze) gaze_dir else null);
+                }
             }
         }
 

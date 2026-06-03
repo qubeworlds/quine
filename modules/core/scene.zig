@@ -107,7 +107,8 @@ pub const Geometry = union(enum) {
         head_height: f32 = 0.32,
         chin: f32 = 0.4,
         skin_color: Rgba = .{ 0.86, 0.70, 0.62, 1 },
-        // eyes
+        // eyes — set false for a sculpted head that already has its own eyes
+        eyes: bool = true,
         eye_size_fraction: f32 = 0.17,
         eye_spacing_fraction: f32 = 1.0,
         eye_level_fraction: f32 = 0.18, // above head centre
@@ -355,6 +356,7 @@ fn parseGeometry(v: Value) !Geometry {
         var g = Geometry{ .face = .{} };
         const f = &g.face;
         if (o.get("headMesh")) |x| f.head_mesh = try asStr(x);
+        if (o.get("eyes")) |x| f.eyes = try asBool(x);
         if (o.get("headRadius")) |x| f.head_radius = try asF32(x);
         if (o.get("headHeight")) |x| f.head_height = try asF32(x);
         if (o.get("chin")) |x| f.chin = try asF32(x);

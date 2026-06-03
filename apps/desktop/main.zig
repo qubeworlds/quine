@@ -202,11 +202,12 @@ export fn init() void {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
         App.renderer.preview = true; // studio backdrop + staging lights
-        // Dimples: spherical mapping for the material ball, surface/triplanar for
-        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE). When the material
-        // carries its own surface finish, let that drive it (don't override).
-        const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
-        App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+        if (t.scene == null) {
+            // Material-thumbnail dimples: spherical for the ball, triplanar for the
+            // golf-ball fedora (opt-in). A scene capture renders the scene as-is.
+            const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
+            App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+        }
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
@@ -222,6 +223,25 @@ export fn init() void {
 /// from the scene's camera controller). On failure we leave an empty stage.
 fn loadScene() void {
     if (thumb_cfg) |t| {
+        if (t.scene) |path| {
+            // Headless single-frame capture of an arbitrary scene file (libc IO,
+            // matching captureThumb). Falls back to the material sphere on error.
+            if (std.c.fopen(path, "rb")) |fp| {
+                const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch {
+                    _ = std.c.fclose(fp);
+                    loadSceneFrom(thumbSceneJson(t));
+                    return;
+                };
+                const n = std.c.fread(buf.ptr, 1, buf.len, fp); // whole file (< buf)
+                _ = std.c.fclose(fp);
+                if (n > 0) {
+                    loadSceneFrom(buf[0..n]);
+                    return;
+                }
+            }
+            loadSceneFrom(thumbSceneJson(t));
+            return;
+        }
         loadSceneFrom(thumbSceneJson(t)); // a sphere with the requested material
         return;
     }
@@ -636,7 +656,7 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
 const ThumbGeo = enum { sphere, fedora };
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain" };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain", scene: ?[*:0]const u8 = null };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -671,6 +691,10 @@ fn readThumbEnv() void {
         },
         .dimple = std.c.getenv("QUINE_THUMB_DIMPLE") != null,
         .surface = std.c.getenv("QUINE_THUMB_SURFACE") orelse "plain",
+        // QUINE_THUMB_SCENE=<path>: render that scene file to the output instead
+        // of the material sphere — a headless single-frame capture of any scene
+        // (e.g. the procedural face), for offscreen review on Linux under Xvfb.
+        .scene = std.c.getenv("QUINE_THUMB_SCENE"),
     };
 }
 

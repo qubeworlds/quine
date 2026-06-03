@@ -85,6 +85,18 @@ restores a `zig-pkg/` without it and the build tries to fetch from the network.
 
 - A windowed `zig build run` needs a display; it won't run in a headless CI
   container. Use `zig build test` for headless verification.
+- **Headless *visual* verification** (see the actual render without a display):
+  the engine renders offscreen under **Xvfb + Mesa software GL**. Render any
+  scene file to an image:
+  ```sh
+  QUINE_THUMB=1 QUINE_THUMB_SCENE=scene.json QUINE_THUMB_OUT=/tmp/out.ppm \
+    QUINE_THUMB_SIZE=640 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+    xvfb-run -a ./zig-out/bin/quine        # one frame -> PPM, then exit
+  ```
+  Convert with `python3 -c "from PIL import Image; Image.open('/tmp/out.ppm').save('/tmp/out.png')"`.
+  The camera uses an **orbit controller** (`camera.controller.orbit`
+  `{target,distance,yaw,pitch}`), not a raw transform. This is how to *look at
+  your work* — don't assume "headless = blind."
 - Cross-compiling the **Linux** target from a non-Linux host needs a Linux
   sysroot with X11/GL libs; build Linux on Linux. **Windows** cross-compiles
   from anywhere (import libs ship with Zig).
