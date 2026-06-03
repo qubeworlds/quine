@@ -158,7 +158,9 @@ export fn init() void {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
         App.renderer.preview = true; // studio backdrop + staging lights
-        App.renderer.preview_dimples = (t.geo == .sphere); // golf-ball ball only
+        // Dimples: spherical mapping for the material ball, surface/triplanar for
+        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE).
+        App.renderer.preview_dimples = if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
@@ -588,7 +590,7 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
 const ThumbGeo = enum { sphere, fedora };
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -621,6 +623,7 @@ fn readThumbEnv() void {
             const g = std.c.getenv("QUINE_THUMB_GEO") orelse break :geo .sphere;
             break :geo if (std.mem.eql(u8, std.mem.span(g), "fedora")) .fedora else .sphere;
         },
+        .dimple = std.c.getenv("QUINE_THUMB_DIMPLE") != null,
     };
 }
 

@@ -18,13 +18,15 @@ in vec4 color0;
 
 out vec3 world_normal;
 out vec3 view_dir;
+out vec3 frag_world_pos;
 out vec4 color;
 
 void main() {
-    vec4 world_pos = model * vec4(position, 1.0);
+    vec4 wp = model * vec4(position, 1.0);
     gl_Position = mvp * vec4(position, 1.0);
     world_normal = mat3(model) * normal;
-    view_dir = eye_pos.xyz - world_pos.xyz;
+    view_dir = eye_pos.xyz - wp.xyz;
+    frag_world_pos = wp.xyz;
     color = color0;
 }
 @end
@@ -42,6 +44,7 @@ layout(binding=1) uniform fs_params {
 
 in vec3 world_normal;
 in vec3 view_dir;
+in vec3 frag_world_pos;
 in vec4 color;
 out vec4 frag_color;
 
@@ -108,11 +111,40 @@ vec3 dimpleNormal(vec3 n) {
     return normalize(n + grad * 22.0);
 }
 
+// Surface dimples for arbitrary shapes (the golf-ball fedora): the sphere's
+// lat/long mapping smears on a hat, so tile the dimples in object space with
+// triplanar projection — pick the plane facing away from the dominant normal
+// axis and lay a hex grid of wells in it. Independent of the shape's topology.
+float dimpleSurface(vec3 p, vec3 n) {
+    vec3 an = abs(n);
+    vec2 uv = (an.y >= an.x && an.y >= an.z) ? p.xz : (an.x >= an.z ? p.zy : p.xy);
+    const float spacing = 0.12;
+    vec2 q = uv / spacing;
+    float row = floor(q.y);
+    q.x += 0.5 * mod(row, 2.0); // hex offset alternate rows
+    vec2 f = vec2(fract(q.x) - 0.5, fract(q.y) - 0.5);
+    return 1.0 - smoothstep(0.0, 0.44, length(f)); // 1 at a well centre -> 0
+}
+
+vec3 dimpleSurfaceNormal(vec3 n, vec3 p) {
+    vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    vec3 b = cross(n, t);
+    float e = 0.012;
+    float h0 = dimpleSurface(p, n);
+    float ht = dimpleSurface(p + t * e, n);
+    float hb = dimpleSurface(p + b * e, n);
+    vec3 grad = (ht - h0) * t + (hb - h0) * b;
+    return normalize(n + grad * 1.4);
+}
+
 void main() {
     vec3 n = normalize(world_normal);
     bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
-    bool dimpled = pbr.w > 0.5;  // golf-ball dimples: the sphere material ball only
-    if (dimpled) n = dimpleNormal(n);
+    // Dimples: pbr.w selects the mode — 1 = spherical (the material ball),
+    // 2 = surface/triplanar (the golf-ball fedora and other shapes).
+    if (pbr.w > 1.5) n = dimpleSurfaceNormal(n, frag_world_pos);
+    else if (pbr.w > 0.5) n = dimpleNormal(n);
     vec3 v = normalize(view_dir);
     // Live key light is roughly co-axial with the camera (fine for the editor).
     // For previews that flattens the body and puts a central blob on metals, so
@@ -147,7 +179,11 @@ void main() {
     // Ambient from the environment: diffuse irradiance along N + a reflection
     // along R (roughness-aware Fresnel). This is what makes metals look metallic.
     vec3 r = reflect(-v, n);
-    vec3 f_amb = f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - n_o_v, 5.0);
+    // Grazing reflectance (f90): dielectrics brighten toward white, but metals
+    // keep their tint — else gold/brass desaturate to a white/lavender wash at
+    // grazing, which a dimpled surface (many micro-angles) makes severe.
+    vec3 f90 = mix(vec3(1.0 - rough), f0, metallic);
+    vec3 f_amb = f0 + (max(f90, f0) - f0) * pow(1.0 - n_o_v, 5.0);
     vec3 ambient = env(n) * diffuse_color + env(r) * f_amb;
 
     vec3 col = lit + ambient + emissive.rgb;
