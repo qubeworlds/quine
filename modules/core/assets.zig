@@ -341,6 +341,152 @@ pub fn fedora(
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
 
+// -----------------------------------------------------------------------------
+// Eye primitives — the building blocks the eye assembly composes. All
+// allocator-free with closed-form normals, oriented around +Z so they stack
+// along a gaze axis: a spherical cap (iris bulge / cornea), a flat disk
+// (pupil), and a flat ring/annulus (the wet tear-line rim).
+// -----------------------------------------------------------------------------
+
+pub fn capVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn capIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// A spherical cap (dome) of sphere `radius`, swept from the +Z pole out to
+/// polar angle `arc` (radians): the apex sits at +Z·radius, the rim is the
+/// circle at θ=arc. Normals are the outward sphere directions (closed-form).
+/// `rings` latitude bands by `segments` longitude slices; buffers must hold at
+/// least cap{Vertex,Index}Count entries. Returns a `MeshData` of the prefixes.
+pub fn sphericalCap(
+    radius: f32,
+    arc: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const theta = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)) * arc;
+        const ring_r = @sin(theta);
+        const z = @cos(theta);
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+            const n = m.Vec3.init(ring_r * @cos(phi), ring_r * @sin(phi), z);
+            verts[vi] = .{ .position = n.scale(radius), .normal = n, .color = color };
+            vi += 1;
+        }
+    }
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = r * stride + s; // this ring
+            const b = a + stride; // next ring (further from the pole)
+            indices[ii + 0] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = b;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b + 1;
+            indices[ii + 5] = b;
+            ii += 6;
+        }
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+pub fn diskVertexCount(segments: u32) usize {
+    return segments + 2; // centre + (segments+1) rim (seam vertex duplicated)
+}
+pub fn diskIndexCount(segments: u32) usize {
+    return segments * 3;
+}
+
+/// A flat disk of `radius` in the z=0 plane facing +Z (constant normal): a
+/// triangle fan from a centre vertex. Used for the pupil. Buffers must hold at
+/// least disk{Vertex,Index}Count entries.
+pub fn disk(
+    radius: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const nrm = m.Vec3.init(0, 0, 1);
+    verts[0] = .{ .position = .{}, .normal = nrm, .color = color };
+    var s: u32 = 0;
+    while (s <= segments) : (s += 1) {
+        const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        verts[1 + s] = .{ .position = m.Vec3.init(@cos(phi) * radius, @sin(phi) * radius, 0), .normal = nrm, .color = color };
+    }
+    var ii: usize = 0;
+    s = 0;
+    while (s < segments) : (s += 1) {
+        indices[ii + 0] = 0;
+        indices[ii + 1] = 1 + s;
+        indices[ii + 2] = 2 + s;
+        ii += 3;
+    }
+    return .{ .vertices = verts[0 .. segments + 2], .indices = indices[0..ii] };
+}
+
+pub fn ringVertexCount(segments: u32) usize {
+    return 2 * (segments + 1);
+}
+pub fn ringIndexCount(segments: u32) usize {
+    return segments * 6;
+}
+
+/// A flat annulus between `inner` and `outer` radius in the z=0 plane, facing
+/// +Z (constant normal). Used for the wet tear-line rim around the eye. Inner
+/// and outer vertices are interleaved per slice. Buffers must hold at least
+/// ring{Vertex,Index}Count entries.
+pub fn annulus(
+    inner: f32,
+    outer: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const nrm = m.Vec3.init(0, 0, 1);
+    var vi: usize = 0;
+    var s: u32 = 0;
+    while (s <= segments) : (s += 1) {
+        const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        const c = @cos(phi);
+        const sn = @sin(phi);
+        verts[vi] = .{ .position = m.Vec3.init(c * inner, sn * inner, 0), .normal = nrm, .color = color };
+        vi += 1;
+        verts[vi] = .{ .position = m.Vec3.init(c * outer, sn * outer, 0), .normal = nrm, .color = color };
+        vi += 1;
+    }
+    var ii: usize = 0;
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const in_a = s * 2; // inner, this slice
+        const out_a = s * 2 + 1; // outer, this slice
+        const in_b = (s + 1) * 2; // inner, next slice
+        const out_b = (s + 1) * 2 + 1; // outer, next slice
+        indices[ii + 0] = in_a;
+        indices[ii + 1] = out_a;
+        indices[ii + 2] = in_b;
+        indices[ii + 3] = in_b;
+        indices[ii + 4] = out_a;
+        indices[ii + 5] = out_b;
+        ii += 6;
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -366,4 +512,53 @@ test "MeshRegistry.setColor recolours every vertex in place and bumps the revisi
 
     reg.setColor(h, 0.0, 0.0, 1.0, 1.0);
     try std.testing.expectEqual(@as(u32, 2), reg.rev(h)); // each edit bumps again
+}
+
+test "sphericalCap fills the predicted buffer sizes with unit normals and apex at +Z" {
+    const rings: u32 = 6;
+    const segments: u32 = 12;
+    var verts: [capVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [capIndexCount(rings, segments)]u32 = undefined;
+    const r: f32 = 0.5;
+    const mesh = sphericalCap(r, std.math.pi * 0.35, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(capVertexCount(rings, segments), mesh.vertices.len);
+    try std.testing.expectEqual(capIndexCount(rings, segments), mesh.indices.len);
+    // Apex (ring 0) sits on the +Z pole at radius distance.
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.x, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.y, 1e-5);
+    try std.testing.expectApproxEqAbs(r, mesh.vertices[0].position.z, 1e-5);
+    for (mesh.vertices) |v| try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-5);
+}
+
+test "disk is a +Z-facing fan sized to diskCount, rim at radius" {
+    const segments: u32 = 16;
+    var verts: [diskVertexCount(segments)]Vertex = undefined;
+    var idx: [diskIndexCount(segments)]u32 = undefined;
+    const mesh = disk(0.3, segments, .{ .x = 0, .y = 0, .z = 0, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(diskVertexCount(segments), mesh.vertices.len);
+    try std.testing.expectEqual(diskIndexCount(segments), mesh.indices.len);
+    // Centre at origin, every rim vertex at radius 0.3 in z=0, all normals +Z.
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.length(), 1e-6);
+    for (mesh.vertices[1..]) |v| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.3), @sqrt(v.position.x * v.position.x + v.position.y * v.position.y), 1e-5);
+        try std.testing.expectApproxEqAbs(@as(f32, 0), v.position.z, 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.z, 1e-6);
+    }
+}
+
+test "ring fills ringCount with inner/outer radii in z=0" {
+    const segments: u32 = 20;
+    var verts: [ringVertexCount(segments)]Vertex = undefined;
+    var idx: [ringIndexCount(segments)]u32 = undefined;
+    const mesh = annulus(0.4, 0.5, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(ringVertexCount(segments), mesh.vertices.len);
+    try std.testing.expectEqual(ringIndexCount(segments), mesh.indices.len);
+    // Interleaved: even verts on the inner radius, odd on the outer.
+    var k: usize = 0;
+    while (k < mesh.vertices.len) : (k += 2) {
+        const inr = @sqrt(mesh.vertices[k].position.x * mesh.vertices[k].position.x + mesh.vertices[k].position.y * mesh.vertices[k].position.y);
+        const outr = @sqrt(mesh.vertices[k + 1].position.x * mesh.vertices[k + 1].position.x + mesh.vertices[k + 1].position.y * mesh.vertices[k + 1].position.y);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.4), inr, 1e-5);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.5), outr, 1e-5);
+    }
 }
