@@ -428,7 +428,7 @@ pub const SceneRuntime = struct {
         const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
 
         if (sculpted) {
-            const mesh = try core.loadGlbMesh(a, head_bytes.?); // static (unrigged) mesh
+            var mesh = try core.loadGlbMesh(a, head_bytes.?); // static (unrigged) mesh
             var lo = m.Vec3.init(1e9, 1e9, 1e9);
             var hi = m.Vec3.init(-1e9, -1e9, -1e9);
             for (mesh.vertices) |v| {
@@ -464,8 +464,6 @@ pub const SceneRuntime = struct {
             for (@constCast(mesh.vertices)) |*v| {
                 v.position = m.Vec3.init(v.position.x * s, (v.position.y - eye_y_mesh) * s, v.position.z * s);
             }
-            self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
-            self.world.set(core.Material, ent, skin);
 
             R = f.head_radius;
             // Measure the eye SOCKET (mesh is scaled + centred on the eye line):
@@ -502,14 +500,38 @@ pub const SceneRuntime = struct {
                 }
             }
             eye_x = (inner_x + outer_x) * 0.5; // socket centre
-            eyeball_r = (outer_x - inner_x) * 0.42 * f.eye_size_fraction / 0.16; // fit the opening (size = fine-tune)
+            eyeball_r = (outer_x - inner_x) * 0.30 * f.eye_size_fraction / 0.16; // fit the opening (size = fine-tune)
             eye_y = f.eye_level_fraction * R;
             // Depth at the socket centre, sink the ball so it sits IN the socket.
             var depth_c: f32 = peak_z * 0.85;
             for (mesh.vertices) |v| {
                 if (@abs(v.position.y - eye_y) < band and @abs(@abs(v.position.x) - eye_x) < 0.06 * R) depth_c = @max(depth_c, v.position.z);
             }
-            eye_z = depth_c - eyeball_r * 1.2;
+            eye_z = depth_c - eyeball_r * 1.0; // front ~ flush with the socket rim
+
+            // Carve the closed-lid eye region out of the head so the eyeballs show
+            // through OPEN sockets — the hole's rim occludes the eyeball's sides,
+            // so it reads as an eye in a socket instead of a sphere stuck on a lid.
+            if (f.eyes) {
+                const cl = m.Vec3.init(-eye_x, eye_y, depth_c);
+                const cr = m.Vec3.init(eye_x, eye_y, depth_c);
+                const cut_r = eyeball_r * 1.25; // hole frames the eye
+                var kept: std.ArrayList(u32) = .empty;
+                var ti: usize = 0;
+                while (ti + 2 < mesh.indices.len) : (ti += 3) {
+                    const p0 = mesh.vertices[mesh.indices[ti]].position;
+                    const p1 = mesh.vertices[mesh.indices[ti + 1]].position;
+                    const p2 = mesh.vertices[mesh.indices[ti + 2]].position;
+                    const cen = m.Vec3.init((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0, (p0.z + p1.z + p2.z) / 3.0);
+                    if (cen.sub(cl).length() < cut_r or cen.sub(cr).length() < cut_r) continue; // drop -> hole
+                    kept.appendSlice(a, &.{ mesh.indices[ti], mesh.indices[ti + 1], mesh.indices[ti + 2] }) catch {};
+                }
+                mesh.indices = kept.toOwnedSlice(a) catch mesh.indices;
+            }
+
+            self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            self.world.set(core.Material, ent, skin);
+
             // Seat the hat brim a bit below the crown top so it sits ON the head.
             crown_y = (hi.y - eye_y_mesh) * s - 0.42 * R;
         } else {
