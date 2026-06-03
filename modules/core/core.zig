@@ -39,6 +39,7 @@ pub const MeshRegistry = assets.MeshRegistry;
 pub const max_meshes = assets.max_meshes;
 pub const SkinnedVertex = assets.SkinnedVertex;
 pub const SkinnedMeshData = assets.SkinnedMeshData;
+pub const Texture = assets.Texture;
 
 /// Procedural geometry helpers (allocator-free; fill caller-owned buffers).
 pub const uvSphere = assets.uvSphere;
@@ -84,6 +85,7 @@ test {
     _ = @import("tick.zig");
     _ = @import("eye.zig");
     _ = @import("sdf.zig");
+    _ = @import("png.zig");
 }
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
@@ -399,6 +401,29 @@ test "RPM avatar exposes named eye bones — eye positions straight from the rig
     try std.testing.expectApproxEqAbs(lp[13], rp[13], 0.02); // same height
     try std.testing.expect(@abs(lp[12] + rp[12]) < 0.03); // symmetric about x=0
     try std.testing.expect(lp[13] > 0.3); // up at head height (half-body avatar; origin near the chest)
+}
+
+test "RPM avatar decodes its base-colour atlas and carries per-vertex UVs" {
+    const glb = @embedFile("rpm.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // The eyes/skin live in the diffuse atlas; the loader must decode it so the
+    // render layer can sample it. RPM ships a 1024² 8-bit RGBA PNG.
+    const tex = model.base_color orelse return error.NoBaseColor;
+    try std.testing.expectEqual(@as(u32, 1024), tex.width);
+    try std.testing.expectEqual(@as(u32, 1024), tex.height);
+    try std.testing.expectEqual(tex.width * tex.height * 4, @as(u32, @intCast(tex.pixels.len)));
+
+    // UVs index into that atlas — they must span a real range, not all (0,0).
+    var max_u: f32 = 0;
+    var max_v: f32 = 0;
+    for (model.mesh.vertices) |vtx| {
+        max_u = @max(max_u, vtx.uv[0]);
+        max_v = @max(max_v, vtx.uv[1]);
+    }
+    try std.testing.expect(max_u > 0.1 and max_v > 0.1);
 }
 
 test "measureJointBounds finds a head-sized region on CesiumMan" {

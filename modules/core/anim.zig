@@ -69,10 +69,14 @@ pub const Model = struct {
     mesh: assets.SkinnedMeshData,
     skeleton: Skeleton,
     clips: []Clip,
+    /// Base-colour atlas (the mesh's UVs index into it). Null when the source had
+    /// no texture; the render layer falls back to vertex colour.
+    base_color: ?assets.Texture = null,
 
     pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
         allocator.free(self.mesh.vertices);
         if (self.mesh.indices.len > 0) allocator.free(self.mesh.indices);
+        if (self.base_color) |*t| t.deinit(allocator);
         for (self.skeleton.nodes) |n| if (n.name.len > 0) allocator.free(@constCast(n.name));
         allocator.free(self.skeleton.nodes);
         allocator.free(self.skeleton.joints);

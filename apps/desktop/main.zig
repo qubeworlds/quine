@@ -310,7 +310,10 @@ fn buildStage(json: []const u8) !void {
 
     // Optional: a material-preview / asset scene has no skinned actor.
     App.dancer = App.stage.find("dancer");
-    if (App.dancer) |d| if (d.model) |*model| App.renderer.uploadSkinned(model.mesh);
+    if (App.dancer) |d| if (d.model) |*model| {
+        App.renderer.uploadSkinned(model.mesh);
+        App.renderer.uploadSkinnedTexture(model.base_color); // base-colour atlas (eyes, skin)
+    };
     for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
     App.camera = findCamera(&App.stage.world);

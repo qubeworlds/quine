@@ -142,6 +142,12 @@ pub const Renderer = struct {
     skinned_vbuf: sg.Buffer = .{},
     skinned_ibuf: sg.Buffer = .{},
     skinned_index_count: u32 = 0,
+    /// Base-colour atlas for the skinned mesh: an image, a texture view bound to
+    /// the fragment shader, and a shared linear sampler. `skinned_tex_img` is the
+    /// uploaded atlas, or a 1×1 white fallback when the model carries no texture.
+    skinned_tex_img: sg.Image = .{},
+    skinned_tex_view: sg.View = .{},
+    skinned_smp: sg.Sampler = .{},
     pass_action: sg.PassAction = .{},
     cache: mesh_cache.MeshCache = .{},
     /// Draw the world-space reference grid. Off for clean material thumbnails.
@@ -251,12 +257,24 @@ pub const Renderer = struct {
                 l.attrs[shd_skin.ATTR_skinned_color0] = .{ .format = .FLOAT4, .offset = @offsetOf(V, "color") };
                 l.attrs[shd_skin.ATTR_skinned_joint_index] = .{ .format = .FLOAT4, .offset = @offsetOf(V, "joints") };
                 l.attrs[shd_skin.ATTR_skinned_joint_weight] = .{ .format = .FLOAT4, .offset = @offsetOf(V, "weights") };
+                l.attrs[shd_skin.ATTR_skinned_texcoord0] = .{ .format = .FLOAT2, .offset = @offsetOf(V, "uv") };
                 break :init l;
             },
             .depth = .{ .compare = .LESS_EQUAL, .write_enabled = true },
             .index_type = .UINT32,
             .label = "skinned-pipeline",
         });
+
+        // Skinned base-colour sampling: a shared linear/repeat sampler and a 1×1
+        // white fallback texture, so the skinned pipeline always has a valid
+        // image/sampler bound even before (or without) a model atlas.
+        self.skinned_smp = sg.makeSampler(.{
+            .min_filter = .LINEAR,
+            .mag_filter = .LINEAR,
+            .wrap_u = .REPEAT,
+            .wrap_v = .REPEAT,
+        });
+        self.uploadSkinnedTexture(null); // creates the white fallback image + view
 
         // Preview backdrop: a vertex-less fullscreen triangle (the bg shader
         // builds positions from gl_VertexIndex), depth-test off so it fills the
@@ -298,6 +316,39 @@ pub const Renderer = struct {
             .label = "skinned-indices",
         });
         self.skinned_index_count = @intCast(mesh.indices.len);
+    }
+
+    /// Upload the skinned mesh's base-colour atlas to a GPU texture (+ view).
+    /// Pass `null` (or call with no model texture) to bind a 1×1 white fallback,
+    /// which leaves textured-less skinned meshes rendering at their vertex
+    /// colour. Replaces any previous atlas, so it's safe to call on hot-reload.
+    pub fn uploadSkinnedTexture(self: *Renderer, tex: ?core.Texture) void {
+        sg.destroyView(self.skinned_tex_view); // no-op on the initial invalid handle
+        sg.destroyImage(self.skinned_tex_img);
+
+        if (tex) |t| {
+            var data = sg.ImageData{};
+            data.mip_levels[0] = sg.asRange(t.pixels);
+            self.skinned_tex_img = sg.makeImage(.{
+                .width = @intCast(t.width),
+                .height = @intCast(t.height),
+                .pixel_format = .RGBA8,
+                .data = data,
+                .label = "skinned-base-color",
+            });
+        } else {
+            const white = [_]u8{ 255, 255, 255, 255 };
+            var data = sg.ImageData{};
+            data.mip_levels[0] = sg.asRange(&white);
+            self.skinned_tex_img = sg.makeImage(.{
+                .width = 1,
+                .height = 1,
+                .pixel_format = .RGBA8,
+                .data = data,
+                .label = "skinned-white-fallback",
+            });
+        }
+        self.skinned_tex_view = sg.makeView(.{ .texture = .{ .image = self.skinned_tex_img } });
     }
 
     /// Draw one frame from `queue`, resolving mesh handles against `meshes`.
@@ -452,6 +503,8 @@ pub const Renderer = struct {
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.skinned_vbuf;
         bind.index_buffer = self.skinned_ibuf;
+        bind.views[shd_skin.VIEW_tex] = self.skinned_tex_view;
+        bind.samplers[shd_skin.SMP_smp] = self.skinned_smp;
         sg.applyBindings(bind);
 
         for (scene.instances) |inst| {

@@ -27,11 +27,28 @@ pub const SkinnedVertex = extern struct {
     color: m.Vec4,
     joints: [4]f32,
     weights: m.Vec4,
+    /// Texture coordinate (UV) into a base-colour atlas. Defaults to (0,0) so
+    /// procedural skinned meshes that carry no UVs keep their vertex colour.
+    uv: [2]f32 = .{ 0, 0 },
 };
 
 pub const SkinnedMeshData = struct {
     vertices: []const SkinnedVertex,
     indices: []const u32 = &.{},
+};
+
+/// A decoded RGBA8 image (e.g. a glTF base-colour atlas). `pixels` is
+/// `width * height * 4` bytes, top row first, allocator-owned. CPU-side only —
+/// the render layer uploads it to a GPU texture.
+pub const Texture = struct {
+    width: u32,
+    height: u32,
+    pixels: []u8,
+
+    pub fn deinit(self: *Texture, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+        self.* = undefined;
+    }
 };
 
 /// Opaque handle to a mesh registered in a `MeshRegistry`. Render keys its GPU
