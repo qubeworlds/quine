@@ -58,12 +58,16 @@ const max_ticks_per_frame: u32 = 8;
 
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
-const character_glb = @embedFile("character.glb");
-const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY) — the `face` headMesh base
-// On web the scene + skill are *bundled* assets the host hands over at runtime
-// (and edits over the WebSocket) — not compiled in. Native embeds them so the
-// desktop app runs standalone.
 const is_web = builtin.os.tag == .emscripten;
+// Game content (scene, skill, mesh assets) belongs to the *game qube*, not the
+// engine (see @world/shared manifest.ts: `game.assets[]`, engine-as-dependency).
+// So on **web** none of it is compiled into the wasm — the host fetches the
+// qube's files and hands them over at runtime (`quine_provide_asset` for meshes,
+// `QUINE_SCENE_JSON`/`quine_enqueue` for the scene, the bundled skill for code).
+// **Native** still embeds them today (the single binary *is* the bundle) until
+// the engine/game-qube split lands; `if (is_web)` keeps the bytes out of wasm.
+const character_glb = if (is_web) "" else @embedFile("character.glb");
+const head_glb = if (is_web) "" else @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -120,6 +124,13 @@ const App = struct {
     /// just the latest scene, so the transport has to be lossless and ordered.
     var msg_queue: std.ArrayListUnmanaged([]u8) = .empty;
 
+    /// Game asset bytes (meshes/textures) keyed by the name a scene references
+    /// (`gltf.source` / `face.headMesh`). The engine carries NO game content:
+    /// native seeds this from the bundled files at startup; web fills it at boot
+    /// via `quine_provide_asset` (the host fetches the qube's `game.assets[]` and
+    /// hands them over). The scene loader resolves names against this.
+    var assets: std.ArrayListUnmanaged(scene_runtime.Asset) = .empty;
+
     /// The engine's world tick: one per fixed simulation step (60 Hz). The shared
     /// clock a multiplayer sim is keyed on — messages carry the tick they belong
     /// to so a late/reordered one can be dropped instead of clobbering newer state.
@@ -145,6 +156,31 @@ export fn quine_enqueue(msg: [*:0]const u8) void {
     App.ws_msgs +%= 1;
 }
 
+/// Receive a named game asset (mesh/texture bytes the host fetched from the
+/// qube's `game.assets[]`) and register it for the scene loader — so the engine
+/// wasm ships no game content. Copies into engine-owned memory (the JS view is
+/// transient). Called from JS BEFORE the scene loads, e.g. in emscripten preRun:
+///   const p = Module._malloc(len); Module.HEAPU8.set(bytes, p);
+///   Module.ccall("quine_provide_asset", null, ["string","number","number"], [name, p, len]);
+///   Module._free(p);
+export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, len: usize) void {
+    const a = std.heap.c_allocator;
+    const name = a.dupe(u8, std.mem.span(name_ptr)) catch return;
+    const bytes = a.dupe(u8, data_ptr[0..len]) catch {
+        a.free(name);
+        return;
+    };
+    // Replace an existing entry with the same name, else append.
+    for (App.assets.items) |*entry| {
+        if (std.mem.eql(u8, entry.name, name)) {
+            entry.bytes = bytes;
+            a.free(name);
+            return;
+        }
+    }
+    App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
+}
+
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
 fn fedoraRed() f32 {
@@ -155,6 +191,13 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
+    // Native bundles its game assets in the binary; seed the registry from them.
+    // Web leaves the registry to be filled by the host via `quine_provide_asset`
+    // before the scene loads, so the wasm carries no game content.
+    if (!is_web) {
+        App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
+        App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = head_glb }) catch {};
+    }
     if (thumb_cfg) |t| {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
@@ -234,10 +277,7 @@ fn buildStage(json: []const u8) !void {
     defer arena.deinit();
     const scene_data = try core.parseScene(arena.allocator(), json);
 
-    try App.stage.init(alloc, scene_data, &.{
-        .{ .name = "CesiumMan.glb", .bytes = character_glb },
-        .{ .name = "head.glb", .bytes = head_glb },
-    });
+    try App.stage.init(alloc, scene_data, App.assets.items);
 
     // Optional: a material-preview / asset scene has no skinned actor.
     App.dancer = App.stage.find("dancer");
