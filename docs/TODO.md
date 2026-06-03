@@ -109,6 +109,15 @@ piece. Shipped this milestone (see the `/docs/eyes` playground):
 - [x] **SDF + surface-nets mesher** (`core.sdf`) — the continuous-surface path.
 
 Open work:
+- [ ] **Runtime binary assets — get meshes OUT of the wasm.** *(next task)* Today
+      `head.glb` (and `CesiumMan.glb`) are `@embedFile`'d into the engine, so the
+      wasm carries ~400 KB of content it shouldn't, and adding/changing a head
+      means rebuilding + redeploying the *engine*. Engine = code, heads = data.
+      Fix: serve `.glb`s as static files under `/engine/` (like `scene.json` /
+      `skill.js` already are), **fetch them in the browser**, and feed the bytes
+      to the engine through a new binary channel — a `quine_provide_asset(name,
+      ptr, len)` export mirroring the `quine_enqueue` text channel — into the
+      runtime's asset map, consulted on scene load. Keeps the wasm lean + code-only.
 - [ ] **SDF face** — compose the head as ONE blended field (ellipsoid skull
       `smin` nose/brow/lips, eye sockets `smax`-carved) and mesh it, so the face
       is a single continuous skin instead of intersecting primitives (the current
