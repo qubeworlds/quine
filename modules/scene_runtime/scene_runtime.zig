@@ -127,6 +127,11 @@ pub const SceneRuntime = struct {
                 .metallic = mat.metallic,
                 .roughness = mat.roughness,
                 .emissive = m.Vec3.init(mat.emissive[0], mat.emissive[1], mat.emissive[2]),
+                .surface = switch (mat.surface) {
+                    .plain => .plain,
+                    .dimpled => .dimpled,
+                    .basketball => .basketball,
+                },
             });
             bindings[i] = bnd;
         }

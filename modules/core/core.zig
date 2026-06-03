@@ -51,6 +51,7 @@ pub const fedoraIndexCount = assets.fedoraIndexCount;
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;
 pub const Material = components.Material;
+pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;

@@ -51,11 +51,15 @@ pub const Geometry = union(enum) {
 /// PBR material (metallic-roughness). `color` is the base colour (albedo);
 /// `metallic`/`roughness` drive the BRDF; `emissive` adds light. Factors only
 /// for now — texture maps arrive with the material server.
+/// Procedural surface finish (mirrors components.Surface; mapped in scene_runtime).
+pub const Surface = enum { plain, dimpled, basketball };
+
 pub const Material = struct {
     color: Rgba,
     metallic: f32 = 0,
     roughness: f32 = 0.5,
     emissive: Vec3 = .{ 0, 0, 0 },
+    surface: Surface = .plain,
 };
 
 /// A clip referenced by index or name.
@@ -183,6 +187,10 @@ fn parseEntity(v: Value) !Entity {
         if (mo.get("metallic")) |mv| mat.metallic = try asF32(mv);
         if (mo.get("roughness")) |rv| mat.roughness = try asF32(rv);
         if (mo.get("emissive")) |ev| mat.emissive = try asVec3(ev);
+        if (mo.get("surface")) |sv| {
+            const s = try asStr(sv);
+            mat.surface = if (std.mem.eql(u8, s, "dimpled")) .dimpled else if (std.mem.eql(u8, s, "basketball")) .basketball else .plain;
+        }
         e.material = mat;
     }
     if (o.get("animation")) |x| e.animation = try parseAnimation(x);

@@ -159,8 +159,10 @@ export fn init() void {
         App.renderer.draw_grid = false;
         App.renderer.preview = true; // studio backdrop + staging lights
         // Dimples: spherical mapping for the material ball, surface/triplanar for
-        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE).
-        App.renderer.preview_dimples = if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE). When the material
+        // carries its own surface finish, let that drive it (don't override).
+        const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
+        App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
@@ -590,7 +592,7 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
 const ThumbGeo = enum { sphere, fedora };
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain" };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -624,6 +626,7 @@ fn readThumbEnv() void {
             break :geo if (std.mem.eql(u8, std.mem.span(g), "fedora")) .fedora else .sphere;
         },
         .dimple = std.c.getenv("QUINE_THUMB_DIMPLE") != null,
+        .surface = std.c.getenv("QUINE_THUMB_SURFACE") orelse "plain",
     };
 }
 
@@ -632,7 +635,7 @@ fn readThumbEnv() void {
 /// fedora, depending on `t.geo`.
 fn thumbSceneJson(t: ThumbCfg) []const u8 {
     const a = std.heap.c_allocator;
-    const mat = std.fmt.allocPrint(a, "\"material\":{{\"color\":[{d:.5},{d:.5},{d:.5},1],\"metallic\":{d:.5},\"roughness\":{d:.5},\"emissive\":[{d:.5},{d:.5},{d:.5}]}}", .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z }) catch return "";
+    const mat = std.fmt.allocPrint(a, "\"material\":{{\"color\":[{d:.5},{d:.5},{d:.5},1],\"metallic\":{d:.5},\"roughness\":{d:.5},\"emissive\":[{d:.5},{d:.5},{d:.5}],\"surface\":\"{s}\"}}", .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z, std.mem.span(t.surface) }) catch return "";
     return switch (t.geo) {
         .sphere => std.fmt.allocPrint(a,
             \\{{ "schemaVersion":1, "name":"thumb", "entities":[

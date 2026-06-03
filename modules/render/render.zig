@@ -105,7 +105,8 @@ pub fn viewProj(queue: *const core.RenderQueue, aspect: f32) m.Mat4 {
 fn materialParams(mat: core.Material) shd.FsParams {
     return .{
         .base_color = .{ mat.base_color.x, mat.base_color.y, mat.base_color.z, mat.base_color.w },
-        .pbr = .{ mat.metallic, mat.roughness, 0, 0 },
+        // pbr.w carries the surface-finish code (0 plain, 2 dimpled, 3 basketball).
+        .pbr = .{ mat.metallic, mat.roughness, 0, @floatFromInt(@intFromEnum(mat.surface)) },
         .emissive = .{ mat.emissive.x, mat.emissive.y, mat.emissive.z, 0 },
     };
 }

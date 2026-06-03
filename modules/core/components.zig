@@ -42,11 +42,17 @@ pub const MeshRef = struct {
 /// (albedo), metallic, roughness, and emissive, as *uniforms* rather than baked
 /// per-vertex. A live edit sets this component; render picks it up next frame
 /// (no mesh re-upload). Texture maps will be added as handles alongside.
+/// A procedural surface finish applied in the shader on top of the PBR factors:
+/// `dimpled` perturbs the normal with golf-ball wells; `basketball` darkens
+/// seam lines into the albedo so a plain orange sphere reads as a ball.
+pub const Surface = enum(u8) { plain = 0, dimpled = 2, basketball = 3 };
+
 pub const Material = struct {
     base_color: m.Vec4 = .{ .x = 1, .y = 1, .z = 1, .w = 1 },
     metallic: f32 = 0,
     roughness: f32 = 0.5,
     emissive: m.Vec3 = .{},
+    surface: Surface = .plain,
 };
 
 /// Makes an entity rotate on its own each tick. `velocity` is angular velocity

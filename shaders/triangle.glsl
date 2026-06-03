@@ -18,7 +18,7 @@ in vec4 color0;
 
 out vec3 world_normal;
 out vec3 view_dir;
-out vec3 frag_world_pos;
+out vec3 frag_local_pos;
 out vec4 color;
 
 void main() {
@@ -26,7 +26,8 @@ void main() {
     gl_Position = mvp * vec4(position, 1.0);
     world_normal = mat3(model) * normal;
     view_dir = eye_pos.xyz - wp.xyz;
-    frag_world_pos = wp.xyz;
+    frag_local_pos = position; // object space — surface finishes tile here so they
+                               // stick to the body as it moves/animates
     color = color0;
 }
 @end
@@ -44,7 +45,7 @@ layout(binding=1) uniform fs_params {
 
 in vec3 world_normal;
 in vec3 view_dir;
-in vec3 frag_world_pos;
+in vec3 frag_local_pos;
 in vec4 color;
 out vec4 frag_color;
 
@@ -74,8 +75,29 @@ vec3 f_schlick(float v_o_h, vec3 f0) {
 // it gives metals something to reflect so they read as metal — a stand-in until
 // real image-based lighting.
 vec3 env(vec3 d) {
-    float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(vec3(0.20, 0.19, 0.17), vec3(0.55, 0.62, 0.78), t);
+    vec3 dir = normalize(d);
+    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 col = mix(vec3(0.20, 0.19, 0.17), vec3(0.55, 0.62, 0.78), t);
+    // Two studio softboxes baked into the environment (not gated to previews), so
+    // polished metals reflect bright highlights and read as metal in a live scene,
+    // not just in catalogue thumbnails. Sharp lobes keep them as highlights rather
+    // than washing the diffuse ambient.
+    col += vec3(1.5, 1.45, 1.32) * pow(max(dot(dir, normalize(vec3(0.7, 0.8, -0.25))), 0.0), 32.0);
+    col += vec3(0.40, 0.46, 0.60) * pow(max(dot(dir, normalize(vec3(-0.7, 0.2, 0.4))), 0.0), 16.0);
+    return col;
+}
+
+// Basketball seams: darken thin bands along three orthogonal great circles of
+// the body's object space, so a plain orange sphere reads as a seamed ball
+// instead of a fruit. Returns an albedo multiplier (≈0 on a seam, 1 elsewhere).
+float basketballSeam(vec3 p) {
+    vec3 d = normalize(p);
+    float w = 0.05;
+    float seam = min(min(abs(d.x), abs(d.y)), abs(d.z)); // distance to nearest plane
+    // also a curved seam offset so it's not a perfect beach-ball
+    float curved = abs(abs(d.x) - abs(d.z));
+    float m = min(seam, curved);
+    return mix(0.12, 1.0, smoothstep(0.0, w, m));
 }
 
 // Golf-ball dimples for the material-preview sphere. `dimple(dir)` is a height
@@ -141,10 +163,11 @@ vec3 dimpleSurfaceNormal(vec3 n, vec3 p) {
 void main() {
     vec3 n = normalize(world_normal);
     bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
-    // Dimples: pbr.w selects the mode — 1 = spherical (the material ball),
-    // 2 = surface/triplanar (the golf-ball fedora and other shapes).
-    if (pbr.w > 1.5) n = dimpleSurfaceNormal(n, frag_world_pos);
-    else if (pbr.w > 0.5) n = dimpleNormal(n);
+    // Surface finish (pbr.w): 1 = spherical dimples (the material ball),
+    // 2 = surface/triplanar dimples (the golf-ball hat), 3 = basketball seams.
+    int surf = int(pbr.w + 0.5);
+    if (surf == 2) n = dimpleSurfaceNormal(n, frag_local_pos);
+    else if (surf == 1) n = dimpleNormal(n);
     vec3 v = normalize(view_dir);
     // Live key light is roughly co-axial with the camera (fine for the editor).
     // For previews that flattens the body and puts a central blob on metals, so
@@ -159,6 +182,7 @@ void main() {
     float v_o_h = max(dot(v, h), 0.0);
 
     vec3 albedo = color.rgb * base_color.rgb;
+    if (surf == 3) albedo *= basketballSeam(frag_local_pos); // black seams
     float metallic = clamp(pbr.x, 0.0, 1.0);
     float rough = clamp(pbr.y, 0.045, 1.0);
     float a = rough * rough;
@@ -195,20 +219,10 @@ void main() {
         // shadow terminator.
         vec3 lf = normalize(vec3(-0.7, 0.15, 0.35));
         col += diffuse_color * max(dot(n, lf), 0.0) * 0.16;
-        // Cool rim to separate the body from the backdrop.
+        // Cool rim to separate the body from the backdrop. (The studio softboxes
+        // a metal reflects are baked into env() now, so they apply in-scene too.)
         float rim = pow(clamp(1.0 - n_o_v, 0.0, 1.0), 3.0);
         col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
-        // Studio softboxes the surface reflects: a hot key box (upper-right) and a
-        // cooler fill box (left). On a polished metal the reflection is sharp and
-        // bright — the "shine" a flat gradient env can't provide; rough / dielectric
-        // surfaces only catch a soft glint. Tinted by the Fresnel reflectance, so
-        // gold throws a golden highlight and chrome a white one.
-        float gloss = 1.0 - rough;
-        vec3 key_r = normalize(vec3(0.7, 0.8, -0.25));
-        vec3 fill_r = normalize(vec3(-0.7, 0.2, 0.4));
-        float sk = pow(max(dot(r, key_r), 0.0), mix(8.0, 220.0, gloss));
-        float sf = pow(max(dot(r, fill_r), 0.0), mix(6.0, 90.0, gloss));
-        col += (vec3(1.7, 1.65, 1.5) * sk + vec3(0.5, 0.55, 0.7) * sf) * f_amb;
     }
 
     frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
