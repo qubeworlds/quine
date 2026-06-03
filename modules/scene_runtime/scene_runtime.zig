@@ -806,3 +806,20 @@ test "SceneRuntime reports a missing asset" {
     var rt: SceneRuntime = undefined;
     try std.testing.expectError(error.AssetNotFound, rt.init(std.heap.c_allocator, sc, &.{}));
 }
+
+test "a sphere-only preview scene (no actor, no bodies) builds and updates" {
+    const json =
+        \\{ "schemaVersion":1, "name":"thumb", "entities":[
+        \\ { "name":"ball", "geometry":{"kind":"sphere","radius":1,"rings":16,"segments":24}, "material":{"color":[1,0.78,0.34,1],"metallic":1,"roughness":0.1} },
+        \\ { "name":"camera", "transform":{"position":[1,1,3]}, "camera":{"controller":{"kind":"orbit","target":[0,0,0],"distance":3}} }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scene_data, &.{});
+    defer rt.deinit();
+    for (0..5) |_| try rt.update(1.0 / 60.0);
+    try std.testing.expect(rt.find("ball") != null);
+}

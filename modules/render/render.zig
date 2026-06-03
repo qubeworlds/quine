@@ -136,6 +136,8 @@ pub const Renderer = struct {
     skinned_index_count: u32 = 0,
     pass_action: sg.PassAction = .{},
     cache: mesh_cache.MeshCache = .{},
+    /// Draw the world-space reference grid. Off for clean material thumbnails.
+    draw_grid: bool = true,
 
     /// Initialize sokol-gfx and build the mesh pipeline. Must be called once
     /// after the GL/Metal/D3D11 context exists (i.e. inside sokol-app's init
@@ -272,8 +274,8 @@ pub const Renderer = struct {
         sg.beginPass(.{ .action = self.pass_action, .swapchain = sglue.swapchain() });
 
         // World-space reference grid first (model = identity, just view+proj).
-        sg.applyPipeline(self.grid_pip);
-        {
+        if (self.draw_grid) {
+            sg.applyPipeline(self.grid_pip);
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = self.grid_vbuf;
             sg.applyBindings(bind);

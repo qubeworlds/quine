@@ -154,6 +154,10 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
+    if (thumb_cfg != null) {
+        App.hud_visible = false; // clean material render: no HUD, no grid
+        App.renderer.draw_grid = false;
+    }
     loadScene();
     if (builtin.os.tag == .emscripten) {
         App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===false)?0:1") != 0;
@@ -167,6 +171,10 @@ export fn init() void {
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
 fn loadScene() void {
+    if (thumb_cfg) |t| {
+        loadSceneFrom(thumbSceneJson(t)); // a sphere with the requested material
+        return;
+    }
     if (is_web) {
         // The editor (host) fetches the bundled scene + sets it on window before
         // booting us. If it isn't there yet, boot empty — checkHotReload picks up
@@ -475,6 +483,16 @@ export fn frame() void {
         .dropped = App.tick_gate.dropped,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
+
+    // Thumbnail mode: let a few frames render (GL/material settle), then read the
+    // framebuffer back to a PPM and quit.
+    if (thumb_cfg) |t| {
+        thumb_frame += 1;
+        if (thumb_frame >= 6) {
+            captureThumb(t.out);
+            sapp.requestQuit();
+        }
+    }
 }
 
 export fn cleanup() void {
@@ -562,16 +580,90 @@ export fn event(ev: [*c]const sapp.Event) void {
 extern fn emscripten_run_script_int(script_src: [*:0]const u8) c_int;
 extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 
+// --- native headless thumbnail mode -----------------------------------------
+// Set QUINE_THUMB=1 (+ QUINE_THUMB_{R,G,B,METAL,ROUGH}) and the engine renders a
+// single sphere with that material, then writes a PPM to stdout and quits. Run
+// under Xvfb for a virtual display — so the material catalogue thumbnails are
+// generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32 };
+var thumb_cfg: ?ThumbCfg = null;
+var thumb_frame: u32 = 0;
+
+extern fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, fmt: c_uint, typ: c_uint, pixels: ?*anyopaque) void;
+extern fn glFinish() void;
+
+fn envF32(name: [*:0]const u8) f32 {
+    const v = std.c.getenv(name) orelse return 0;
+    return std.fmt.parseFloat(f32, std.mem.span(v)) catch 0;
+}
+
+fn readThumbEnv() void {
+    if (std.c.getenv("QUINE_THUMB") == null) return;
+    const out: [*:0]const u8 = std.c.getenv("QUINE_THUMB_OUT") orelse "thumb.ppm";
+    thumb_cfg = .{
+        .out = out,
+        .color = .{ .x = envF32("QUINE_THUMB_R"), .y = envF32("QUINE_THUMB_G"), .z = envF32("QUINE_THUMB_B"), .w = 1 },
+        .metallic = envF32("QUINE_THUMB_METAL"),
+        .roughness = envF32("QUINE_THUMB_ROUGH"),
+    };
+}
+
+/// A one-sphere scene with the requested material, framed by an orbit camera.
+fn thumbSceneJson(t: ThumbCfg) []const u8 {
+    return std.fmt.allocPrint(std.heap.c_allocator,
+        \\{{ "schemaVersion":1, "name":"thumb", "entities":[
+        \\ {{ "name":"ball", "geometry":{{"kind":"sphere","radius":1,"rings":64,"segments":96}},
+        \\    "material":{{"color":[{d:.5},{d:.5},{d:.5},1],"metallic":{d:.5},"roughness":{d:.5}}} }},
+        \\ {{ "name":"camera", "transform":{{"position":[1.2,0.8,2.4]}},
+        \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0,0],"distance":2.7,"yaw":0.5,"pitch":0.32}}}} }}
+        \\] }}
+    , .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness }) catch "";
+}
+
+/// Read back the framebuffer and write it to `out` as a (top-down RGB) PPM via
+/// libc (so sokol's stdout chatter doesn't matter).
+fn captureThumb(out: [*:0]const u8) void {
+    const alloc = std.heap.c_allocator;
+    const w: usize = @intCast(sapp.width());
+    const h: usize = @intCast(sapp.height());
+    const buf = alloc.alloc(u8, w * h * 4) catch return;
+    defer alloc.free(buf);
+    glFinish();
+    glReadPixels(0, 0, @intCast(w), @intCast(h), 0x1908, 0x1401, buf.ptr); // GL_RGBA, GL_UNSIGNED_BYTE
+
+    const header = std.fmt.allocPrint(alloc, "P6\n{d} {d}\n255\n", .{ w, h }) catch return;
+    defer alloc.free(header);
+    const ppm = alloc.alloc(u8, header.len + w * h * 3) catch return;
+    defer alloc.free(ppm);
+    @memcpy(ppm[0..header.len], header);
+    var y: usize = 0;
+    while (y < h) : (y += 1) {
+        const src = (h - 1 - y) * w * 4; // GL is bottom-up; flip to top-down
+        const dst = header.len + y * w * 3;
+        var x: usize = 0;
+        while (x < w) : (x += 1) {
+            ppm[dst + x * 3 + 0] = buf[src + x * 4 + 0];
+            ppm[dst + x * 3 + 1] = buf[src + x * 4 + 1];
+            ppm[dst + x * 3 + 2] = buf[src + x * 4 + 2];
+        }
+    }
+    const f = std.c.fopen(out, "wb") orelse return;
+    _ = std.c.fwrite(ppm.ptr, 1, ppm.len, f);
+    _ = std.c.fclose(f);
+}
+
 pub fn main() void {
+    readThumbEnv();
+    const tn = thumb_cfg != null;
     sapp.run(.{
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .width = 640,
-        .height = 480,
-        .fullscreen = true,
-        .high_dpi = true,
+        .width = if (tn) 512 else 640,
+        .height = if (tn) 512 else 480,
+        .fullscreen = !tn,
+        .high_dpi = !tn,
         .icon = .{ .sokol_default = true },
         .window_title = "quine",
         .logger = .{ .func = sokol.log.func },
