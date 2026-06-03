@@ -138,6 +138,12 @@ pub const Renderer = struct {
     cache: mesh_cache.MeshCache = .{},
     /// Draw the world-space reference grid. Off for clean material thumbnails.
     draw_grid: bool = true,
+    /// Preview mode (material thumbnails): draws a studio backdrop and tells the
+    /// mesh shader to apply golf-ball dimples + staging lights to the body. Off
+    /// for the live engine, so normal geometry is rendered plainly.
+    preview: bool = false,
+    /// Vertex-less fullscreen pipeline for the preview backdrop.
+    bg_pip: sg.Pipeline = .{},
 
     /// Initialize sokol-gfx and build the mesh pipeline. Must be called once
     /// after the GL/Metal/D3D11 context exists (i.e. inside sokol-app's init
@@ -219,6 +225,15 @@ pub const Renderer = struct {
             .label = "skinned-pipeline",
         });
 
+        // Preview backdrop: a vertex-less fullscreen triangle (the bg shader
+        // builds positions from gl_VertexIndex), depth-test off so it fills the
+        // frame behind the body. Only drawn when `preview` is set.
+        self.bg_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd.bgShaderDesc(sg.queryBackend())),
+            .depth = .{ .compare = .ALWAYS, .write_enabled = false },
+            .label = "bg-pipeline",
+        });
+
         // Debug-text overlay (the HUD). The Amstrad CPC font has a clean,
         // complete ASCII set (incl. lowercase), which reads better than the
         // default 8x8 fonts.
@@ -273,6 +288,13 @@ pub const Renderer = struct {
 
         sg.beginPass(.{ .action = self.pass_action, .swapchain = sglue.swapchain() });
 
+        // Preview backdrop fills the frame first (vertex-less fullscreen tri:
+        // the shader builds positions from gl_VertexIndex, so no bindings).
+        if (self.preview) {
+            sg.applyPipeline(self.bg_pip);
+            sg.draw(0, 3, 1);
+        }
+
         // World-space reference grid first (model = identity, just view+proj).
         if (self.draw_grid) {
             sg.applyPipeline(self.grid_pip);
@@ -301,7 +323,8 @@ pub const Renderer = struct {
                 .eye_pos = eye4,
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
-            const fsp = materialParams(item.material);
+            var fsp = materialParams(item.material);
+            if (self.preview) fsp.pbr[2] = 1; // golf-ball dimples + staging lights
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {

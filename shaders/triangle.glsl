@@ -36,7 +36,7 @@ void main() {
 // white default.
 layout(binding=1) uniform fs_params {
     vec4 base_color;   // albedo rgba
-    vec4 pbr;          // x = metallic, y = roughness (z,w reserved)
+    vec4 pbr;          // x = metallic, y = roughness, z = preview flag (w reserved)
     vec4 emissive;     // rgb emissive (a reserved)
 };
 
@@ -75,8 +75,43 @@ vec3 env(vec3 d) {
     return mix(vec3(0.20, 0.19, 0.17), vec3(0.55, 0.62, 0.78), t);
 }
 
+// Golf-ball dimples for the material-preview sphere. `dimple(dir)` is a height
+// field over the sphere — a hex-offset lat/long grid of round wells, 1 at a
+// dimple centre, 0 between them. The preview is a unit sphere at the origin, so
+// the surface direction is just the normal. Perturbing the normal by the field's
+// gradient adds the self-shading that makes the preview read as a 3D body
+// (and samples the BRDF across many angles at once). Preview-only — gated by the
+// pbr.z flag the renderer sets, so live geometry is never touched.
+float dimple(vec3 d) {
+    float lat = asin(clamp(d.y, -1.0, 1.0));         // -PI/2..PI/2
+    float lon = atan(d.z, d.x);                      // -PI..PI
+    const float ROWS = 11.0;
+    const float COLS = 22.0;
+    float fy = (lat / PI + 0.5) * ROWS;
+    float row = floor(fy);
+    float fx = (lon / (2.0 * PI) + 0.5) * COLS + 0.5 * mod(row, 2.0); // hex offset
+    vec2 cell = vec2(fract(fx) - 0.5, fract(fy) - 0.5);
+    return 1.0 - smoothstep(0.0, 0.42, length(cell)); // 1 at dimple centre -> 0
+}
+
+vec3 dimpleNormal(vec3 n) {
+    vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    vec3 b = cross(n, t);
+    float e = 0.02;
+    float h0 = dimple(n);
+    float ht = dimple(normalize(n + t * e));
+    float hb = dimple(normalize(n + b * e));
+    // Dimples are concave: indent along the gradient (push the normal toward the
+    // well centre at the rim, giving each dimple a lit edge and a shaded floor).
+    vec3 grad = (ht - h0) * t + (hb - h0) * b;
+    return normalize(n + grad * 22.0);
+}
+
 void main() {
     vec3 n = normalize(world_normal);
+    bool preview = pbr.z > 0.5;
+    if (preview) n = dimpleNormal(n);
     vec3 v = normalize(view_dir);
     vec3 l = normalize(vec3(0.4, 0.7, 1.0)); // key directional light
     vec3 h = normalize(v + l);
@@ -111,8 +146,44 @@ void main() {
     vec3 ambient = env(n) * diffuse_color + env(r) * f_amb;
 
     vec3 col = lit + ambient + emissive.rgb;
+
+    // Preview staging: a soft fill from the opposite side to open up the shadow
+    // terminator, and a cool rim to separate the body from the studio backdrop.
+    if (preview) {
+        vec3 lf = normalize(vec3(-0.6, 0.1, -0.4));
+        col += diffuse_color * max(dot(n, lf), 0.0) * 0.16;
+        float rim = pow(clamp(1.0 - n_o_v, 0.0, 1.0), 3.0);
+        col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
+    }
+
     frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
 }
 @end
 
+// Studio backdrop for the material preview: a vertical gradient with a soft glow
+// behind the body, so the sphere sits in a lit scene instead of a black void.
+// Drawn as a vertex-less fullscreen triangle, behind everything.
+@vs bg_vs
+out vec2 uv;
+void main() {
+    float x = float((gl_VertexIndex & 1) << 2) - 1.0;
+    float y = float((gl_VertexIndex & 2) << 1) - 1.0;
+    gl_Position = vec4(x, y, 0.999999, 1.0);
+    uv = vec2(x, y) * 0.5 + 0.5;
+}
+@end
+
+@fs bg_fs
+in vec2 uv;
+out vec4 frag_color;
+void main() {
+    float vert = smoothstep(-0.1, 0.8, uv.y);
+    vec3 col = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095), vert);
+    float d = distance(uv, vec2(0.5, 0.56));
+    col += vec3(0.05, 0.055, 0.075) * smoothstep(0.7, 0.0, d);
+    frag_color = vec4(col, 1.0);
+}
+@end
+
 @program triangle vs fs
+@program bg bg_vs bg_fs

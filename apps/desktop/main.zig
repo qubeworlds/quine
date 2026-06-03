@@ -157,6 +157,7 @@ export fn init() void {
     if (thumb_cfg != null) {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
+        App.renderer.preview = true; // golf-ball dimples + studio backdrop
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
