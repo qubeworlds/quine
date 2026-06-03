@@ -73,7 +73,7 @@ const App = struct {
     /// The QuickJS context running the behaviour skill against `stage`.
     var js: script.Js = undefined;
     /// The actor binding (skinned model + pose, drawn specially below).
-    var dancer: *scene_runtime.Binding = undefined;
+    var dancer: ?*scene_runtime.Binding = null;
 
     var renderer: render.Renderer = .{};
     var queue: core.RenderQueue = .{};
@@ -221,12 +221,13 @@ fn buildStage(json: []const u8) !void {
 
     try App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }});
 
-    App.dancer = App.stage.find("dancer") orelse return error.NoActor;
-    if (App.dancer.model) |*model| App.renderer.uploadSkinned(model.mesh);
+    // Optional: a material-preview / asset scene has no skinned actor.
+    App.dancer = App.stage.find("dancer");
+    if (App.dancer) |d| if (d.model) |*model| App.renderer.uploadSkinned(model.mesh);
     for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
     App.camera = findCamera(&App.stage.world);
-    App.giz.selected = App.dancer.entity; // the gizmo can grab the actor
+    App.giz.selected = if (App.dancer) |d| d.entity else null; // gizmo grabs the actor if any
 
     // Init the orbit camera from the scene's camera controller (data-driven).
     for (scene_data.entities) |e| {
@@ -448,10 +449,10 @@ export fn frame() void {
 
     // The skinned actor: palette from this tick's pose, placed at its Transform.
     var skinned: ?render.SkinnedScene = null;
-    if (App.dancer.model) |*model| if (App.dancer.pose) |*pose| {
+    if (App.dancer) |d| if (d.model) |*model| if (d.pose) |*pose| {
         const jc = model.skeleton.jointCount();
         pose.fillPalette(&model.skeleton, App.palette[0..jc]);
-        const tf = App.stage.world.get(core.Transform, App.dancer.entity).?.*;
+        const tf = App.stage.world.get(core.Transform, d.entity).?.*;
         App.instance[0] = .{ .model = tf.matrix(), .bucket = 0 };
         skinned = .{ .instances = &App.instance, .palettes = &App.palette };
     };
