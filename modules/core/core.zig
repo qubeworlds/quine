@@ -68,6 +68,10 @@ pub const Gaze = components.Gaze;
 /// scene runtime uses it to expand a `kind:"eyes"` entity, sized from the head.
 pub const eye = @import("eye.zig");
 
+/// Signed-distance fields + surface-nets mesher — the continuous-surface path
+/// (a face as one blended skin rather than assembled primitives).
+pub const sdf = @import("sdf.zig");
+
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
@@ -79,6 +83,7 @@ test {
     // Pull in the sibling files' unit tests so `zig build test` runs them.
     _ = @import("tick.zig");
     _ = @import("eye.zig");
+    _ = @import("sdf.zig");
 }
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
