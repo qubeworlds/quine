@@ -10,6 +10,7 @@
 //! it, compute each item's MVP, and draw. The renderer is agnostic to the
 //! simulation's component schema — it only ever sees the queue.
 
+const std = @import("std");
 const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sglue = sokol.glue;
@@ -123,6 +124,11 @@ const white_material: shd.FsParams = .{
 /// ownership and lifecycle are explicit at the call site in the app.
 pub const Renderer = struct {
     pip: sg.Pipeline = .{},
+    /// Alpha-blended pipeline (same shader/layout as `pip`) for transparent
+    /// draws — the glassy cornea. Depth-tested but no depth write, so it
+    /// composites over the opaque geometry behind it without occluding later
+    /// transparent draws. Fed back-to-front.
+    transparent_pip: sg.Pipeline = .{},
     /// Line pipeline (same shader) for the world-space reference grid.
     grid_pip: sg.Pipeline = .{},
     grid_vbuf: sg.Buffer = .{},
@@ -180,6 +186,28 @@ pub const Renderer = struct {
             .depth = .{ .compare = .LESS_EQUAL, .write_enabled = true },
             .index_type = .UINT32,
             .label = "mesh-pipeline",
+        });
+
+        // Transparent variant: alpha blend (src_alpha / 1-src_alpha), depth test
+        // on but depth WRITE off — so a glassy part composites over the opaque
+        // geometry behind it and doesn't stop a farther transparent part drawing.
+        self.transparent_pip = sg.makePipeline(.{
+            .shader = shader,
+            .layout = layout,
+            .depth = .{ .compare = .LESS_EQUAL, .write_enabled = false },
+            .colors = init: {
+                var c: [8]sg.ColorTargetState = @splat(.{});
+                c[0].blend = .{
+                    .enabled = true,
+                    .src_factor_rgb = .SRC_ALPHA,
+                    .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = .ONE,
+                    .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+                };
+                break :init c;
+            },
+            .index_type = .UINT32,
+            .label = "transparent-pipeline",
         });
 
         self.grid_pip = sg.makePipeline(.{
@@ -314,6 +342,7 @@ pub const Renderer = struct {
         sg.applyPipeline(self.pip);
 
         for (queue.slice()) |item| {
+            if (item.material.base_color.w < 1.0) continue; // transparent: blended pass below
             const gm = self.cache.resolve(meshes, item.mesh);
 
             var bind = sg.Bindings{};
@@ -340,11 +369,76 @@ pub const Renderer = struct {
         }
 
         if (skinned) |s| self.drawSkinned(s, view_proj);
+
+        // Transparent pass: after all opaque geometry (incl. the skinned body),
+        // so glassy parts like the cornea composite over what's behind them.
+        self.drawTransparent(queue, meshes, view_proj, eye4);
+
         if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
         if (hud) |info| drawHud(info);
 
         sg.endPass();
         sg.commit();
+    }
+
+    /// Draw every transparent queue item (material alpha < 1), sorted back-to-
+    /// front by distance from the eye so the blend composites correctly, with
+    /// the alpha-blended / no-depth-write pipeline. Sort keys live in a fixed
+    /// scratch buffer (transparent draws are few — glass, the cornea); any beyond
+    /// its capacity are simply not drawn this frame.
+    fn drawTransparent(
+        self: *Renderer,
+        queue: *const core.RenderQueue,
+        meshes: *const core.MeshRegistry,
+        view_proj: m.Mat4,
+        eye4: [4]f32,
+    ) void {
+        const Key = struct { idx: usize, dist2: f32 };
+        var scratch: [256]Key = undefined;
+        var n: usize = 0;
+        const eye = m.Vec3.init(eye4[0], eye4[1], eye4[2]);
+        const items = queue.slice();
+        for (items, 0..) |item, i| {
+            if (item.material.base_color.w >= 1.0) continue;
+            if (n >= scratch.len) break;
+            const center = m.Vec3.init(item.model.m[12], item.model.m[13], item.model.m[14]);
+            const d = center.sub(eye);
+            scratch[n] = .{ .idx = i, .dist2 = d.dot(d) };
+            n += 1;
+        }
+        if (n == 0) return;
+        const keys = scratch[0..n];
+        std.mem.sort(Key, keys, {}, struct {
+            fn lt(_: void, a: Key, b: Key) bool {
+                return a.dist2 > b.dist2; // farthest first
+            }
+        }.lt);
+
+        sg.applyPipeline(self.transparent_pip);
+        for (keys) |k| {
+            const item = items[k.idx];
+            const gm = self.cache.resolve(meshes, item.mesh);
+            var bind = sg.Bindings{};
+            bind.vertex_buffers[0] = gm.vbuf;
+            if (gm.indexed) bind.index_buffer = gm.ibuf;
+            sg.applyBindings(bind);
+
+            const params = shd.VsParams{
+                .mvp = view_proj.mul(item.model).m,
+                .model = item.model.m,
+                .eye_pos = eye4,
+            };
+            sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
+            var fsp = materialParams(item.material);
+            if (self.preview) fsp.pbr[2] = 1;
+            sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
+
+            if (gm.indexed) {
+                sg.draw(0, gm.index_count, 1);
+            } else {
+                sg.draw(0, gm.vertex_count, 1);
+            }
+        }
     }
 
     /// Draw all skinned instances. Each picks its phase palette by `bucket`; the
