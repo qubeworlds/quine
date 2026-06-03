@@ -55,6 +55,11 @@ pub const max_meshes = 64;
 /// this when .obj import lands.
 pub const MeshRegistry = struct {
     meshes: [max_meshes]MeshData = undefined,
+    /// Per-mesh revision, bumped on every in-place edit (e.g. a recolour). The
+    /// render layer caches GPU buffers by handle and compares this against the
+    /// revision it last uploaded, so a mesh mutated on the core side (by a skill
+    /// each tick, say) is re-uploaded without core ever calling into render.
+    revs: [max_meshes]u32 = @splat(0),
     len: usize = 0,
 
     /// Register `data` and return its handle.
@@ -62,12 +67,28 @@ pub const MeshRegistry = struct {
         std.debug.assert(self.len < max_meshes);
         const idx = self.len;
         self.meshes[idx] = data;
+        self.revs[idx] = 0;
         self.len += 1;
         return @enumFromInt(@as(u32, @intCast(idx)));
     }
 
     pub fn get(self: *const MeshRegistry, handle: MeshHandle) MeshData {
         return self.meshes[@intFromEnum(handle)];
+    }
+
+    /// Current revision of `handle` — render compares this to detect edits.
+    pub fn rev(self: *const MeshRegistry, handle: MeshHandle) u32 {
+        return self.revs[@intFromEnum(handle)];
+    }
+
+    /// Recolour a mesh in place: overwrite every vertex colour and bump the
+    /// revision so render re-uploads it. The vertex store is mutable memory the
+    /// owner allocated; the `const` on `MeshData.vertices` is only an API default
+    /// (some meshes point at static data), so we cast it away for the live edit.
+    pub fn setColor(self: *MeshRegistry, handle: MeshHandle, r: f32, g: f32, b: f32, a: f32) void {
+        const idx = @intFromEnum(handle);
+        for (@constCast(self.meshes[idx].vertices)) |*v| v.color = .{ .x = r, .y = g, .z = b, .w = a };
+        self.revs[idx] +%= 1;
     }
 
     pub fn count(self: *const MeshRegistry) usize {

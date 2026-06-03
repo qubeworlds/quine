@@ -118,6 +118,15 @@ const App = struct {
     /// or reordered. A multiplayer sim needs every frame (inputs, events), not
     /// just the latest scene, so the transport has to be lossless and ordered.
     var msg_queue: std.ArrayListUnmanaged([]u8) = .empty;
+
+    /// The engine's world tick: one per fixed simulation step (60 Hz). The shared
+    /// clock a multiplayer sim is keyed on — messages carry the tick they belong
+    /// to so a late/reordered one can be dropped instead of clobbering newer state.
+    var world_tick: u64 = 0;
+    /// Newest message tick applied. A frame whose tick is <= this is "too late"
+    /// (stale or out of order) and ignored. Counted for the HUD diagnostic.
+    var last_msg_tick: u64 = 0;
+    var dropped_msgs: u32 = 0;
 };
 
 /// Push one inbound message frame (a JSON envelope `{"type":...}`) from the
@@ -266,6 +275,21 @@ fn dispatchMessage(raw: []const u8) void {
     if (v != .object) return;
     const tv = v.object.get("type") orelse return;
     if (tv != .string) return;
+    // World-tick gate: a frame stamped with a tick we've already passed is too
+    // late (stale or reordered) — drop it so it can't overwrite newer state.
+    // Untagged frames (no tick) always apply, for editor/dev pushes.
+    if (v.object.get("tick")) |tk| {
+        const t: u64 = switch (tk) {
+            .integer => |x| if (x > 0) @intCast(x) else 0,
+            .float => |x| if (x > 0) @intFromFloat(x) else 0,
+            else => 0,
+        };
+        if (t <= App.last_msg_tick) {
+            App.dropped_msgs +%= 1;
+            return;
+        }
+        App.last_msg_tick = t;
+    }
     if (std.mem.eql(u8, tv.string, "scene")) {
         if (v.object.get("json")) |j| {
             if (j == .string) reloadScene(j.string);
@@ -317,10 +341,10 @@ fn parseRgba(v: std.json.Value) ?m.Vec4 {
 fn setEntityColor(name: []const u8, rgba: m.Vec4) void {
     const b = App.stage.find(name) orelse return;
     const mr = App.stage.world.get(core.MeshRef, b.entity) orelse return;
-    const mesh = App.stage.world.meshes.get(mr.mesh);
-    const verts = @constCast(mesh.vertices);
-    for (verts) |*vtx| vtx.color = rgba;
-    App.renderer.invalidateMesh(mr.mesh);
+    // Recolour in place + bump the mesh revision; render re-uploads on the next
+    // frame when it notices the revision changed. No scene rebuild, no explicit
+    // render call (keeps the core→render one-way boundary).
+    App.stage.world.meshes.setColor(mr.mesh, rgba.x, rgba.y, rgba.z, rgba.w);
     if (std.mem.eql(u8, name, "fedora")) App.fedora_r = rgba.x; // keep HUD diag in sync
 }
 
@@ -347,6 +371,7 @@ export fn frame() void {
     var ticks: u32 = 0;
     while (App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
         App.stage.update(@floatCast(fixed_dt)) catch {};
+        App.world_tick += 1; // advance the shared world clock, one per fixed step
         App.accumulator -= fixed_dt;
         ticks += 1;
     }
@@ -432,6 +457,9 @@ export fn frame() void {
         .reloads = App.reload_count,
         .fedora_r = App.fedora_r,
         .ws_msgs = App.ws_msgs,
+        .world_tick = App.world_tick,
+        .msg_tick = App.last_msg_tick,
+        .dropped = App.dropped_msgs,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
 }

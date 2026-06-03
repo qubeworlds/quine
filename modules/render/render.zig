@@ -65,6 +65,12 @@ pub const HudInfo = struct {
     /// bridge is delivering; if it stays 0 while the editor's activity dot
     /// flashes, the messages reach JS but not the engine.
     ws_msgs: u32 = 0,
+    /// Multiplayer-tick diagnostics: the engine's current world tick, the newest
+    /// message tick applied, and how many frames were dropped for arriving too
+    /// late (tick already passed).
+    world_tick: u64 = 0,
+    msg_tick: u64 = 0,
+    dropped: u32 = 0,
 };
 
 /// A translation gizmo to draw at `origin`, with three axis handles of world
@@ -204,15 +210,10 @@ pub const Renderer = struct {
     /// Drop all cached GPU geometry so the next frame re-uploads it. Called on a
     /// scene hot-reload: the rebuilt meshes reuse handle indices, so the cache
     /// must be invalidated or render keeps drawing the previous scene's buffers.
+    /// (In-place edits don't need this — they bump the mesh revision and resolve
+    /// re-uploads automatically.)
     pub fn invalidateMeshes(self: *Renderer) void {
         self.cache.reset();
-    }
-
-    /// Drop one cached mesh so the next frame re-uploads it — for an in-place
-    /// edit (e.g. recolouring a single entity) that mutated its CPU vertices but
-    /// left the rest of the scene running.
-    pub fn invalidateMesh(self: *Renderer, handle: core.MeshHandle) void {
-        self.cache.invalidate(handle);
     }
 
     /// Upload the character's skinned mesh to the GPU. Called at startup and on
@@ -370,6 +371,7 @@ pub const Renderer = struct {
         sdtx.print("mouse    : {d:.0}, {d:.0}\n", .{ info.mouse_x, info.mouse_y });
         sdtx.print("reload   : n={d} fedR={d:.2}\n", .{ info.reloads, info.fedora_r });
         sdtx.print("messages : {d}\n", .{info.ws_msgs});
+        sdtx.print("tick     : {d} msg={d} drop={d}\n", .{ info.world_tick, info.msg_tick, info.dropped });
         sdtx.print("[tab / 3-finger] toggle hud\n", .{});
         sdtx.draw();
     }

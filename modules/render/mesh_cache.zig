@@ -19,6 +19,9 @@ pub const GpuMesh = struct {
     index_count: u32 = 0,
     indexed: bool = false,
     uploaded: bool = false,
+    /// Registry revision this buffer was uploaded from; if the mesh is edited in
+    /// place (its revision bumped) we re-upload to pick up the new data.
+    rev: u32 = 0,
 };
 
 pub const MeshCache = struct {
@@ -33,13 +36,20 @@ pub const MeshCache = struct {
     ) *const GpuMesh {
         const idx: usize = @intFromEnum(handle);
         const gm = &self.meshes[idx];
-        if (gm.uploaded) return gm;
+        const cur = registry.rev(handle);
+        if (gm.uploaded and gm.rev == cur) return gm;
+
+        // Stale (or never uploaded): an in-place edit bumped the revision. Drop
+        // the old buffers before re-uploading so the recolour shows and nothing
+        // leaks. invalidate() is a no-op on a fresh (un-uploaded) slot.
+        if (gm.uploaded) self.invalidate(handle);
 
         const data = registry.get(handle);
         gm.vbuf = sg.makeBuffer(.{
             .data = sg.asRange(data.vertices),
             .label = "mesh-vertices",
         });
+        gm.rev = cur;
         gm.vertex_count = @intCast(data.vertices.len);
 
         if (data.indices.len > 0) {
