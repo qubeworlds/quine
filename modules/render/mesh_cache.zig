@@ -55,4 +55,19 @@ pub const MeshCache = struct {
         gm.uploaded = true;
         return gm;
     }
+
+    /// Drop every cached GPU buffer and clear the upload flags. Call on a scene
+    /// hot-reload: `buildStage` rebuilds the meshes (often reusing the same
+    /// handle indices), so without this `resolve` would keep returning the stale
+    /// buffers from the previous scene — the new geometry/colours would never
+    /// reach the GPU. Destroying the buffers also stops them leaking per reload.
+    pub fn reset(self: *MeshCache) void {
+        for (&self.meshes) |*gm| {
+            if (gm.uploaded) {
+                sg.destroyBuffer(gm.vbuf);
+                if (gm.indexed) sg.destroyBuffer(gm.ibuf);
+            }
+            gm.* = .{};
+        }
+    }
 };

@@ -201,8 +201,19 @@ pub const Renderer = struct {
         });
     }
 
-    /// Upload the character's skinned mesh to the GPU once (at startup).
+    /// Drop all cached GPU geometry so the next frame re-uploads it. Called on a
+    /// scene hot-reload: the rebuilt meshes reuse handle indices, so the cache
+    /// must be invalidated or render keeps drawing the previous scene's buffers.
+    pub fn invalidateMeshes(self: *Renderer) void {
+        self.cache.reset();
+    }
+
+    /// Upload the character's skinned mesh to the GPU. Called at startup and on
+    /// every scene hot-reload, so it first destroys any previous buffers (else
+    /// each reload would leak the old skinned vertex/index buffers).
     pub fn uploadSkinned(self: *Renderer, mesh: core.SkinnedMeshData) void {
+        sg.destroyBuffer(self.skinned_vbuf); // no-op on the initial invalid handle
+        sg.destroyBuffer(self.skinned_ibuf);
         self.skinned_vbuf = sg.makeBuffer(.{ .data = sg.asRange(mesh.vertices), .label = "skinned-vertices" });
         self.skinned_ibuf = sg.makeBuffer(.{
             .usage = .{ .index_buffer = true },

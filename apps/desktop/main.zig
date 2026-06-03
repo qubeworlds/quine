@@ -179,6 +179,10 @@ fn loadScene() void {
 fn reloadScene(json: []const u8) void {
     App.reload_count += 1; // count the attempt (visible in the HUD) before teardown
     App.stage.deinit();
+    // Drop the GPU mesh cache: the rebuilt scene reuses mesh handle indices, so
+    // without this the renderer keeps drawing the previous scene's buffers (e.g.
+    // the fedora stays its old colour even though the new mesh data differs).
+    App.renderer.invalidateMeshes();
     buildStage(json) catch return;
     App.js.rebind(&App.stage);
 }
