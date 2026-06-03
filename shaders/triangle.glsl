@@ -113,7 +113,11 @@ void main() {
     bool preview = pbr.z > 0.5;
     if (preview) n = dimpleNormal(n);
     vec3 v = normalize(view_dir);
-    vec3 l = normalize(vec3(0.4, 0.7, 1.0)); // key directional light
+    // Live key light is roughly co-axial with the camera (fine for the editor).
+    // For previews that flattens the body and puts a central blob on metals, so
+    // the preview keys from the upper-left (3/4) — the highlight rakes across the
+    // curve and the far side rolls into the fill + rim.
+    vec3 l = preview ? normalize(vec3(0.7, 0.8, -0.25)) : normalize(vec3(0.4, 0.7, 1.0));
     vec3 h = normalize(v + l);
 
     float n_o_v = max(dot(n, v), 1e-4);
@@ -150,10 +154,24 @@ void main() {
     // Preview staging: a soft fill from the opposite side to open up the shadow
     // terminator, and a cool rim to separate the body from the studio backdrop.
     if (preview) {
-        vec3 lf = normalize(vec3(-0.6, 0.1, -0.4));
+        // Fill from the side opposite the key (screen-left), to open up the
+        // shadow terminator.
+        vec3 lf = normalize(vec3(-0.7, 0.15, 0.35));
         col += diffuse_color * max(dot(n, lf), 0.0) * 0.16;
+        // Cool rim to separate the body from the backdrop.
         float rim = pow(clamp(1.0 - n_o_v, 0.0, 1.0), 3.0);
         col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
+        // Studio softboxes the surface reflects: a hot key box (upper-right) and a
+        // cooler fill box (left). On a polished metal the reflection is sharp and
+        // bright — the "shine" a flat gradient env can't provide; rough / dielectric
+        // surfaces only catch a soft glint. Tinted by the Fresnel reflectance, so
+        // gold throws a golden highlight and chrome a white one.
+        float gloss = 1.0 - rough;
+        vec3 key_r = normalize(vec3(0.7, 0.8, -0.25));
+        vec3 fill_r = normalize(vec3(-0.7, 0.2, 0.4));
+        float sk = pow(max(dot(r, key_r), 0.0), mix(8.0, 220.0, gloss));
+        float sf = pow(max(dot(r, fill_r), 0.0), mix(6.0, 90.0, gloss));
+        col += (vec3(1.7, 1.65, 1.5) * sk + vec3(0.5, 0.55, 0.7) * sf) * f_amb;
     }
 
     frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
