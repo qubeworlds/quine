@@ -753,6 +753,16 @@ pub const SceneRuntime = struct {
             const p = self.physics.bodyPosition(body);
             if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(p[0], p[1], p[2]);
         }
+
+        // 5. Bone-driven gaze: aim a rigged actor's `LeftEye`/`RightEye` bones
+        //    along its (eased, by the gaze system) Gaze direction, so the
+        //    bone-skinned eyeballs turn. The conformant-avatar path — a skill sets
+        //    the Gaze target (e.g. the heading to the ball), the eyes follow.
+        for (self.bindings) |*b| {
+            if (b.model) |*model| if (b.pose) |*pose| {
+                if (self.world.get(core.Gaze, b.entity)) |gz| aimEyeBones(model, pose, gz.dir);
+            };
+        }
     }
 
     /// Resolve a scene entity name to its binding, or null.
@@ -817,6 +827,22 @@ fn rotationBasis(mat: m.Mat4) m.Mat4 {
         r.m[col * 4 + 2] = z * inv;
     }
     return r;
+}
+
+/// Rotate a model's `LeftEye`/`RightEye` bones to look along `dir` (x=yaw,
+/// y=pitch), about each eye's own centre — the bone-skinned eyeballs then turn.
+/// The rigged-avatar equivalent of the procedural `Gaze` system.
+fn aimEyeBones(model: *core.Model, pose: *core.Pose, dir: m.Vec3) void {
+    const yaw = std.math.clamp(dir.x, -1.0, 1.0) * 0.6;
+    const pitch = std.math.clamp(dir.y, -1.0, 1.0) * 0.5;
+    const rot = m.Mat4.rotationY(yaw).mul(m.Mat4.rotationX(pitch));
+    inline for (.{ "LeftEye", "RightEye" }) |name| {
+        if (model.skeleton.findNode(name)) |n| {
+            const g = pose.global[n];
+            const p = m.Vec3.init(g.m[12], g.m[13], g.m[14]);
+            pose.global[n] = m.Mat4.translation(p).mul(rot).mul(m.Mat4.translation(p.scale(-1))).mul(g);
+        }
+    }
 }
 
 /// The rotation that maps +Z (the gaze rest axis) onto `dir`. Used to swing the

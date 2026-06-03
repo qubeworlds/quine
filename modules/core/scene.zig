@@ -196,6 +196,9 @@ pub const Entity = struct {
     spin: ?Spin = null,
     squash: ?Squash = null,
     camera: ?Camera = null,
+    /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
+    /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
+    gaze: ?Vec3 = null,
 };
 
 pub const Param = struct { name: []const u8, value: f32 };
@@ -286,6 +289,7 @@ fn parseEntity(v: Value) !Entity {
     }
     if (o.get("squash")) |x| e.squash = try parseSquash(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
+    if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
 }
 

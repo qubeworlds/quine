@@ -254,6 +254,7 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
             world.set(Squash, ent, .{ .rest_scale = rest, .value = sq.value, .recovery = sq.recovery });
         }
         if (e.camera) |c| world.set(Camera, ent, .{ .fov_y = c.fov_y, .near = c.near, .far = c.far });
+        if (e.gaze) |g| world.set(Gaze, ent, .{ .target = v3(g), .dir = v3(g) });
 
         // Builtin geometry references static mesh data, so it needs no allocator
         // and can be wired here. glTF/procedural meshes own buffers -> app-side.

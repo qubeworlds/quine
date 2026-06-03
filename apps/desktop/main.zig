@@ -538,8 +538,7 @@ export fn frame() void {
     var skinned: ?render.SkinnedScene = null;
     if (App.dancer) |d| if (d.model) |*model| if (d.pose) |*pose| {
         const jc = model.skeleton.jointCount();
-        if (eye_gaze) |dir| aimEyeBones(model, pose, dir); // bone-driven gaze
-        pose.fillPalette(&model.skeleton, App.palette[0..jc]);
+        pose.fillPalette(&model.skeleton, App.palette[0..jc]); // eye-bone gaze applied in scene_runtime.update
         const tf = App.stage.world.get(core.Transform, d.entity).?.*;
         App.instance[0] = .{ .model = tf.matrix(), .bucket = 0 };
         skinned = .{ .instances = &App.instance, .palettes = &App.palette };
@@ -669,26 +668,6 @@ const ThumbGeo = enum { sphere, fedora };
 const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain", scene: ?[*:0]const u8 = null };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
-/// Headless gaze test: QUINE_GAZE_X/_Y aim the avatar's eye bones (look dir).
-var eye_gaze: ?m.Vec3 = null;
-
-/// Rotate a model's `LeftEye`/`RightEye` bones to look along `dir` (x=yaw,
-/// y=pitch), about each eye's own position — so the eyeball geometry skinned to
-/// those bones turns. The bone-driven equivalent of the procedural `Gaze`
-/// system; this is what a conformant (RPM-style) avatar gives us for free.
-fn aimEyeBones(model: *core.Model, pose: *core.Pose, dir: m.Vec3) void {
-    const yaw = std.math.clamp(dir.x, -1.0, 1.0) * 0.6;
-    const pitch = std.math.clamp(dir.y, -1.0, 1.0) * 0.5;
-    const rot = m.Mat4.rotationY(yaw).mul(m.Mat4.rotationX(pitch));
-    inline for (.{ "LeftEye", "RightEye" }) |name| {
-        if (model.skeleton.findNode(name)) |n| {
-            const g = pose.global[n];
-            const p = m.Vec3.init(g.m[12], g.m[13], g.m[14]);
-            // T(p) * rot * T(-p) * g — rotate the eye about its own centre.
-            pose.global[n] = m.Mat4.translation(p).mul(rot).mul(m.Mat4.translation(p.scale(-1))).mul(g);
-        }
-    }
-}
 
 extern fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, fmt: c_uint, typ: c_uint, pixels: ?*anyopaque) void;
 extern fn glFinish() void;
@@ -726,9 +705,6 @@ fn readThumbEnv() void {
         // (e.g. the procedural face), for offscreen review on Linux under Xvfb.
         .scene = std.c.getenv("QUINE_THUMB_SCENE"),
     };
-    if (std.c.getenv("QUINE_GAZE_X") != null) {
-        eye_gaze = m.Vec3.init(envF32("QUINE_GAZE_X"), envF32("QUINE_GAZE_Y"), 0);
-    }
 }
 
 /// A single-object scene with the requested material, framed by an orbit camera.
