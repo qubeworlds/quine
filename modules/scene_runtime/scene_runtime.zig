@@ -410,30 +410,66 @@ pub const SceneRuntime = struct {
         const ent = self.bindings[face_idx].entity;
         const skin = core.Material{ .base_color = vec4(f.skin_color), .roughness = 0.6 };
 
-        // Head: a sculpted glTF mesh (scaled + centred), or the procedural oval.
-        // `R` is the resulting head's horizontal radius — the unit the face parts
-        // are placed in.
         var R = f.head_radius;
-        if (f.head_mesh) |src| {
-            const bytes = resolve(assets, src) orelse return error.AssetNotFound;
+        const sculpted = f.head_mesh != null; // the mesh already has nose/brows/lips
+
+        // Placement in the head-local frame (+Y up, +Z forward). Defaults are the
+        // PROCEDURAL oval-head fractions; the sculpted branch overwrites them from
+        // real measurements of the mesh.
+        var eyeball_r = f.eye_size_fraction * R;
+        var eye_x = 0.5 * f.eye_spacing_fraction * R;
+        var eye_y = f.eye_level_fraction * R;
+        var eye_z = f.eye_forward_fraction * R;
+        var crown_y = f.head_height * 0.30;
+        const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
+
+        if (sculpted) {
+            const bytes = resolve(assets, f.head_mesh.?) orelse return error.AssetNotFound;
             const mesh = try core.loadGlbMesh(a, bytes); // static (unrigged) mesh
-            // Measure bounds, then bake a scale-to-head_height + centre into the
-            // vertices (children are placed in this normalised frame).
-            var lo = m.Vec3.init(std.math.inf(f32), std.math.inf(f32), std.math.inf(f32));
-            var hi = m.Vec3.init(-std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32));
+            var lo = m.Vec3.init(1e9, 1e9, 1e9);
+            var hi = m.Vec3.init(-1e9, -1e9, -1e9);
             for (mesh.vertices) |v| {
                 lo = m.Vec3.init(@min(lo.x, v.position.x), @min(lo.y, v.position.y), @min(lo.z, v.position.z));
                 hi = m.Vec3.init(@max(hi.x, v.position.x), @max(hi.y, v.position.y), @max(hi.z, v.position.z));
             }
-            const h = hi.y - lo.y;
-            const s = if (h > 1e-6) f.head_height / h else 1.0;
-            const c = m.Vec3.init((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5);
-            for (@constCast(mesh.vertices)) |*v| {
-                v.position = m.Vec3.init((v.position.x - c.x) * s, (v.position.y - c.y) * s, (v.position.z - c.z) * s);
+            // A scan is a BUST — wide shoulders we must ignore. Measure the head
+            // from the upper, forward-facing region only: the face/cranium half-
+            // width, and the nose tip (most-forward upper vertex), from which the
+            // eye line sits just above.
+            var head_r_mesh: f32 = 1e-6;
+            var nose_y: f32 = 0;
+            var nose_z: f32 = -1e9;
+            for (mesh.vertices) |v| {
+                if (v.position.y > 0 and v.position.z > 0.25 * hi.z) {
+                    head_r_mesh = @max(head_r_mesh, @abs(v.position.x));
+                    if (v.position.z > nose_z) {
+                        nose_z = v.position.z;
+                        nose_y = v.position.y;
+                    }
+                }
             }
-            R = @max(hi.x - lo.x, hi.z - lo.z) * 0.5 * s;
+            const eye_y_mesh = nose_y + 0.40 * head_r_mesh;
+            var face_front_mesh: f32 = 0;
+            for (mesh.vertices) |v| {
+                if (@abs(v.position.y - eye_y_mesh) < 0.12 * (hi.y - lo.y) and @abs(v.position.x) < 0.5 * head_r_mesh) {
+                    face_front_mesh = @max(face_front_mesh, v.position.z);
+                }
+            }
+            // Scale so the measured head radius == headRadius, and centre on the
+            // eye line so the face sits at the origin (children place around it).
+            const s = f.head_radius / head_r_mesh;
+            for (@constCast(mesh.vertices)) |*v| {
+                v.position = m.Vec3.init(v.position.x * s, (v.position.y - eye_y_mesh) * s, v.position.z * s);
+            }
             self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             self.world.set(core.Material, ent, skin);
+
+            R = f.head_radius;
+            eyeball_r = 0.12 * R; // a real eye is ~1/8 of the head radius
+            eye_x = 0.42 * f.eye_spacing_fraction * R;
+            eye_y = 0; // the measured eye line is the origin
+            eye_z = face_front_mesh * s - eyeball_r * 0.8; // nestle into the socket
+            crown_y = (hi.y - eye_y_mesh) * s;
         } else {
             const rings: u32 = f.segments;
             const verts = try a.alloc(core.Vertex, core.headVertexCount(rings, f.segments));
@@ -442,13 +478,6 @@ pub const SceneRuntime = struct {
             self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             self.world.set(core.Material, ent, skin);
         }
-        const sculpted = f.head_mesh != null; // the mesh already has nose/brows/lips
-
-        const eyeball_r = f.eye_size_fraction * R;
-        const eye_x = 0.5 * f.eye_spacing_fraction * R;
-        const eye_y = f.eye_level_fraction * R;
-        const eye_z = f.eye_forward_fraction * R;
-        const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
 
         // Eyes: the five parts per side, in the eye-local frame at each eye centre.
         const spec = core.eye.Spec{
@@ -503,13 +532,14 @@ pub const SceneRuntime = struct {
             }
         }
 
-        // Fedora instead of hair: seated near the crown.
+        // Fedora instead of hair: sized to the head and seated at the measured
+        // crown (a head's hat brim is ~1.4× the head radius, not 1.7×).
         if (f.fedora) {
             const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(f.segments));
             const idx = try a.alloc(u32, core.fedoraIndexCount(f.segments));
-            const mesh = core.fedora(R * 1.7, R * 1.05, R * 1.2, f.segments, white, verts, idx);
+            const mesh = core.fedora(R * 1.4, R * 1.02, R * 0.9, f.segments, white, verts, idx);
             const hat = core.Material{ .base_color = vec4(f.fedora_color), .roughness = 0.5 };
-            try self.addFaceChild(a, all, cursor, face_idx, mesh, hat, .{ 0, f.head_height * 0.30, 0 }, m.Vec3.splat(1), null);
+            try self.addFaceChild(a, all, cursor, face_idx, mesh, hat, .{ 0, crown_y, 0 }, m.Vec3.splat(1), null);
         }
     }
 
@@ -1095,6 +1125,52 @@ test "SceneRuntime expands a fitted eyes entity into its parts, sized from the h
     try std.testing.expect(rt.world.get(core.Transform, rt.find("eyes.L.sclera").?.entity).?.position.y > 1.0);
 }
 
+test "sculpted face is correctly proportioned: head ~ headRadius, eyes small + on the face" {
+    const head = @embedFile("head.glb");
+    const head_radius: f32 = 0.12;
+    const sc = core.scene.Scene{ .schema_version = 1, .name = "p", .entities = &.{
+        .{ .name = "face", .transform = .{ .position = .{ 0, 1, 0 } }, .geometry = .{ .face = .{ .head_mesh = "head.glb", .head_radius = head_radius } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "head.glb", .bytes = head }});
+    defer rt.deinit();
+    for (0..2) |_| try rt.update(1.0 / 60.0);
+
+    const face = rt.find("face").?;
+    var face_index: usize = 0;
+    for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
+        face_index = i;
+    };
+
+    // The head was measured (not the bust): its FACE region scales to ~headRadius.
+    const hm = rt.world.meshes.get(rt.world.get(core.MeshRef, face.entity).?.mesh);
+    var face_half_width: f32 = 0;
+    for (hm.vertices) |v| {
+        if (v.position.y > 0 and v.position.z > 0) face_half_width = @max(face_half_width, @abs(v.position.x));
+    }
+    try std.testing.expect(face_half_width > 0.08 and face_half_width < 0.18); // ≈ headRadius, NOT the ~0.27 shoulders
+
+    // Every gaze eyeball is SMALL (≤ ¼ headRadius — not the giant spheres bug) and
+    // sits ON the face: in front (+Z), near the eye line (|y| small), within width.
+    const face_pos = rt.world.get(core.Transform, face.entity).?.position;
+    var checked: usize = 0;
+    for (rt.bindings) |bnd| {
+        if (bnd.parent_idx != face_index) continue;
+        if (rt.world.get(core.Gaze, bnd.entity) == null) continue; // iris/cornea/pupil
+        const part = rt.world.meshes.get(rt.world.get(core.MeshRef, bnd.entity).?.mesh);
+        var rad: f32 = 0;
+        for (part.vertices) |v| rad = @max(rad, v.position.length());
+        try std.testing.expect(rad < 0.25 * head_radius); // small eye, not a beach ball
+        const p = rt.world.get(core.Transform, bnd.entity).?.position;
+        const rel = p.sub(face_pos);
+        try std.testing.expect(rel.z > 0); // on the front of the face
+        try std.testing.expect(@abs(rel.y) < head_radius); // near the eye line
+        try std.testing.expect(@abs(rel.x) < head_radius); // within the face width
+        checked += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 6), checked);
+}
+
 test "a face composite builds an oval head + its parts in one frame (no skeleton)" {
     const sc = core.scene.Scene{
         .schema_version = 1,
@@ -1152,10 +1228,8 @@ test "a face with a sculpted headMesh loads the head + eyes (no doubled nose/bro
     const face = rt.find("face").?;
     const mref = rt.world.get(core.MeshRef, face.entity).?;
     try std.testing.expect(rt.world.meshes.get(mref.mesh).vertices.len > 1000);
-    // Scaled to ~head_height: no vertex is far outside a 0.32 m head.
-    for (rt.world.meshes.get(mref.mesh).vertices) |v| {
-        try std.testing.expect(@abs(v.position.y) < 0.4 and @abs(v.position.x) < 0.4);
-    }
+    // (Proportions — head sized from the FACE not the bust, small eyes on the
+    // face — are asserted by the "correctly proportioned" test above.)
 
     var face_index: usize = 0;
     for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
