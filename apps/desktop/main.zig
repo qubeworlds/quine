@@ -59,15 +59,13 @@ const max_ticks_per_frame: u32 = 8;
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
 const is_web = builtin.os.tag == .emscripten;
-// Game content (scene, skill, mesh assets) belongs to the *game qube*, not the
-// engine (see @world/shared manifest.ts: `game.assets[]`, engine-as-dependency).
-// So on **web** none of it is compiled into the wasm — the host fetches the
-// qube's files and hands them over at runtime (`quine_provide_asset` for meshes,
-// `QUINE_SCENE_JSON`/`quine_enqueue` for the scene, the bundled skill for code).
-// **Native** still embeds them today (the single binary *is* the bundle) until
-// the engine/game-qube split lands; `if (is_web)` keeps the bytes out of wasm.
-const character_glb = if (is_web) "" else @embedFile("character.glb");
-const head_glb = if (is_web) "" else @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
+// Game assets belong to the game qube, not the engine (manifest.ts) — the goal
+// is to fetch them at runtime via `quine_provide_asset`. That externalization
+// regressed the web render (the runtime fetch wasn't landing before scene load),
+// so meshes are embedded again for now while that channel is verified with a
+// real browser snapshot. The channel + registry stay wired (provide overrides).
+const character_glb = @embedFile("character.glb");
+const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -191,11 +189,20 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
-    // Native bundles its game assets in the binary; seed the registry from them.
-    // Web leaves the registry to be filled by the host via `quine_provide_asset`
-    // before the scene loads, so the wasm carries no game content.
-    if (!is_web) {
-        App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
+    // Seed the asset registry from the embedded game meshes. `QUINE_HEAD_FILE=
+    // <path>` instead provides head.glb through the *external* registry path
+    // (read a file at runtime, register it) — so the Linux engine can verify the
+    // externalized-asset flow end-to-end (everything but the browser's JS fetch),
+    // not just the embedded path.
+    App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
+    if (std.c.getenv("QUINE_HEAD_FILE")) |p| {
+        if (std.c.fopen(p, "rb")) |fp| {
+            const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch unreachable;
+            const n = std.c.fread(buf.ptr, 1, buf.len, fp);
+            _ = std.c.fclose(fp);
+            App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = buf[0..n] }) catch {};
+        }
+    } else {
         App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = head_glb }) catch {};
     }
     if (thumb_cfg) |t| {
