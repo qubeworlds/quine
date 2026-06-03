@@ -135,7 +135,19 @@ pub const SceneRuntime = struct {
             });
             bindings[i] = bnd;
         }
-        self.bindings = bindings;
+        // Reserve binding slots for eye sub-entities: each fitted `eyes` entity
+        // expands into 2 eyes × 5 parts = 10 child draws, appended after the
+        // authored entities so the per-tick parenting step carries them along
+        // like any other joint-parented child.
+        var extra_bindings: usize = 0;
+        for (scene_data.entities) |e| {
+            if (e.geometry) |g| if (g == .eyes and g.eyes.fit_to_joint != null) {
+                extra_bindings += 10;
+            };
+        }
+        const all = try a.alloc(Binding, bindings.len + extra_bindings);
+        @memcpy(all[0..bindings.len], bindings);
+        self.bindings = all[0..bindings.len];
 
         // Resolve parenting now that every binding exists. A joint reference
         // binds to the parent's head joint (the only joint we resolve by name
@@ -143,10 +155,10 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const p = e.parent orelse continue;
             const pi = findIndex(scene_data, p.entity) orelse continue;
-            bindings[i].parent_idx = pi;
-            bindings[i].parent_offset = p.offset;
-            if (p.joint != null and bindings[pi].pose != null) {
-                bindings[i].parent_joint = bindings[pi].head_joint;
+            self.bindings[i].parent_idx = pi;
+            self.bindings[i].parent_offset = p.offset;
+            if (p.joint != null and self.bindings[pi].pose != null) {
+                self.bindings[i].parent_joint = self.bindings[pi].head_joint;
             }
         }
 
@@ -157,8 +169,19 @@ pub const SceneRuntime = struct {
             const g = e.geometry orelse continue;
             if (g != .fedora) continue;
             if (g.fedora.fit_to_joint == null) continue; // standalone built in buildMesh
-            try self.buildFedora(a, &bindings[i], g.fedora);
+            try self.buildFedora(a, &self.bindings[i], g.fedora);
         }
+
+        // eyes meshes: expand each fitted `eyes` entity into its five parts per
+        // eye, sized from the same head bounds, into the reserved binding tail.
+        var cursor = bindings.len;
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .eyes) continue;
+            if (g.eyes.fit_to_joint == null) continue;
+            try self.buildEyes(a, i, g.eyes, all, &cursor);
+        }
+        self.bindings = all[0..cursor];
 
         self.physics.optimize();
     }
@@ -201,6 +224,82 @@ pub const SceneRuntime = struct {
         // so the per-tick parenting carries it along.
         const joint_y = pose.global[head_node].m[13];
         b.parent_offset[1] += (brim_y - joint_y) * scale;
+    }
+
+    /// Expand a fitted `eyes` entity into its concrete parts. Sizes the eyeball
+    /// from the parent's head joint (like `buildFedora`), places a left and a
+    /// right eye on the face, and for each spawns the five parts (`core.eye`):
+    /// each gets its own mesh + `Material`, the gaze-driven parts get a `Gaze`
+    /// component, and every part is appended to `all` as a child of the head
+    /// joint so the parenting step carries it with the head each tick.
+    fn buildEyes(
+        self: *SceneRuntime,
+        a: std.mem.Allocator,
+        eyes_idx: usize,
+        ey: anytype,
+        all: []Binding,
+        cursor: *usize,
+    ) !void {
+        const anchor = &self.bindings[eyes_idx];
+        const pi = anchor.parent_idx orelse return;
+        const parent = &self.bindings[pi];
+        const pose = if (parent.pose) |*ps| ps else return;
+        const head_node = parent.head_joint;
+        const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
+
+        const bounds = core.measureJointBounds(if (parent.model) |*mdl| mdl else return, pose, head_node);
+        if (bounds.count == 0) return; // can't size them; leave bare
+
+        const head_radius_w = bounds.radius_xz * scale;
+        const eyeball_r = head_radius_w * ey.size_fraction;
+        if (eyeball_r <= 0) return;
+
+        // Eye-centre offset from the head joint, in world metres (rotated by the
+        // head's tilt each tick by the parenting step). +X lateral, +Z forward
+        // onto the face, Y from the head centroid with a small drop.
+        const joint_y = pose.global[head_node].m[13];
+        const lateral = 0.5 * ey.spacing_fraction * head_radius_w;
+        const forward = ey.forward_fraction * head_radius_w;
+        const off_y = (bounds.centroid.y - joint_y) * scale - ey.drop_fraction * eyeball_r;
+
+        const gaze_dir = m.Vec3.init(ey.gaze[0], ey.gaze[1], ey.gaze[2]);
+        const spec = core.eye.Spec{
+            .radius = eyeball_r,
+            .pupil_scale = ey.pupil_scale,
+            .sclera_color = vec4(ey.sclera_color),
+            .iris_color = vec4(ey.iris_color),
+            .segments = ey.segments,
+        };
+
+        const sides = [_]f32{ -1.0, 1.0 };
+        for (sides) |sx| {
+            const eye_off = [3]f32{ sx * lateral, off_y, forward };
+            for (core.eye.all_parts) |part| {
+                const g = core.eye.partGeom(spec, part);
+                const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
+                const indices = try a.alloc(u32, core.eye.partIndexCount(g));
+                const mesh = core.eye.buildPart(g, verts, indices);
+
+                const sub = self.world.spawn();
+                self.world.set(core.Transform, sub, .{});
+                self.world.set(core.MeshRef, sub, .{ .mesh = self.world.meshes.add(mesh) });
+                self.world.set(core.Material, sub, g.material);
+                if (g.gaze) self.world.set(core.Gaze, sub, .{ .target = gaze_dir, .dir = gaze_dir });
+
+                all[cursor.*] = .{
+                    .name = try std.fmt.allocPrint(a, "{s}.{s}.{s}", .{
+                        anchor.name,
+                        if (sx < 0) "L" else "R",
+                        @tagName(part),
+                    }),
+                    .entity = sub,
+                    .parent_idx = pi,
+                    .parent_joint = head_node,
+                    .parent_offset = eye_off,
+                };
+                cursor.* += 1;
+            }
+        }
     }
 
     pub fn deinit(self: *SceneRuntime) void {
@@ -293,11 +392,16 @@ pub const SceneRuntime = struct {
                     // Follow the joint's rotation *relative to its bind pose*, so a
                     // rigid child (the fedora) turns/nods with the head like the
                     // app's old hatModel — without inheriting the bind orientation.
-                    const delta = rotationBasis(pose.global[jn]).mul(parent.head_bind_inv);
-                    rot = eulerZYX(delta);
-                    // Rotate the seat offset by that delta too, so it shifts with
+                    const head_delta = rotationBasis(pose.global[jn]).mul(parent.head_bind_inv);
+                    // Gaze-driven parts (iris/pupil/cornea) swing within the socket:
+                    // compose their look rotation onto the head follow for orientation
+                    // only — the eye centre (offset) still tracks the head, not gaze.
+                    var orient = head_delta;
+                    if (self.world.get(core.Gaze, b.entity)) |gz| orient = head_delta.mul(rotZTo(gz.dir));
+                    rot = eulerZYX(orient);
+                    // Rotate the seat offset by the head delta too, so it shifts with
                     // the head's tilt (else the skull pokes through the crown).
-                    const off = delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
+                    const off = head_delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
                     target = .{
                         pt.position.x + jm[12] * pt.scale.x + off.x,
                         pt.position.y + jm[13] * pt.scale.y + off.y,
@@ -400,6 +504,20 @@ fn rotationBasis(mat: m.Mat4) m.Mat4 {
         r.m[col * 4 + 2] = z * inv;
     }
     return r;
+}
+
+/// The rotation that maps +Z (the gaze rest axis) onto `dir`. Used to swing the
+/// gaze-driven eye parts toward a look direction. Degenerate cases (already
+/// aligned, or pointing straight back) fall back cleanly.
+fn rotZTo(dir: m.Vec3) m.Mat4 {
+    const f = m.Vec3.init(0, 0, 1);
+    const d = dir.normalize();
+    const c = f.dot(d);
+    if (c > 0.99999) return m.Mat4.identity;
+    if (c < -0.99999) return m.Mat4.rotationY(std.math.pi);
+    const axis = f.cross(d).normalize();
+    const ang = std.math.acos(std.math.clamp(c, -1.0, 1.0));
+    return m.Quat.fromAxisAngle(axis, ang).toMat4();
 }
 
 /// Euler angles (radians, the Z-Y-X order `components.Transform.matrix` rebuilds)
@@ -704,6 +822,88 @@ test "SceneRuntime sizes + seats a fedora from the head geometry" {
     // It rides the head: after a few ticks its Transform sits at head height.
     for (0..10) |_| try rt.update(1.0 / 60.0);
     try std.testing.expect(rt.world.get(core.Transform, fedora.entity).?.position.y > 1.0);
+}
+
+test "SceneRuntime expands a fitted eyes entity into its parts, sized from the head" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "e",
+        .entities = &.{
+            .{
+                .name = "dancer",
+                .transform = .{},
+                .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } },
+                .animation = .{},
+            },
+            .{
+                .name = "eyes",
+                .geometry = .{ .eyes = .{ .fit_to_joint = "head", .segments = 16 } },
+                .parent = .{ .entity = "dancer", .joint = "head" },
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    // Ten sub-entities (2 eyes × 5 parts), each named "eyes.<side>.<part>".
+    inline for (.{ "L", "R" }) |side| {
+        inline for (.{ "sclera", "iris", "cornea", "pupil", "tearline" }) |part| {
+            const b = rt.find("eyes." ++ side ++ "." ++ part) orelse return error.MissingPart;
+            // Every part drew a mesh and carries a material, parented to the head.
+            try std.testing.expect(rt.world.get(core.MeshRef, b.entity) != null);
+            try std.testing.expect(rt.world.get(core.Material, b.entity) != null);
+            try std.testing.expect(b.parent_idx != null and b.parent_joint != null);
+        }
+    }
+
+    // Only the iris/pupil/cornea gaze; the sclera/tear-line don't.
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.iris").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.pupil").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.cornea").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.sclera").?.entity) == null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.tearline").?.entity) == null);
+
+    // The cornea is transparent (blended pass); the sclera is opaque.
+    try std.testing.expect(rt.world.get(core.Material, rt.find("eyes.L.cornea").?.entity).?.base_color.w < 1.0);
+    try std.testing.expectEqual(@as(f32, 1.0), rt.world.get(core.Material, rt.find("eyes.L.sclera").?.entity).?.base_color.w);
+
+    // Left and right sit on opposite sides of the skull centreline.
+    for (0..5) |_| try rt.update(1.0 / 60.0);
+    const lx = rt.world.get(core.Transform, rt.find("eyes.L.sclera").?.entity).?.position.x;
+    const rx = rt.world.get(core.Transform, rt.find("eyes.R.sclera").?.entity).?.position.x;
+    try std.testing.expect(lx < rx);
+    // They ride the head (roughly head height after a few ticks).
+    try std.testing.expect(rt.world.get(core.Transform, rt.find("eyes.L.sclera").?.entity).?.position.y > 1.0);
+}
+
+test "gaze eases the eye toward a look target and swings the iris orientation" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "g",
+        .entities = &.{
+            .{ .name = "dancer", .transform = .{}, .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } } },
+            .{ .name = "eyes", .geometry = .{ .eyes = .{ .fit_to_joint = "head", .segments = 12 } }, .parent = .{ .entity = "dancer", .joint = "head" } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const iris = rt.find("eyes.L.iris").?.entity;
+    // Aim the gaze hard to one side; the system eases `dir` toward it (clamped).
+    rt.world.get(core.Gaze, iris).?.target = m.Vec3.init(1, 0, 0.2);
+    const before = rt.world.get(core.Transform, iris).?.rotation;
+    for (0..60) |_| try rt.update(1.0 / 60.0);
+    const after = rt.world.get(core.Transform, iris).?.rotation;
+    // The iris orientation changed (it swung toward the target), and the eased
+    // direction is no longer straight ahead.
+    try std.testing.expect(@abs(after.y - before.y) > 0.05);
+    const dir = rt.world.get(core.Gaze, iris).?.dir;
+    try std.testing.expect(dir.x > 0.1); // leaned toward +X
 }
 
 test "parity: the real keepie-uppie scene loads loadDancer's setup and runs deterministically" {

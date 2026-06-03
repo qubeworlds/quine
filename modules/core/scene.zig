@@ -46,6 +46,32 @@ pub const Geometry = union(enum) {
         seat_drop_fraction: f32 = 0.15,
         top_clearance: f32 = 0.05,
     },
+    /// A pair of stylised eyes, sized from a head joint and expanded by
+    /// `scene_runtime` into the five parts per eye (sclera/iris/cornea/pupil/
+    /// tear-line). The anatomy lives in `core.eye`; these are the authoring
+    /// knobs (the slider playground tunes exactly these).
+    eyes: struct {
+        /// Head joint to size + seat the eyes against (the worn case). Omit and
+        /// the eyes size off `size_meters` for a standalone preview.
+        fit_to_joint: ?[]const u8 = null,
+        /// Eyeball radius as a fraction of the head's radius (used when fitted).
+        size_fraction: f32 = 0.17,
+        /// Eyeball radius in metres for a standalone (unfitted) preview.
+        size_meters: f32 = 0.12,
+        /// Interpupillary spacing as a fraction of head width; null = 1.0 (the
+        /// eyes sit at ±radius from the skull centreline).
+        spacing_fraction: f32 = 1.0,
+        /// Eye centre placement relative to the head joint, as fractions of the
+        /// head radius: how far forward onto the face, and how far down.
+        forward_fraction: f32 = 0.85,
+        drop_fraction: f32 = 0.15,
+        /// Rest look direction in the head-local frame (+Z ahead).
+        gaze: Vec3 = .{ 0, 0, 1 },
+        pupil_scale: f32 = 0.5,
+        sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
+        iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
+        segments: u32 = 24,
+    },
 };
 
 /// PBR material (metallic-roughness). `color` is the base colour (albedo);
@@ -241,6 +267,20 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("brimFlare")) |x| g.fedora.brim_flare = try asF32(x);
         if (o.get("seatDropFraction")) |x| g.fedora.seat_drop_fraction = try asF32(x);
         if (o.get("topClearance")) |x| g.fedora.top_clearance = try asF32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "eyes")) {
+        var g = Geometry{ .eyes = .{} };
+        if (o.get("fitToJoint")) |x| g.eyes.fit_to_joint = try asStr(x);
+        if (o.get("sizeFraction")) |x| g.eyes.size_fraction = try asF32(x);
+        if (o.get("sizeMeters")) |x| g.eyes.size_meters = try asF32(x);
+        if (o.get("spacingFraction")) |x| g.eyes.spacing_fraction = try asF32(x);
+        if (o.get("forwardFraction")) |x| g.eyes.forward_fraction = try asF32(x);
+        if (o.get("dropFraction")) |x| g.eyes.drop_fraction = try asF32(x);
+        if (o.get("gaze")) |x| g.eyes.gaze = try asVec3(x);
+        if (o.get("pupilScale")) |x| g.eyes.pupil_scale = try asF32(x);
+        if (o.get("scleraColor")) |x| g.eyes.sclera_color = try asRgba(x);
+        if (o.get("irisColor")) |x| g.eyes.iris_color = try asRgba(x);
+        if (o.get("segments")) |x| g.eyes.segments = try asU32(x);
         return g;
     }
     return error.InvalidScene;
