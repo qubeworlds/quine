@@ -66,6 +66,15 @@ vec3 f_schlick(float v_o_h, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - v_o_h, 0.0, 1.0), 5.0);
 }
 
+// Cheap procedural environment: a ground→sky vertical gradient. Sampled along
+// the normal (ambient irradiance) and the reflection vector (ambient specular),
+// it gives metals something to reflect so they read as metal — a stand-in until
+// real image-based lighting.
+vec3 env(vec3 d) {
+    float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(vec3(0.20, 0.19, 0.17), vec3(0.55, 0.62, 0.78), t);
+}
+
 void main() {
     vec3 n = normalize(world_normal);
     vec3 v = normalize(view_dir);
@@ -87,17 +96,19 @@ void main() {
     vec3 f0 = mix(vec3(0.04), albedo, metallic);
     vec3 diffuse_color = albedo * (1.0 - metallic);
 
-    // Cook-Torrance specular.
+    // Direct: Cook-Torrance specular + Lambert diffuse from the key light.
     float d = d_ggx(n_o_h, a);
     float vis = v_smith(n_o_v, n_o_l, a);
     vec3 f = f_schlick(v_o_h, f0);
     vec3 spec = d * vis * f;
-
     vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
     vec3 lit = (kd * diffuse_color + spec) * n_o_l; // white light, unit intensity
 
-    // Cheap ambient so back faces aren't black (stand-in until IBL).
-    vec3 ambient = albedo * 0.12 * (1.0 - metallic * 0.7);
+    // Ambient from the environment: diffuse irradiance along N + a reflection
+    // along R (roughness-aware Fresnel). This is what makes metals look metallic.
+    vec3 r = reflect(-v, n);
+    vec3 f_amb = f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - n_o_v, 5.0);
+    vec3 ambient = env(n) * diffuse_color + env(r) * f_amb;
 
     vec3 col = lit + ambient + emissive.rgb;
     frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
