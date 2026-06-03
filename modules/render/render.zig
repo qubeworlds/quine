@@ -22,8 +22,9 @@ const m = @import("math");
 const mesh_cache = @import("mesh_cache.zig");
 
 /// Max joints in the skinning palette. Sized to fit GLES3/WebGL2 vertex uniform
-/// limits (32 * mat4 = 128 vec4, plus mvp/model). CesiumMan uses 19.
-pub const max_joints = 32;
+/// limits (64 * mat4 = 256 vec4, plus mvp/model). CesiumMan uses 19; a
+/// Ready-Player-Me half-body avatar uses 38, so 32 was too small.
+pub const max_joints = 64;
 
 /// One skinned instance: where to place it and which palette (phase) to use.
 pub const SkinnedInstance = struct {

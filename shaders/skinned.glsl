@@ -7,7 +7,7 @@ layout(binding=0) uniform vs_params {
     mat4 model;
 };
 layout(binding=1) uniform skin_params {
-    mat4 joints[32];
+    mat4 joints[64];
 };
 
 in vec3 position;

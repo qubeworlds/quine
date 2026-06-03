@@ -66,6 +66,7 @@ const is_web = builtin.os.tag == .emscripten;
 // real browser snapshot. The channel + registry stay wired (provide overrides).
 const character_glb = @embedFile("character.glb");
 const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
+const rpm_glb = @embedFile("rpm.glb"); // Ready Player Me sample avatar (eye bones + blendshapes)
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -195,6 +196,7 @@ export fn init() void {
     // externalized-asset flow end-to-end (everything but the browser's JS fetch),
     // not just the embedded path.
     App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
+    App.assets.append(std.heap.c_allocator, .{ .name = "rpm.glb", .bytes = rpm_glb }) catch {};
     if (std.c.getenv("QUINE_HEAD_FILE")) |p| {
         if (std.c.fopen(p, "rb")) |fp| {
             const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch unreachable;
