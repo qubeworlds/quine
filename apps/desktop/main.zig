@@ -294,16 +294,48 @@ fn dispatchMessage(raw: []const u8) void {
             if (c2 == .string) App.js.loadSkill(c2.string) catch {};
         }
     } else if (std.mem.eql(u8, tv.string, "material")) {
-        // Live, in-place property edit: recolour one entity's mesh without
-        // rebuilding the world, so the running sim (animation, physics, the
-        // ball) keeps going. This is how an engine applies an edit — it doesn't
-        // restart the game. Shape: {type:"material", entity:"fedora", color:[r,g,b,a]}.
-        const name = v.object.get("entity") orelse return;
-        const col = v.object.get("color") orelse return;
-        if (name == .string) {
-            if (parseRgba(col)) |rgba| setEntityColor(name.string, rgba);
+        // Live, in-place material edit: update one entity's Material component —
+        // base colour and/or the metallic-roughness/emissive factors — without
+        // rebuilding the world. Render reads it as a uniform, so the running sim
+        // keeps going and there's no mesh re-upload. An engine applies an edit;
+        // it doesn't restart the game. Shape:
+        //   {type:"material", entity:"fedora", color:[r,g,b,a],
+        //    metallic:0..1, roughness:0..1, emissive:[r,g,b]}  (all but entity optional)
+        const nv = v.object.get("entity") orelse return;
+        if (nv != .string) return;
+        const mat = entMaterial(nv.string) orelse return;
+        if (v.object.get("color")) |x| {
+            if (parseRgba(x)) |c| mat.base_color = c;
         }
+        if (v.object.get("metallic")) |x| {
+            if (numF32(x)) |f| mat.metallic = std.math.clamp(f, 0, 1);
+        }
+        if (v.object.get("roughness")) |x| {
+            if (numF32(x)) |f| mat.roughness = std.math.clamp(f, 0, 1);
+        }
+        if (v.object.get("emissive")) |x| {
+            if (parseRgba(x)) |e| mat.emissive = .{ .x = e.x, .y = e.y, .z = e.z };
+        }
+        if (std.mem.eql(u8, nv.string, "fedora")) App.fedora_r = mat.base_color.x;
     }
+}
+
+/// A JSON number (int or float) as f32, or null.
+fn numF32(x: std.json.Value) ?f32 {
+    return switch (x) {
+        .float => |y| @floatCast(y),
+        .integer => |y| @floatFromInt(y),
+        else => null,
+    };
+}
+
+/// The Material component of a named entity, creating a default one if absent.
+fn entMaterial(name: []const u8) ?*core.Material {
+    const b = App.stage.find(name) orelse return null;
+    if (App.stage.world.get(core.Material, b.entity) == null) {
+        App.stage.world.set(core.Material, b.entity, .{});
+    }
+    return App.stage.world.get(core.Material, b.entity);
 }
 
 /// Parse a JSON `[r,g,b,a]` (or `[r,g,b]`, alpha defaulting to 1) into a Vec4.
@@ -326,24 +358,6 @@ fn parseRgba(v: std.json.Value) ?m.Vec4 {
         .z = c.f(a[2]) orelse return null,
         .w = if (a.len > 3) (c.f(a[3]) orelse 1) else 1,
     };
-}
-
-/// Recolour a named entity's mesh in place: rewrite its vertex colours and drop
-/// just that mesh from the GPU cache so the next frame re-uploads it. The mesh
-/// backing store is mutable arena memory (procedural geometry), so the const on
-/// the slice is only an API convention here — we own the buffer. No world
-/// rebuild, so the simulation keeps running.
-fn setEntityColor(name: []const u8, rgba: m.Vec4) void {
-    const b = App.stage.find(name) orelse return;
-    // Set the entity's Material base colour. Render reads it as a uniform each
-    // frame, so a recolour is a single field write — no mesh re-upload, no buffer
-    // churn (and it keeps the core→render one-way boundary).
-    if (App.stage.world.get(core.Material, b.entity)) |mat| {
-        mat.base_color = rgba;
-    } else {
-        App.stage.world.set(core.Material, b.entity, .{ .base_color = rgba });
-    }
-    if (std.mem.eql(u8, name, "fedora")) App.fedora_r = rgba.x; // keep HUD diag in sync
 }
 
 export fn frame() void {

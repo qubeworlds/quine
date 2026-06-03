@@ -267,6 +267,7 @@ pub const Renderer = struct {
         hud: ?HudInfo,
     ) void {
         const view_proj = viewProj(queue, aspect);
+        const eye4 = [4]f32{ queue.eye.x, queue.eye.y, queue.eye.z, 1 };
 
         sg.beginPass(.{ .action = self.pass_action, .swapchain = sglue.swapchain() });
 
@@ -276,7 +277,7 @@ pub const Renderer = struct {
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = self.grid_vbuf;
             sg.applyBindings(bind);
-            const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
+            const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
             sg.draw(0, self.grid_count, 1);
@@ -295,6 +296,7 @@ pub const Renderer = struct {
             const params = shd.VsParams{
                 .mvp = view_proj.mul(item.model).m,
                 .model = item.model.m,
+                .eye_pos = eye4,
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             const fsp = materialParams(item.material);
@@ -308,7 +310,7 @@ pub const Renderer = struct {
         }
 
         if (skinned) |s| self.drawSkinned(s, view_proj);
-        if (gizmo) |g| self.drawGizmo(g, view_proj);
+        if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
         if (hud) |info| drawHud(info);
 
         sg.endPass();
@@ -337,7 +339,7 @@ pub const Renderer = struct {
     }
 
     /// Draw the translation gizmo (three axis handles) on top of the scene.
-    fn drawGizmo(self: *Renderer, g: GizmoInfo, view_proj: m.Mat4) void {
+    fn drawGizmo(self: *Renderer, g: GizmoInfo, view_proj: m.Mat4, eye4: [4]f32) void {
         // Normal == light direction so the lit shader renders the handles at
         // full brightness.
         const lit = m.Vec3.init(0.4, 0.7, 1.0).normalize();
@@ -365,7 +367,7 @@ pub const Renderer = struct {
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.gizmo_vbuf;
         sg.applyBindings(bind);
-        const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
+        const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
         sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
         sg.draw(0, 6, 1);

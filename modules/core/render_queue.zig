@@ -50,6 +50,8 @@ pub const RenderQueue = struct {
     items: [max_draw_items]DrawItem = undefined,
     len: usize = 0,
     view: m.Mat4 = m.Mat4.identity,
+    /// Camera world-space position — the eye, for the view vector the BRDF needs.
+    eye: m.Vec3 = .{},
     /// Camera intrinsics (vertical FOV in radians, near/far planes).
     fov_y: f32 = 1.047,
     near: f32 = 0.1,
@@ -78,6 +80,7 @@ pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
         const cam = cur.get(Camera, e).?.*;
         const t = interpolated(prev, e, cur.get(Transform, e).?.*, alpha);
         out.view = viewFromTransform(t);
+        out.eye = t.position;
         out.fov_y = cam.fov_y;
         out.near = cam.near;
         out.far = cam.far;
