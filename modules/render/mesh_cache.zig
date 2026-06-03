@@ -56,18 +56,24 @@ pub const MeshCache = struct {
         return gm;
     }
 
+    /// Drop one cached mesh so `resolve` re-uploads it next frame. Used for an
+    /// in-place edit (e.g. recolouring a single entity's mesh) without rebuilding
+    /// the scene: mutate the CPU vertices, invalidate just that handle, done.
+    pub fn invalidate(self: *MeshCache, handle: core.MeshHandle) void {
+        const gm = &self.meshes[@intFromEnum(handle)];
+        if (gm.uploaded) {
+            sg.destroyBuffer(gm.vbuf);
+            if (gm.indexed) sg.destroyBuffer(gm.ibuf);
+        }
+        gm.* = .{};
+    }
+
     /// Drop every cached GPU buffer and clear the upload flags. Call on a scene
     /// hot-reload: `buildStage` rebuilds the meshes (often reusing the same
     /// handle indices), so without this `resolve` would keep returning the stale
     /// buffers from the previous scene — the new geometry/colours would never
     /// reach the GPU. Destroying the buffers also stops them leaking per reload.
     pub fn reset(self: *MeshCache) void {
-        for (&self.meshes) |*gm| {
-            if (gm.uploaded) {
-                sg.destroyBuffer(gm.vbuf);
-                if (gm.indexed) sg.destroyBuffer(gm.ibuf);
-            }
-            gm.* = .{};
-        }
+        for (0..self.meshes.len) |i| self.invalidate(@enumFromInt(i));
     }
 };

@@ -274,7 +274,54 @@ fn dispatchMessage(raw: []const u8) void {
         if (v.object.get("code")) |c2| {
             if (c2 == .string) App.js.loadSkill(c2.string) catch {};
         }
+    } else if (std.mem.eql(u8, tv.string, "material")) {
+        // Live, in-place property edit: recolour one entity's mesh without
+        // rebuilding the world, so the running sim (animation, physics, the
+        // ball) keeps going. This is how an engine applies an edit — it doesn't
+        // restart the game. Shape: {type:"material", entity:"fedora", color:[r,g,b,a]}.
+        const name = v.object.get("entity") orelse return;
+        const col = v.object.get("color") orelse return;
+        if (name == .string) {
+            if (parseRgba(col)) |rgba| setEntityColor(name.string, rgba);
+        }
     }
+}
+
+/// Parse a JSON `[r,g,b,a]` (or `[r,g,b]`, alpha defaulting to 1) into a Vec4.
+fn parseRgba(v: std.json.Value) ?m.Vec4 {
+    if (v != .array) return null;
+    const a = v.array.items;
+    if (a.len < 3) return null;
+    const c = struct {
+        fn f(x: std.json.Value) ?f32 {
+            return switch (x) {
+                .float => |y| @floatCast(y),
+                .integer => |y| @floatFromInt(y),
+                else => null,
+            };
+        }
+    };
+    return .{
+        .x = c.f(a[0]) orelse return null,
+        .y = c.f(a[1]) orelse return null,
+        .z = c.f(a[2]) orelse return null,
+        .w = if (a.len > 3) (c.f(a[3]) orelse 1) else 1,
+    };
+}
+
+/// Recolour a named entity's mesh in place: rewrite its vertex colours and drop
+/// just that mesh from the GPU cache so the next frame re-uploads it. The mesh
+/// backing store is mutable arena memory (procedural geometry), so the const on
+/// the slice is only an API convention here — we own the buffer. No world
+/// rebuild, so the simulation keeps running.
+fn setEntityColor(name: []const u8, rgba: m.Vec4) void {
+    const b = App.stage.find(name) orelse return;
+    const mr = App.stage.world.get(core.MeshRef, b.entity) orelse return;
+    const mesh = App.stage.world.meshes.get(mr.mesh);
+    const verts = @constCast(mesh.vertices);
+    for (verts) |*vtx| vtx.color = rgba;
+    App.renderer.invalidateMesh(mr.mesh);
+    if (std.mem.eql(u8, name, "fedora")) App.fedora_r = rgba.x; // keep HUD diag in sync
 }
 
 export fn frame() void {

@@ -208,6 +208,13 @@ pub const Renderer = struct {
         self.cache.reset();
     }
 
+    /// Drop one cached mesh so the next frame re-uploads it — for an in-place
+    /// edit (e.g. recolouring a single entity) that mutated its CPU vertices but
+    /// left the rest of the scene running.
+    pub fn invalidateMesh(self: *Renderer, handle: core.MeshHandle) void {
+        self.cache.invalidate(handle);
+    }
+
     /// Upload the character's skinned mesh to the GPU. Called at startup and on
     /// every scene hot-reload, so it first destroys any previous buffers (else
     /// each reload would leak the old skinned vertex/index buffers).
