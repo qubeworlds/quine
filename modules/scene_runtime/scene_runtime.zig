@@ -410,8 +410,12 @@ pub const SceneRuntime = struct {
         const ent = self.bindings[face_idx].entity;
         const skin = core.Material{ .base_color = vec4(f.skin_color), .roughness = 0.6 };
 
+        // Resolve the sculpted head asset up front; if it's missing (e.g. the
+        // host hasn't provided it yet), fall back to the procedural oval head
+        // rather than failing the whole scene to a blank.
+        const head_bytes: ?[]const u8 = if (f.head_mesh) |s| resolve(assets, s) else null;
         var R = f.head_radius;
-        const sculpted = f.head_mesh != null; // the mesh already has nose/brows/lips
+        const sculpted = head_bytes != null; // the mesh already has nose/brows/lips
 
         // Placement in the head-local frame (+Y up, +Z forward). Defaults are the
         // PROCEDURAL oval-head fractions; the sculpted branch overwrites them from
@@ -424,8 +428,7 @@ pub const SceneRuntime = struct {
         const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
 
         if (sculpted) {
-            const bytes = resolve(assets, f.head_mesh.?) orelse return error.AssetNotFound;
-            const mesh = try core.loadGlbMesh(a, bytes); // static (unrigged) mesh
+            const mesh = try core.loadGlbMesh(a, head_bytes.?); // static (unrigged) mesh
             var lo = m.Vec3.init(1e9, 1e9, 1e9);
             var hi = m.Vec3.init(-1e9, -1e9, -1e9);
             for (mesh.vertices) |v| {
