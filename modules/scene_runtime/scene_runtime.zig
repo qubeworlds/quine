@@ -255,12 +255,23 @@ pub const SceneRuntime = struct {
         if (eyeball_r <= 0) return;
 
         // Eye-centre offset from the head joint, in world metres (rotated by the
-        // head's tilt each tick by the parenting step). +X lateral, +Z forward
-        // onto the face, Y from the head centroid with a small drop.
+        // head's tilt each tick by the parenting step). The head joint sits at the
+        // neck / skull base — behind and below the face — so anchoring "forward"
+        // off it buries the eyeballs in the skull and only a sliver pokes through
+        // ("stuck in sockets"). Anchor on the head's vertex centroid (the real
+        // middle of the skull) first, THEN push +Z onto the face and ±X apart.
+        const joint_x = pose.global[head_node].m[12];
         const joint_y = pose.global[head_node].m[13];
+        const joint_z = pose.global[head_node].m[14];
+        const base_x = (bounds.centroid.x - joint_x) * scale;
+        const base_y = (bounds.centroid.y - joint_y) * scale;
+        const base_z = (bounds.centroid.z - joint_z) * scale;
         const lateral = 0.5 * ey.spacing_fraction * head_radius_w;
         const forward = ey.forward_fraction * head_radius_w;
-        const off_y = (bounds.centroid.y - joint_y) * scale - ey.drop_fraction * eyeball_r;
+        // Drop below the skull centroid onto the face — scaled by the HEAD
+        // radius (a fraction of the eyeball is far too small to move them off the
+        // forehead) so the eyes land at eye level, not the crown.
+        const off_y = base_y - ey.drop_fraction * head_radius_w;
 
         const gaze_dir = m.Vec3.init(ey.gaze[0], ey.gaze[1], ey.gaze[2]);
         const spec = core.eye.Spec{
@@ -273,7 +284,7 @@ pub const SceneRuntime = struct {
 
         const sides = [_]f32{ -1.0, 1.0 };
         for (sides) |sx| {
-            const eye_off = [3]f32{ sx * lateral, off_y, forward };
+            const eye_off = [3]f32{ base_x + sx * lateral, off_y, base_z + forward };
             for (core.eye.all_parts) |part| {
                 const g = core.eye.partGeom(spec, part);
                 const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));

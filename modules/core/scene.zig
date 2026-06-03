@@ -63,8 +63,8 @@ pub const Geometry = union(enum) {
         spacing_fraction: f32 = 1.0,
         /// Eye centre placement relative to the head joint, as fractions of the
         /// head radius: how far forward onto the face, and how far down.
-        forward_fraction: f32 = 0.85,
-        drop_fraction: f32 = 0.15,
+        forward_fraction: f32 = 0.9,
+        drop_fraction: f32 = 0.3,
         /// Rest look direction in the head-local frame (+Z ahead).
         gaze: Vec3 = .{ 0, 0, 1 },
         pupil_scale: f32 = 0.5,
