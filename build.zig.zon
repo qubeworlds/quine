@@ -1,6 +1,6 @@
 .{
     .name = .quine,
-    .version = "0.3.0",
+    .version = "0.3.1",
     .fingerprint = 0xdfd14d9dc061a736,
     .minimum_zig_version = "0.16.0",
     .paths = .{
