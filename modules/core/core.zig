@@ -50,6 +50,7 @@ pub const fedoraIndexCount = assets.fedoraIndexCount;
 
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;
+pub const Material = components.Material;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;
@@ -100,7 +101,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Camera, Spin, Squash }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash }, max_entities);
 
 // =============================================================================
 // World

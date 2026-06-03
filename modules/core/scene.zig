@@ -41,7 +41,15 @@ pub const Geometry = union(enum) {
     },
 };
 
-pub const Material = struct { color: Rgba };
+/// PBR material (metallic-roughness). `color` is the base colour (albedo);
+/// `metallic`/`roughness` drive the BRDF; `emissive` adds light. Factors only
+/// for now — texture maps arrive with the material server.
+pub const Material = struct {
+    color: Rgba,
+    metallic: f32 = 0,
+    roughness: f32 = 0.5,
+    emissive: Vec3 = .{ 0, 0, 0 },
+};
 
 /// A clip referenced by index or name.
 pub const Clip = union(enum) { index: u32, name: []const u8 };
@@ -163,7 +171,12 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("geometry")) |x| e.geometry = try parseGeometry(x);
     if (o.get("material")) |x| {
         if (x != .object) return error.InvalidScene;
-        e.material = .{ .color = try asRgba(x.object.get("color") orelse return error.InvalidScene) };
+        const mo = x.object;
+        var mat = Material{ .color = try asRgba(mo.get("color") orelse return error.InvalidScene) };
+        if (mo.get("metallic")) |mv| mat.metallic = try asF32(mv);
+        if (mo.get("roughness")) |rv| mat.roughness = try asF32(rv);
+        if (mo.get("emissive")) |ev| mat.emissive = try asVec3(ev);
+        e.material = mat;
     }
     if (o.get("animation")) |x| e.animation = try parseAnimation(x);
     if (o.get("body")) |x| e.body = try parseBody(x);
@@ -390,4 +403,29 @@ test "parses the normalized keepie-uppie scene the bridge emits" {
     // the skill is linked with its tunables.
     try testing.expect(s.script != null);
     try testing.expectEqual(@as(usize, 7), s.script.?.params.len);
+}
+
+test "material parses PBR factors, defaulting the ones the scene omits" {
+    const json =
+        \\{ "schemaVersion": 1, "name": "mat", "entities": [
+        \\  { "name": "a", "geometry": { "kind": "sphere", "radius": 1 },
+        \\    "material": { "color": [0.2,0.4,0.6,1], "metallic": 1.0, "roughness": 0.25, "emissive": [0,0.5,0] } },
+        \\  { "name": "b", "geometry": { "kind": "sphere", "radius": 1 },
+        \\    "material": { "color": [1,1,1,1] } }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    const a = s.entities[0].material.?;
+    try testing.expectEqual(@as(f32, 1.0), a.metallic);
+    try testing.expectEqual(@as(f32, 0.25), a.roughness);
+    try testing.expectEqual(@as(f32, 0.5), a.emissive[1]);
+
+    // b omits the factors -> engine defaults (metallic 0, roughness 0.5, no emissive).
+    const b = s.entities[1].material.?;
+    try testing.expectEqual(@as(f32, 0.0), b.metallic);
+    try testing.expectEqual(@as(f32, 0.5), b.roughness);
+    try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
 }

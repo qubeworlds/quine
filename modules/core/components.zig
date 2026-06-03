@@ -38,6 +38,17 @@ pub const MeshRef = struct {
     mesh: assets.MeshHandle,
 };
 
+/// PBR material (metallic-roughness) the renderer reads per draw — base colour
+/// (albedo), metallic, roughness, and emissive, as *uniforms* rather than baked
+/// per-vertex. A live edit sets this component; render picks it up next frame
+/// (no mesh re-upload). Texture maps will be added as handles alongside.
+pub const Material = struct {
+    base_color: m.Vec4 = .{ .x = 1, .y = 1, .z = 1, .w = 1 },
+    metallic: f32 = 0,
+    roughness: f32 = 0.5,
+    emissive: m.Vec3 = .{},
+};
+
 /// Makes an entity rotate on its own each tick. `velocity` is angular velocity
 /// in radians/second per axis (applied to the entity's `Transform.rotation`).
 /// Only entities with this component spin — the camera, for instance, doesn't.
