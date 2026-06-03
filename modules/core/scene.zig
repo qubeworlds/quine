@@ -92,6 +92,38 @@ pub const Geometry = union(enum) {
         segments: u32 = 16,
         rings: u32 = 10,
     },
+    /// A whole procedural face: the engine builds an oval head and seats the
+    /// eyes, nose, eyebrows, lips and a fedora on it in one shared facial frame
+    /// (so everything lines up), expanding into individually-riggable sub-
+    /// entities. Standalone — no skeleton needed; the face entity's transform
+    /// places/orients it (+Z forward). All sizes are fractions of `head_radius`.
+    face: struct {
+        head_radius: f32 = 0.12,
+        head_height: f32 = 0.32,
+        chin: f32 = 0.4,
+        skin_color: Rgba = .{ 0.86, 0.70, 0.62, 1 },
+        // eyes
+        eye_size_fraction: f32 = 0.17,
+        eye_spacing_fraction: f32 = 1.0,
+        eye_level_fraction: f32 = 0.18, // above head centre
+        eye_forward_fraction: f32 = 0.80,
+        pupil_scale: f32 = 0.5,
+        gaze: Vec3 = .{ 0, 0, 1 },
+        sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
+        iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
+        // nose
+        nose_length_fraction: f32 = 0.5,
+        nose_width_fraction: f32 = 0.26,
+        nose_projection_fraction: f32 = 0.45,
+        // brows
+        brow_color: Rgba = .{ 0.30, 0.20, 0.12, 1 },
+        // lips
+        lip_color: Rgba = .{ 0.72, 0.32, 0.30, 1 },
+        // a fedora instead of hair (green by default)
+        fedora: bool = true,
+        fedora_color: Rgba = .{ 0.12, 0.45, 0.20, 1 },
+        segments: u32 = 24,
+    },
 };
 
 /// PBR material (metallic-roughness). `color` is the base colour (albedo);
@@ -313,6 +345,30 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("color")) |x| g.nose.color = try asRgba(x);
         if (o.get("segments")) |x| g.nose.segments = try asU32(x);
         if (o.get("rings")) |x| g.nose.rings = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "face")) {
+        var g = Geometry{ .face = .{} };
+        const f = &g.face;
+        if (o.get("headRadius")) |x| f.head_radius = try asF32(x);
+        if (o.get("headHeight")) |x| f.head_height = try asF32(x);
+        if (o.get("chin")) |x| f.chin = try asF32(x);
+        if (o.get("skinColor")) |x| f.skin_color = try asRgba(x);
+        if (o.get("eyeSizeFraction")) |x| f.eye_size_fraction = try asF32(x);
+        if (o.get("eyeSpacingFraction")) |x| f.eye_spacing_fraction = try asF32(x);
+        if (o.get("eyeLevelFraction")) |x| f.eye_level_fraction = try asF32(x);
+        if (o.get("eyeForwardFraction")) |x| f.eye_forward_fraction = try asF32(x);
+        if (o.get("pupilScale")) |x| f.pupil_scale = try asF32(x);
+        if (o.get("gaze")) |x| f.gaze = try asVec3(x);
+        if (o.get("scleraColor")) |x| f.sclera_color = try asRgba(x);
+        if (o.get("irisColor")) |x| f.iris_color = try asRgba(x);
+        if (o.get("noseLengthFraction")) |x| f.nose_length_fraction = try asF32(x);
+        if (o.get("noseWidthFraction")) |x| f.nose_width_fraction = try asF32(x);
+        if (o.get("noseProjectionFraction")) |x| f.nose_projection_fraction = try asF32(x);
+        if (o.get("browColor")) |x| f.brow_color = try asRgba(x);
+        if (o.get("lipColor")) |x| f.lip_color = try asRgba(x);
+        if (o.get("fedora")) |x| f.fedora = try asBool(x);
+        if (o.get("fedoraColor")) |x| f.fedora_color = try asRgba(x);
+        if (o.get("segments")) |x| f.segments = try asU32(x);
         return g;
     }
     return error.InvalidScene;
