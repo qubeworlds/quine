@@ -475,7 +475,9 @@ pub const SceneRuntime = struct {
             eye_x = 0.5 * f.eye_spacing_fraction * R;
             eye_y = f.eye_level_fraction * R;
             eye_z = face_front_mesh * s - eyeball_r * 1.15;
-            crown_y = (hi.y - eye_y_mesh) * s;
+            // Seat the hat brim a bit below the crown top so it sits ON the head
+            // (wraps the temples) instead of floating at the highest point.
+            crown_y = (hi.y - eye_y_mesh) * s - 0.42 * R;
         } else {
             const rings: u32 = f.segments;
             const verts = try a.alloc(core.Vertex, core.headVertexCount(rings, f.segments));
