@@ -1,9 +1,45 @@
 # TODO — tomorrow & near-term
 
-Where we are: real Jolt physics (native + web, deployed to quine.qubeworlds.com), a
-1.75 m actor that runs under the basketball and heads it back up (keepie-uppie),
-squash on real contacts. Rendering is flat-shaded (per-vertex colour, no
-textures). The scene is hardcoded in `apps/desktop/main.zig` (`loadDancer`).
+Where we are: a **data-driven** scene (the normalized JSON the `world` zod schema
+emits) loaded into an ECS world with real Jolt physics (native + web), behaviour
+**skills** interpreted in QuickJS, and the keepie-uppie actor heading the ball
+with squash on real contacts. On the web the engine is driven **live from the
+editor over a WebSocket** — scene/skill hot-reload and in-place material edits,
+through a lossless inbound queue, gated by a **world tick** that drops late
+frames. Rendering is still flat-shaded (per-vertex colour, no textures/PBR).
+
+## Recently shipped — live editing & multiplayer transport
+
+The websocket-update milestone (engine ⇄ editor):
+
+- [x] **Lossless inbound queue** — the editor pushes each room-WebSocket frame
+      into the engine via the exported `quine_enqueue`; the frame loop drains a
+      FIFO in order (replaced the fragile `emscripten_run_script` eval-poll that
+      coalesced/dropped updates).
+- [x] **Live in-place material edits** — `{type:"material", entity, color}`
+      recolours one entity's mesh without rebuilding the scene; a **mesh revision
+      counter** lets render re-upload on edit without core calling into render.
+- [x] **Scene/skill hot-reload** re-renders correctly (GPU mesh cache invalidated
+      on reload — fixed the stale-buffer bug where data updated but pixels didn't).
+- [x] **World tick** — engine advances a world tick; tick-stamped frames whose
+      tick has already passed are **dropped** (late/reordered safety).
+- [x] **Transport** — WS fire-and-forget relay through the Cloudflare DO, with
+      per-client id + no self-echo; HUD diagnostics (`tick / msg / drop`).
+
+Open follow-ups from this work:
+- [ ] **Tick authority** — the world tick should be server-owned (the DO stamps a
+      shared room tick) so a reconnecting client can't regress its counter. Today
+      each sender mints its own, so a restart causes a burst of (correct) drops.
+- [ ] **Tests** for the new paths: queue draining order, the tick drop guard, and
+      `MeshRegistry.setColor`/revision re-upload (all headless-testable).
+- [ ] **Snapshot/capture** path looked stale in testing — verify `/api/snap`.
+
+## Next big piece — PBR materials
+
+The **next major effort is PBR**: albedo / metallic / roughness as material
+*uniforms* the renderer reads per draw, not baked per-vertex colour — which also
+retires the per-vertex recolour path and its re-upload. See §1 (Materials &
+textures) for the existing breakdown.
 
 ## 1. Materials & textures
 

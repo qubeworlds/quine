@@ -3,12 +3,13 @@
 // Do NOT hand-write per-backend variants; edit this file and regenerate.
 //
 // The mesh shader: positions are transformed by a model-view-projection matrix
-// supplied by the render layer (built from the camera in the render queue), and
-// shaded with simple directional (Lambert) lighting so 3D geometry reads as 3D.
+// supplied by the render layer, and shaded with a metallic-roughness PBR BRDF
+// (Cook-Torrance specular + Lambert diffuse) from a per-draw material uniform.
 @vs vs
 layout(binding=0) uniform vs_params {
     mat4 mvp;
     mat4 model;
+    vec4 eye_pos; // world-space camera position (xyz)
 };
 
 in vec3 position;
@@ -16,27 +17,242 @@ in vec3 normal;
 in vec4 color0;
 
 out vec3 world_normal;
+out vec3 view_dir;
+out vec3 frag_local_pos;
 out vec4 color;
 
 void main() {
+    vec4 wp = model * vec4(position, 1.0);
     gl_Position = mvp * vec4(position, 1.0);
     world_normal = mat3(model) * normal;
+    view_dir = eye_pos.xyz - wp.xyz;
+    frag_local_pos = position; // object space — surface finishes tile here so they
+                               // stick to the body as it moves/animates
     color = color0;
 }
 @end
 
 @fs fs
+// PBR material as a per-draw uniform (metallic-roughness factors). `base_color`
+// tints the vertex colour (white vertices => the material drives the colour);
+// `pbr` carries metallic/roughness; `emissive` adds light. Grid/gizmo bind a
+// white default.
+layout(binding=1) uniform fs_params {
+    vec4 base_color;   // albedo rgba
+    vec4 pbr;          // x = metallic, y = roughness, z = preview staging, w = dimples
+    vec4 emissive;     // rgb emissive (a reserved)
+};
+
 in vec3 world_normal;
+in vec3 view_dir;
+in vec3 frag_local_pos;
 in vec4 color;
 out vec4 frag_color;
 
+const float PI = 3.14159265359;
+
+// GGX/Trowbridge-Reitz normal distribution.
+float d_ggx(float n_o_h, float a) {
+    float a2 = a * a;
+    float d = (n_o_h * n_o_h) * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 1e-7);
+}
+
+// Smith height-correlated visibility (G / (4 NoV NoL)), Schlick-GGX form.
+float v_smith(float n_o_v, float n_o_l, float a) {
+    float k = (a * a) * 0.5;
+    float gv = n_o_v / (n_o_v * (1.0 - k) + k);
+    float gl = n_o_l / (n_o_l * (1.0 - k) + k);
+    return (gv * gl) / max(4.0 * n_o_v * n_o_l, 1e-4);
+}
+
+vec3 f_schlick(float v_o_h, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - v_o_h, 0.0, 1.0), 5.0);
+}
+
+// Cheap procedural environment: a ground→sky vertical gradient. Sampled along
+// the normal (ambient irradiance) and the reflection vector (ambient specular),
+// it gives metals something to reflect so they read as metal — a stand-in until
+// real image-based lighting.
+vec3 env(vec3 d) {
+    vec3 dir = normalize(d);
+    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 col = mix(vec3(0.20, 0.19, 0.17), vec3(0.55, 0.62, 0.78), t);
+    // Two studio softboxes baked into the environment (not gated to previews), so
+    // polished metals reflect bright highlights and read as metal in a live scene,
+    // not just in catalogue thumbnails. Sharp lobes keep them as highlights rather
+    // than washing the diffuse ambient.
+    col += vec3(1.5, 1.45, 1.32) * pow(max(dot(dir, normalize(vec3(0.7, 0.8, -0.25))), 0.0), 32.0);
+    col += vec3(0.40, 0.46, 0.60) * pow(max(dot(dir, normalize(vec3(-0.7, 0.2, 0.4))), 0.0), 16.0);
+    return col;
+}
+
+// Basketball seams: darken thin bands along three orthogonal great circles of
+// the body's object space, so a plain orange sphere reads as a seamed ball
+// instead of a fruit. Returns an albedo multiplier (≈0 on a seam, 1 elsewhere).
+float basketballSeam(vec3 p) {
+    vec3 d = normalize(p);
+    float w = 0.05;
+    float seam = min(min(abs(d.x), abs(d.y)), abs(d.z)); // distance to nearest plane
+    // also a curved seam offset so it's not a perfect beach-ball
+    float curved = abs(abs(d.x) - abs(d.z));
+    float m = min(seam, curved);
+    return mix(0.12, 1.0, smoothstep(0.0, w, m));
+}
+
+// Golf-ball dimples for the material-preview sphere. `dimple(dir)` is a height
+// field over the sphere — a hex-offset lat/long grid of round wells, 1 at a
+// dimple centre, 0 between them. The preview is a unit sphere at the origin, so
+// the surface direction is just the normal. Perturbing the normal by the field's
+// gradient adds the self-shading that makes the preview read as a 3D body
+// (and samples the BRDF across many angles at once). Preview-only — gated by the
+// pbr.z flag the renderer sets, so live geometry is never touched.
+float dimple(vec3 d) {
+    float lat = asin(clamp(d.y, -1.0, 1.0));         // -PI/2..PI/2
+    float lon = atan(d.z, d.x);                      // -PI..PI
+    const float ROWS = 11.0;
+    const float COLS = 22.0;
+    float fy = (lat / PI + 0.5) * ROWS;
+    float row = floor(fy);
+    float fx = (lon / (2.0 * PI) + 0.5) * COLS + 0.5 * mod(row, 2.0); // hex offset
+    vec2 cell = vec2(fract(fx) - 0.5, fract(fy) - 0.5);
+    return 1.0 - smoothstep(0.0, 0.42, length(cell)); // 1 at dimple centre -> 0
+}
+
+vec3 dimpleNormal(vec3 n) {
+    vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    vec3 b = cross(n, t);
+    float e = 0.02;
+    float h0 = dimple(n);
+    float ht = dimple(normalize(n + t * e));
+    float hb = dimple(normalize(n + b * e));
+    // Dimples are concave: indent along the gradient (push the normal toward the
+    // well centre at the rim, giving each dimple a lit edge and a shaded floor).
+    vec3 grad = (ht - h0) * t + (hb - h0) * b;
+    return normalize(n + grad * 22.0);
+}
+
+// Surface dimples for arbitrary shapes (the golf-ball fedora): the sphere's
+// lat/long mapping smears on a hat, so tile the dimples in object space with
+// triplanar projection — pick the plane facing away from the dominant normal
+// axis and lay a hex grid of wells in it. Independent of the shape's topology.
+float dimpleSurface(vec3 p, vec3 n) {
+    vec3 an = abs(n);
+    vec2 uv = (an.y >= an.x && an.y >= an.z) ? p.xz : (an.x >= an.z ? p.zy : p.xy);
+    const float spacing = 0.12;
+    vec2 q = uv / spacing;
+    float row = floor(q.y);
+    q.x += 0.5 * mod(row, 2.0); // hex offset alternate rows
+    vec2 f = vec2(fract(q.x) - 0.5, fract(q.y) - 0.5);
+    return 1.0 - smoothstep(0.0, 0.44, length(f)); // 1 at a well centre -> 0
+}
+
+vec3 dimpleSurfaceNormal(vec3 n, vec3 p) {
+    vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    vec3 b = cross(n, t);
+    float e = 0.012;
+    float h0 = dimpleSurface(p, n);
+    float ht = dimpleSurface(p + t * e, n);
+    float hb = dimpleSurface(p + b * e, n);
+    vec3 grad = (ht - h0) * t + (hb - h0) * b;
+    return normalize(n + grad * 1.4);
+}
+
 void main() {
     vec3 n = normalize(world_normal);
-    vec3 light_dir = normalize(vec3(0.4, 0.7, 1.0));
-    float diffuse = max(dot(n, light_dir), 0.0);
-    float shade = 0.3 + 0.7 * diffuse; // ambient + diffuse
-    frag_color = vec4(color.rgb * shade, color.a);
+    bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
+    // Surface finish (pbr.w): 1 = spherical dimples (the material ball),
+    // 2 = surface/triplanar dimples (the golf-ball hat), 3 = basketball seams.
+    int surf = int(pbr.w + 0.5);
+    if (surf == 2) n = dimpleSurfaceNormal(n, frag_local_pos);
+    else if (surf == 1) n = dimpleNormal(n);
+    vec3 v = normalize(view_dir);
+    // Live key light is roughly co-axial with the camera (fine for the editor).
+    // For previews that flattens the body and puts a central blob on metals, so
+    // the preview keys from the upper-left (3/4) — the highlight rakes across the
+    // curve and the far side rolls into the fill + rim.
+    vec3 l = preview ? normalize(vec3(0.7, 0.8, -0.25)) : normalize(vec3(0.4, 0.7, 1.0));
+    vec3 h = normalize(v + l);
+
+    float n_o_v = max(dot(n, v), 1e-4);
+    float n_o_l = max(dot(n, l), 0.0);
+    float n_o_h = max(dot(n, h), 0.0);
+    float v_o_h = max(dot(v, h), 0.0);
+
+    vec3 albedo = color.rgb * base_color.rgb;
+    if (surf == 3) albedo *= basketballSeam(frag_local_pos); // black seams
+    float metallic = clamp(pbr.x, 0.0, 1.0);
+    float rough = clamp(pbr.y, 0.045, 1.0);
+    float a = rough * rough;
+
+    // Dielectrics reflect ~4%; metals tint the specular with their albedo and
+    // have no diffuse.
+    vec3 f0 = mix(vec3(0.04), albedo, metallic);
+    vec3 diffuse_color = albedo * (1.0 - metallic);
+
+    // Direct: Cook-Torrance specular + Lambert diffuse from the key light.
+    float d = d_ggx(n_o_h, a);
+    float vis = v_smith(n_o_v, n_o_l, a);
+    vec3 f = f_schlick(v_o_h, f0);
+    vec3 spec = d * vis * f;
+    vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
+    vec3 lit = (kd * diffuse_color + spec) * n_o_l; // white light, unit intensity
+
+    // Ambient from the environment: diffuse irradiance along N + a reflection
+    // along R (roughness-aware Fresnel). This is what makes metals look metallic.
+    vec3 r = reflect(-v, n);
+    // Grazing reflectance (f90): dielectrics brighten toward white, but metals
+    // keep their tint — else gold/brass desaturate to a white/lavender wash at
+    // grazing, which a dimpled surface (many micro-angles) makes severe.
+    vec3 f90 = mix(vec3(1.0 - rough), f0, metallic);
+    vec3 f_amb = f0 + (max(f90, f0) - f0) * pow(1.0 - n_o_v, 5.0);
+    vec3 ambient = env(n) * diffuse_color + env(r) * f_amb;
+
+    vec3 col = lit + ambient + emissive.rgb;
+
+    // Preview staging: a soft fill from the opposite side to open up the shadow
+    // terminator, and a cool rim to separate the body from the studio backdrop.
+    if (preview) {
+        // Fill from the side opposite the key (screen-left), to open up the
+        // shadow terminator.
+        vec3 lf = normalize(vec3(-0.7, 0.15, 0.35));
+        col += diffuse_color * max(dot(n, lf), 0.0) * 0.16;
+        // Cool rim to separate the body from the backdrop. (The studio softboxes
+        // a metal reflects are baked into env() now, so they apply in-scene too.)
+        float rim = pow(clamp(1.0 - n_o_v, 0.0, 1.0), 3.0);
+        col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
+    }
+
+    frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
+}
+@end
+
+// Studio backdrop for the material preview: a vertical gradient with a soft glow
+// behind the body, so the sphere sits in a lit scene instead of a black void.
+// Drawn as a vertex-less fullscreen triangle, behind everything.
+@vs bg_vs
+out vec2 uv;
+void main() {
+    float x = float((gl_VertexIndex & 1) << 2) - 1.0;
+    float y = float((gl_VertexIndex & 2) << 1) - 1.0;
+    gl_Position = vec4(x, y, 0.999999, 1.0);
+    uv = vec2(x, y) * 0.5 + 0.5;
+}
+@end
+
+@fs bg_fs
+in vec2 uv;
+out vec4 frag_color;
+void main() {
+    float vert = smoothstep(-0.1, 0.8, uv.y);
+    vec3 col = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095), vert);
+    float d = distance(uv, vec2(0.5, 0.56));
+    col += vec3(0.05, 0.055, 0.075) * smoothstep(0.7, 0.0, d);
+    frag_color = vec4(col, 1.0);
 }
 @end
 
 @program triangle vs fs
+@program bg bg_vs bg_fs

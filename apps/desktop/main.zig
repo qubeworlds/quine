@@ -73,7 +73,7 @@ const App = struct {
     /// The QuickJS context running the behaviour skill against `stage`.
     var js: script.Js = undefined;
     /// The actor binding (skinned model + pose, drawn specially below).
-    var dancer: *scene_runtime.Binding = undefined;
+    var dancer: ?*scene_runtime.Binding = null;
 
     var renderer: render.Renderer = .{};
     var queue: core.RenderQueue = .{};
@@ -107,18 +107,63 @@ const App = struct {
     // reloads, and the fedora's current mesh red channel (-1 = no mesh).
     var reload_count: u32 = 0;
     var fedora_r: f32 = -1;
+    // Count of inbound frames the engine has received from the editor over the
+    // room WebSocket (incremented in `quine_enqueue`). Surfaced in the HUD as an
+    // end-to-end check that the JS→wasm push bridge is actually delivering.
+    var ws_msgs: u32 = 0;
+
+    /// Inbound message queue: typed JSON frames the editor pushes from the room
+    /// WebSocket via the exported `quine_enqueue`, drained in arrival order each
+    /// frame. A real FIFO — not a single coalesced global — so nothing is dropped
+    /// or reordered. A multiplayer sim needs every frame (inputs, events), not
+    /// just the latest scene, so the transport has to be lossless and ordered.
+    var msg_queue: std.ArrayListUnmanaged([]u8) = .empty;
+
+    /// The engine's world tick: one per fixed simulation step (60 Hz). The shared
+    /// clock a multiplayer sim is keyed on — messages carry the tick they belong
+    /// to so a late/reordered one can be dropped instead of clobbering newer state.
+    var world_tick: u64 = 0;
+    /// Gates inbound frames by their tick: anything not strictly newer than the
+    /// last accepted is "too late" and dropped (see core.TickGate).
+    var tick_gate: core.TickGate = .{};
 };
+
+/// Push one inbound message frame (a JSON envelope `{"type":...}`) from the
+/// editor host onto the queue; `drainMessages` consumes it on the next frame.
+/// Called from JS via `Module.ccall("quine_enqueue", null, ["string"], [frame])`.
+/// We copy the bytes into engine-owned memory (the JS buffer is transient). Web
+/// only — native has no host pushing live messages. Runs on the main thread
+/// between frames, so no locking is needed against `drainMessages`.
+export fn quine_enqueue(msg: [*:0]const u8) void {
+    const src = std.mem.span(msg);
+    const copy = std.heap.c_allocator.dupe(u8, src) catch return; // drop on OOM
+    App.msg_queue.append(std.heap.c_allocator, copy) catch {
+        std.heap.c_allocator.free(copy);
+        return;
+    };
+    App.ws_msgs +%= 1;
+}
 
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
 fn fedoraRed() f32 {
     const fed = App.stage.find("fedora") orelse return -1;
-    const mr = App.stage.world.get(core.MeshRef, fed.entity) orelse return -1;
-    return App.stage.world.meshes.get(mr.mesh).vertices[0].color.x;
+    const mat = App.stage.world.get(core.Material, fed.entity) orelse return -1;
+    return mat.base_color.x;
 }
 
 export fn init() void {
     App.renderer.setup();
+    if (thumb_cfg) |t| {
+        App.hud_visible = false; // clean material render: no HUD, no grid
+        App.renderer.draw_grid = false;
+        App.renderer.preview = true; // studio backdrop + staging lights
+        // Dimples: spherical mapping for the material ball, surface/triplanar for
+        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE). When the material
+        // carries its own surface finish, let that drive it (don't override).
+        const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
+        App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+    }
     loadScene();
     if (builtin.os.tag == .emscripten) {
         App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===false)?0:1") != 0;
@@ -132,6 +177,10 @@ export fn init() void {
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
 fn loadScene() void {
+    if (thumb_cfg) |t| {
+        loadSceneFrom(thumbSceneJson(t)); // a sphere with the requested material
+        return;
+    }
     if (is_web) {
         // The editor (host) fetches the bundled scene + sets it on window before
         // booting us. If it isn't there yet, boot empty — checkHotReload picks up
@@ -152,6 +201,10 @@ fn loadScene() void {
 fn reloadScene(json: []const u8) void {
     App.reload_count += 1; // count the attempt (visible in the HUD) before teardown
     App.stage.deinit();
+    // Drop the GPU mesh cache: the rebuilt scene reuses mesh handle indices, so
+    // without this the renderer keeps drawing the previous scene's buffers (e.g.
+    // the fedora stays its old colour even though the new mesh data differs).
+    App.renderer.invalidateMeshes();
     buildStage(json) catch return;
     App.js.rebind(&App.stage);
 }
@@ -182,12 +235,13 @@ fn buildStage(json: []const u8) !void {
 
     try App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }});
 
-    App.dancer = App.stage.find("dancer") orelse return error.NoActor;
-    if (App.dancer.model) |*model| App.renderer.uploadSkinned(model.mesh);
+    // Optional: a material-preview / asset scene has no skinned actor.
+    App.dancer = App.stage.find("dancer");
+    if (App.dancer) |d| if (d.model) |*model| App.renderer.uploadSkinned(model.mesh);
     for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
     App.camera = findCamera(&App.stage.world);
-    App.giz.selected = App.dancer.entity; // the gizmo can grab the actor
+    App.giz.selected = if (App.dancer) |d| d.entity else null; // gizmo grabs the actor if any
 
     // Init the orbit camera from the scene's camera controller (data-driven).
     for (scene_data.entities) |e| {
@@ -211,30 +265,131 @@ fn findCamera(world: *core.World) ?core.Entity {
     return it.next();
 }
 
-/// Web hot-reload: the editor pushes a new skill (or scene) over the room
-/// WebSocket and stashes it on `window`; we pick it up here and reload live, so
-/// iterating on behaviour/scene is a data push — no rebuild. (Web only.)
-fn checkHotReload() void {
-    if (builtin.os.tag != .emscripten) return;
-    if (emscripten_run_script_int("(window.QUINE_RELOAD_SKILL?1:0)") != 0) {
-        const code = emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')");
-        App.js.loadSkill(std.mem.span(code)) catch {};
-        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SKILL=0,0)");
+/// Drain the inbound message queue in arrival order, applying each frame's
+/// effect. Runs at the top of `frame()` so a reload lands at a safe point, never
+/// reentrantly mid-tick. The editor pushes live edits (and, later, gameplay
+/// frames) over the room WebSocket — applying them is a data push, no rebuild.
+/// (Web only — the queue is never fed on native.)
+fn drainMessages() void {
+    if (App.msg_queue.items.len == 0) return;
+    for (App.msg_queue.items) |raw| {
+        dispatchMessage(raw);
+        std.heap.c_allocator.free(raw);
     }
-    if (emscripten_run_script_int("(window.QUINE_RELOAD_SCENE?1:0)") != 0) {
-        const json = emscripten_run_script_string("(window.QUINE_SCENE_JSON||'')");
-        reloadScene(std.mem.span(json));
-        _ = emscripten_run_script_int("(window.QUINE_RELOAD_SCENE=0,0)");
+    App.msg_queue.clearRetainingCapacity();
+}
+
+/// Apply one inbound message frame by its `type`. Scene/skill frames hot-reload
+/// the running sim; host-only frames (capture/reload/snap/chat) are ignored —
+/// the editor handles those. Unknown/malformed frames are dropped silently.
+fn dispatchMessage(raw: []const u8) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena.deinit();
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), raw, .{}) catch return;
+    if (v != .object) return;
+    const tv = v.object.get("type") orelse return;
+    if (tv != .string) return;
+    // World-tick gate: a frame stamped with a tick we've already passed is too
+    // late (stale or reordered) — drop it so it can't overwrite newer state.
+    // Untagged frames (no tick) always apply, for editor/dev pushes.
+    if (v.object.get("tick")) |tk| {
+        const t: u64 = switch (tk) {
+            .integer => |x| if (x > 0) @intCast(x) else 0,
+            .float => |x| if (x > 0) @intFromFloat(x) else 0,
+            else => 0,
+        };
+        if (!App.tick_gate.accept(t)) return; // too late / reordered — drop
+    }
+    if (std.mem.eql(u8, tv.string, "scene")) {
+        if (v.object.get("json")) |j| {
+            if (j == .string) reloadScene(j.string);
+        }
+    } else if (std.mem.eql(u8, tv.string, "skill")) {
+        if (v.object.get("code")) |c2| {
+            if (c2 == .string) App.js.loadSkill(c2.string) catch {};
+        }
+    } else if (std.mem.eql(u8, tv.string, "material")) {
+        // Live, in-place material edit: update one entity's Material component —
+        // base colour and/or the metallic-roughness/emissive factors — without
+        // rebuilding the world. Render reads it as a uniform, so the running sim
+        // keeps going and there's no mesh re-upload. An engine applies an edit;
+        // it doesn't restart the game. Shape:
+        //   {type:"material", entity:"fedora", color:[r,g,b,a],
+        //    metallic:0..1, roughness:0..1, emissive:[r,g,b]}  (all but entity optional)
+        const nv = v.object.get("entity") orelse return;
+        if (nv != .string) return;
+        const mat = entMaterial(nv.string) orelse return;
+        if (v.object.get("color")) |x| {
+            if (parseRgba(x)) |c| mat.base_color = c;
+        }
+        if (v.object.get("metallic")) |x| {
+            if (numF32(x)) |f| mat.metallic = std.math.clamp(f, 0, 1);
+        }
+        if (v.object.get("roughness")) |x| {
+            if (numF32(x)) |f| mat.roughness = std.math.clamp(f, 0, 1);
+        }
+        if (v.object.get("emissive")) |x| {
+            if (parseRgba(x)) |e| mat.emissive = .{ .x = e.x, .y = e.y, .z = e.z };
+        }
+        if (std.mem.eql(u8, nv.string, "fedora")) App.fedora_r = mat.base_color.x;
     }
 }
 
+/// A JSON number (int or float) as f32, or null.
+fn numF32(x: std.json.Value) ?f32 {
+    return switch (x) {
+        .float => |y| @floatCast(y),
+        .integer => |y| @floatFromInt(y),
+        else => null,
+    };
+}
+
+/// The Material component of a named entity, creating a default one if absent.
+fn entMaterial(name: []const u8) ?*core.Material {
+    const b = App.stage.find(name) orelse return null;
+    if (App.stage.world.get(core.Material, b.entity) == null) {
+        App.stage.world.set(core.Material, b.entity, .{});
+    }
+    return App.stage.world.get(core.Material, b.entity);
+}
+
+/// Parse a JSON `[r,g,b,a]` (or `[r,g,b]`, alpha defaulting to 1) into a Vec4.
+fn parseRgba(v: std.json.Value) ?m.Vec4 {
+    if (v != .array) return null;
+    const a = v.array.items;
+    if (a.len < 3) return null;
+    const c = struct {
+        fn f(x: std.json.Value) ?f32 {
+            return switch (x) {
+                .float => |y| @floatCast(y),
+                .integer => |y| @floatFromInt(y),
+                else => null,
+            };
+        }
+    };
+    return .{
+        .x = c.f(a[0]) orelse return null,
+        .y = c.f(a[1]) orelse return null,
+        .z = c.f(a[2]) orelse return null,
+        .w = if (a.len > 3) (c.f(a[3]) orelse 1) else 1,
+    };
+}
+
 export fn frame() void {
-    checkHotReload();
+    drainMessages();
     const frame_dt = sapp.frameDuration();
     if (frame_dt > 0) {
         const inst = 1.0 / frame_dt;
         App.fps_achieved += (inst - App.fps_achieved) * 0.1;
-        App.fps_requested = @max(App.fps_requested * 0.999, inst);
+        // `fps_requested` tracks the display's refresh rate as the decaying peak
+        // of instantaneous fps. Reject sub-2ms frames (>500 fps): those are
+        // timer glitches — post-stall catch-up, a tab refocus, a hot-reload
+        // hitch — whose 1/dt spike would otherwise latch a "funny" peak in the
+        // thousands and bleed off over minutes. A slightly faster decay also
+        // lets it follow a genuine refresh change instead of sticking high.
+        if (frame_dt >= 0.002) {
+            App.fps_requested = @max(App.fps_requested * 0.95, inst);
+        }
     }
 
     // Drain the fixed-step accumulator: each step advances the scene (animation,
@@ -243,6 +398,7 @@ export fn frame() void {
     var ticks: u32 = 0;
     while (App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
         App.stage.update(@floatCast(fixed_dt)) catch {};
+        App.world_tick += 1; // advance the shared world clock, one per fixed step
         App.accumulator -= fixed_dt;
         ticks += 1;
     }
@@ -307,10 +463,10 @@ export fn frame() void {
 
     // The skinned actor: palette from this tick's pose, placed at its Transform.
     var skinned: ?render.SkinnedScene = null;
-    if (App.dancer.model) |*model| if (App.dancer.pose) |*pose| {
+    if (App.dancer) |d| if (d.model) |*model| if (d.pose) |*pose| {
         const jc = model.skeleton.jointCount();
         pose.fillPalette(&model.skeleton, App.palette[0..jc]);
-        const tf = App.stage.world.get(core.Transform, App.dancer.entity).?.*;
+        const tf = App.stage.world.get(core.Transform, d.entity).?.*;
         App.instance[0] = .{ .model = tf.matrix(), .bucket = 0 };
         skinned = .{ .instances = &App.instance, .palettes = &App.palette };
     };
@@ -327,8 +483,22 @@ export fn frame() void {
         .mouse_y = App.mouse_y,
         .reloads = App.reload_count,
         .fedora_r = App.fedora_r,
+        .ws_msgs = App.ws_msgs,
+        .world_tick = App.world_tick,
+        .msg_tick = App.tick_gate.last,
+        .dropped = App.tick_gate.dropped,
     } else null;
     App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
+
+    // Thumbnail mode: let a few frames render (GL/material settle), then read the
+    // framebuffer back to a PPM and quit.
+    if (thumb_cfg) |t| {
+        thumb_frame += 1;
+        if (thumb_frame >= 6) {
+            captureThumb(t.out);
+            sapp.requestQuit();
+        }
+    }
 }
 
 export fn cleanup() void {
@@ -416,16 +586,121 @@ export fn event(ev: [*c]const sapp.Event) void {
 extern fn emscripten_run_script_int(script_src: [*:0]const u8) c_int;
 extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 
+// --- native headless thumbnail mode -----------------------------------------
+// Set QUINE_THUMB=1 (+ QUINE_THUMB_{R,G,B,METAL,ROUGH}) and the engine renders a
+// single sphere with that material, then writes a PPM to stdout and quits. Run
+// under Xvfb for a virtual display — so the material catalogue thumbnails are
+// generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
+const ThumbGeo = enum { sphere, fedora };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain" };
+var thumb_cfg: ?ThumbCfg = null;
+var thumb_frame: u32 = 0;
+
+extern fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, fmt: c_uint, typ: c_uint, pixels: ?*anyopaque) void;
+extern fn glFinish() void;
+
+fn envF32(name: [*:0]const u8) f32 {
+    const v = std.c.getenv(name) orelse return 0;
+    return std.fmt.parseFloat(f32, std.mem.span(v)) catch 0;
+}
+
+/// Thumbnail render resolution (square). Rendered large and downscaled by the
+/// caller for supersampled anti-aliasing — the dimple rims and silhouette are
+/// high-frequency and alias badly on Retina at 1:1. Default 1024.
+fn thumbSize() c_int {
+    const v = std.c.getenv("QUINE_THUMB_SIZE") orelse return 1024;
+    return std.fmt.parseInt(c_int, std.mem.span(v), 10) catch 1024;
+}
+
+fn readThumbEnv() void {
+    if (std.c.getenv("QUINE_THUMB") == null) return;
+    const out: [*:0]const u8 = std.c.getenv("QUINE_THUMB_OUT") orelse "thumb.ppm";
+    thumb_cfg = .{
+        .out = out,
+        .color = .{ .x = envF32("QUINE_THUMB_R"), .y = envF32("QUINE_THUMB_G"), .z = envF32("QUINE_THUMB_B"), .w = 1 },
+        .metallic = envF32("QUINE_THUMB_METAL"),
+        .roughness = envF32("QUINE_THUMB_ROUGH"),
+        .emissive = .{ .x = envF32("QUINE_THUMB_ER"), .y = envF32("QUINE_THUMB_EG"), .z = envF32("QUINE_THUMB_EB") },
+        .geo = geo: {
+            const g = std.c.getenv("QUINE_THUMB_GEO") orelse break :geo .sphere;
+            break :geo if (std.mem.eql(u8, std.mem.span(g), "fedora")) .fedora else .sphere;
+        },
+        .dimple = std.c.getenv("QUINE_THUMB_DIMPLE") != null,
+        .surface = std.c.getenv("QUINE_THUMB_SURFACE") orelse "plain",
+    };
+}
+
+/// A single-object scene with the requested material, framed by an orbit camera.
+/// The object is a high-res sphere (the default material ball) or a procedural
+/// fedora, depending on `t.geo`.
+fn thumbSceneJson(t: ThumbCfg) []const u8 {
+    const a = std.heap.c_allocator;
+    const mat = std.fmt.allocPrint(a, "\"material\":{{\"color\":[{d:.5},{d:.5},{d:.5},1],\"metallic\":{d:.5},\"roughness\":{d:.5},\"emissive\":[{d:.5},{d:.5},{d:.5}],\"surface\":\"{s}\"}}", .{ t.color.x, t.color.y, t.color.z, t.metallic, t.roughness, t.emissive.x, t.emissive.y, t.emissive.z, std.mem.span(t.surface) }) catch return "";
+    return switch (t.geo) {
+        .sphere => std.fmt.allocPrint(a,
+            \\{{ "schemaVersion":1, "name":"thumb", "entities":[
+            \\ {{ "name":"ball", "geometry":{{"kind":"sphere","radius":1,"rings":64,"segments":96}}, {s} }},
+            \\ {{ "name":"camera", "transform":{{"position":[1.2,0.8,2.4]}},
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0,0],"distance":2.7,"yaw":0.5,"pitch":0.32}}}} }}
+            \\] }}
+        , .{mat}) catch "",
+        // Fedora: wider than tall, so frame it from a bit further out and lower the
+        // orbit target onto the crown; a slightly raised pitch shows the dent.
+        .fedora => std.fmt.allocPrint(a,
+            \\{{ "schemaVersion":1, "name":"thumb", "entities":[
+            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.72,"brimRadius":1.15,"segments":96}}, {s} }},
+            \\ {{ "name":"camera", "transform":{{"position":[1.6,1.1,2.6]}},
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.35,0],"distance":2.9,"yaw":0.6,"pitch":0.34}}}} }}
+            \\] }}
+        , .{mat}) catch "",
+    };
+}
+
+/// Read back the framebuffer and write it to `out` as a (top-down RGB) PPM via
+/// libc (so sokol's stdout chatter doesn't matter).
+fn captureThumb(out: [*:0]const u8) void {
+    const alloc = std.heap.c_allocator;
+    const w: usize = @intCast(sapp.width());
+    const h: usize = @intCast(sapp.height());
+    const buf = alloc.alloc(u8, w * h * 4) catch return;
+    defer alloc.free(buf);
+    glFinish();
+    glReadPixels(0, 0, @intCast(w), @intCast(h), 0x1908, 0x1401, buf.ptr); // GL_RGBA, GL_UNSIGNED_BYTE
+
+    const header = std.fmt.allocPrint(alloc, "P6\n{d} {d}\n255\n", .{ w, h }) catch return;
+    defer alloc.free(header);
+    const ppm = alloc.alloc(u8, header.len + w * h * 3) catch return;
+    defer alloc.free(ppm);
+    @memcpy(ppm[0..header.len], header);
+    var y: usize = 0;
+    while (y < h) : (y += 1) {
+        const src = (h - 1 - y) * w * 4; // GL is bottom-up; flip to top-down
+        const dst = header.len + y * w * 3;
+        var x: usize = 0;
+        while (x < w) : (x += 1) {
+            ppm[dst + x * 3 + 0] = buf[src + x * 4 + 0];
+            ppm[dst + x * 3 + 1] = buf[src + x * 4 + 1];
+            ppm[dst + x * 3 + 2] = buf[src + x * 4 + 2];
+        }
+    }
+    const f = std.c.fopen(out, "wb") orelse return;
+    _ = std.c.fwrite(ppm.ptr, 1, ppm.len, f);
+    _ = std.c.fclose(f);
+}
+
 pub fn main() void {
+    readThumbEnv();
+    const tn = thumb_cfg != null;
+    const tsz = if (tn) thumbSize() else 0;
     sapp.run(.{
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .width = 640,
-        .height = 480,
-        .fullscreen = true,
-        .high_dpi = true,
+        .width = if (tn) tsz else 640,
+        .height = if (tn) tsz else 480,
+        .fullscreen = !tn,
+        .high_dpi = !tn,
         .icon = .{ .sokol_default = true },
         .window_title = "quine",
         .logger = .{ .func = sokol.log.func },

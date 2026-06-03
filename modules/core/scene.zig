@@ -32,7 +32,14 @@ pub const Geometry = union(enum) {
     gltf: struct { source: []const u8, height_meters: ?f32 = null },
     sphere: struct { radius: f32, rings: u32 = 16, segments: u32 = 24 },
     fedora: struct {
-        fit_to_joint: []const u8,
+        /// When set, the hat is sized from this joint's head bounds and seated on
+        /// it (the worn case). When null, it's a standalone mesh built straight
+        /// from the explicit `*_radius`/`crown_height` dimensions below — so the
+        /// fedora can be previewed or placed without a character.
+        fit_to_joint: ?[]const u8 = null,
+        crown_radius: f32 = 0.45,
+        crown_height: f32 = 0.5,
+        brim_radius: f32 = 0.75,
         segments: u32 = 24,
         crown_fit: f32 = 1.05,
         brim_flare: f32 = 1.35,
@@ -41,7 +48,19 @@ pub const Geometry = union(enum) {
     },
 };
 
-pub const Material = struct { color: Rgba };
+/// PBR material (metallic-roughness). `color` is the base colour (albedo);
+/// `metallic`/`roughness` drive the BRDF; `emissive` adds light. Factors only
+/// for now — texture maps arrive with the material server.
+/// Procedural surface finish (mirrors components.Surface; mapped in scene_runtime).
+pub const Surface = enum { plain, dimpled, basketball };
+
+pub const Material = struct {
+    color: Rgba,
+    metallic: f32 = 0,
+    roughness: f32 = 0.5,
+    emissive: Vec3 = .{ 0, 0, 0 },
+    surface: Surface = .plain,
+};
 
 /// A clip referenced by index or name.
 pub const Clip = union(enum) { index: u32, name: []const u8 };
@@ -163,7 +182,16 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("geometry")) |x| e.geometry = try parseGeometry(x);
     if (o.get("material")) |x| {
         if (x != .object) return error.InvalidScene;
-        e.material = .{ .color = try asRgba(x.object.get("color") orelse return error.InvalidScene) };
+        const mo = x.object;
+        var mat = Material{ .color = try asRgba(mo.get("color") orelse return error.InvalidScene) };
+        if (mo.get("metallic")) |mv| mat.metallic = try asF32(mv);
+        if (mo.get("roughness")) |rv| mat.roughness = try asF32(rv);
+        if (mo.get("emissive")) |ev| mat.emissive = try asVec3(ev);
+        if (mo.get("surface")) |sv| {
+            const s = try asStr(sv);
+            mat.surface = if (std.mem.eql(u8, s, "dimpled")) .dimpled else if (std.mem.eql(u8, s, "basketball")) .basketball else .plain;
+        }
+        e.material = mat;
     }
     if (o.get("animation")) |x| e.animation = try parseAnimation(x);
     if (o.get("body")) |x| e.body = try parseBody(x);
@@ -203,7 +231,11 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("segments")) |x| g.sphere.segments = try asU32(x);
         return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
-        var g = Geometry{ .fedora = .{ .fit_to_joint = try asStr(o.get("fitToJoint") orelse return error.InvalidScene) } };
+        var g = Geometry{ .fedora = .{} };
+        if (o.get("fitToJoint")) |x| g.fedora.fit_to_joint = try asStr(x);
+        if (o.get("crownRadius")) |x| g.fedora.crown_radius = try asF32(x);
+        if (o.get("crownHeight")) |x| g.fedora.crown_height = try asF32(x);
+        if (o.get("brimRadius")) |x| g.fedora.brim_radius = try asF32(x);
         if (o.get("segments")) |x| g.fedora.segments = try asU32(x);
         if (o.get("crownFit")) |x| g.fedora.crown_fit = try asF32(x);
         if (o.get("brimFlare")) |x| g.fedora.brim_flare = try asF32(x);
@@ -390,4 +422,29 @@ test "parses the normalized keepie-uppie scene the bridge emits" {
     // the skill is linked with its tunables.
     try testing.expect(s.script != null);
     try testing.expectEqual(@as(usize, 7), s.script.?.params.len);
+}
+
+test "material parses PBR factors, defaulting the ones the scene omits" {
+    const json =
+        \\{ "schemaVersion": 1, "name": "mat", "entities": [
+        \\  { "name": "a", "geometry": { "kind": "sphere", "radius": 1 },
+        \\    "material": { "color": [0.2,0.4,0.6,1], "metallic": 1.0, "roughness": 0.25, "emissive": [0,0.5,0] } },
+        \\  { "name": "b", "geometry": { "kind": "sphere", "radius": 1 },
+        \\    "material": { "color": [1,1,1,1] } }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    const a = s.entities[0].material.?;
+    try testing.expectEqual(@as(f32, 1.0), a.metallic);
+    try testing.expectEqual(@as(f32, 0.25), a.roughness);
+    try testing.expectEqual(@as(f32, 0.5), a.emissive[1]);
+
+    // b omits the factors -> engine defaults (metallic 0, roughness 0.5, no emissive).
+    const b = s.entities[1].material.?;
+    try testing.expectEqual(@as(f32, 0.0), b.metallic);
+    try testing.expectEqual(@as(f32, 0.5), b.roughness);
+    try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
 }

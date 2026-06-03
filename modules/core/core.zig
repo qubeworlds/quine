@@ -50,6 +50,8 @@ pub const fedoraIndexCount = assets.fedoraIndexCount;
 
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;
+pub const Material = components.Material;
+pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;
@@ -57,6 +59,14 @@ pub const Squash = components.Squash;
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
+
+/// World-tick gate: drops inbound frames whose tick has already passed.
+pub const TickGate = @import("tick.zig").TickGate;
+
+test {
+    // Pull in the sibling files' unit tests so `zig build test` runs them.
+    _ = @import("tick.zig");
+}
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.
@@ -92,7 +102,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Camera, Spin, Squash }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash }, max_entities);
 
 // =============================================================================
 // World

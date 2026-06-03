@@ -19,6 +19,9 @@ pub const GpuMesh = struct {
     index_count: u32 = 0,
     indexed: bool = false,
     uploaded: bool = false,
+    /// Registry revision this buffer was uploaded from; if the mesh is edited in
+    /// place (its revision bumped) we re-upload to pick up the new data.
+    rev: u32 = 0,
 };
 
 pub const MeshCache = struct {
@@ -33,13 +36,20 @@ pub const MeshCache = struct {
     ) *const GpuMesh {
         const idx: usize = @intFromEnum(handle);
         const gm = &self.meshes[idx];
-        if (gm.uploaded) return gm;
+        const cur = registry.rev(handle);
+        if (gm.uploaded and gm.rev == cur) return gm;
+
+        // Stale (or never uploaded): an in-place edit bumped the revision. Drop
+        // the old buffers before re-uploading so the recolour shows and nothing
+        // leaks. invalidate() is a no-op on a fresh (un-uploaded) slot.
+        if (gm.uploaded) self.invalidate(handle);
 
         const data = registry.get(handle);
         gm.vbuf = sg.makeBuffer(.{
             .data = sg.asRange(data.vertices),
             .label = "mesh-vertices",
         });
+        gm.rev = cur;
         gm.vertex_count = @intCast(data.vertices.len);
 
         if (data.indices.len > 0) {
@@ -54,5 +64,26 @@ pub const MeshCache = struct {
 
         gm.uploaded = true;
         return gm;
+    }
+
+    /// Drop one cached mesh so `resolve` re-uploads it next frame. Used for an
+    /// in-place edit (e.g. recolouring a single entity's mesh) without rebuilding
+    /// the scene: mutate the CPU vertices, invalidate just that handle, done.
+    pub fn invalidate(self: *MeshCache, handle: core.MeshHandle) void {
+        const gm = &self.meshes[@intFromEnum(handle)];
+        if (gm.uploaded) {
+            sg.destroyBuffer(gm.vbuf);
+            if (gm.indexed) sg.destroyBuffer(gm.ibuf);
+        }
+        gm.* = .{};
+    }
+
+    /// Drop every cached GPU buffer and clear the upload flags. Call on a scene
+    /// hot-reload: `buildStage` rebuilds the meshes (often reusing the same
+    /// handle indices), so without this `resolve` would keep returning the stale
+    /// buffers from the previous scene — the new geometry/colours would never
+    /// reach the GPU. Destroying the buffers also stops them leaking per reload.
+    pub fn reset(self: *MeshCache) void {
+        for (0..self.meshes.len) |i| self.invalidate(@enumFromInt(i));
     }
 };

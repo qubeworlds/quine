@@ -120,6 +120,19 @@ pub const SceneRuntime = struct {
                 }
             };
             try self.buildMesh(a, ent, e);
+            // Carry the scene material as a component so render can read it as a
+            // uniform (and a live edit can update it without touching the mesh).
+            if (e.material) |mat| self.world.set(core.Material, ent, .{
+                .base_color = vec4(mat.color),
+                .metallic = mat.metallic,
+                .roughness = mat.roughness,
+                .emissive = m.Vec3.init(mat.emissive[0], mat.emissive[1], mat.emissive[2]),
+                .surface = switch (mat.surface) {
+                    .plain => .plain,
+                    .dimpled => .dimpled,
+                    .basketball => .basketball,
+                },
+            });
             bindings[i] = bnd;
         }
         self.bindings = bindings;
@@ -143,7 +156,8 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const g = e.geometry orelse continue;
             if (g != .fedora) continue;
-            try self.buildFedora(a, &bindings[i], e, g.fedora);
+            if (g.fedora.fit_to_joint == null) continue; // standalone built in buildMesh
+            try self.buildFedora(a, &bindings[i], g.fedora);
         }
 
         self.physics.optimize();
@@ -157,7 +171,6 @@ pub const SceneRuntime = struct {
         self: *SceneRuntime,
         a: std.mem.Allocator,
         b: *Binding,
-        e: core.scene.Entity,
         fed: anytype,
     ) !void {
         const pi = b.parent_idx orelse return;
@@ -178,7 +191,7 @@ pub const SceneRuntime = struct {
         const crown_height = (bounds.top - brim_y) * scale + fed.top_clearance;
         const brim_radius = crown_radius * fed.brim_flare;
 
-        const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
         const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
         const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
         const mesh = core.fedora(brim_radius, crown_radius, crown_height, fed.segments, color, verts, indices);
@@ -204,13 +217,24 @@ pub const SceneRuntime = struct {
         const g = e.geometry orelse return;
         switch (g) {
             .sphere => |sp| {
-                const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
                 const verts = try a.alloc(core.Vertex, core.sphereVertexCount(sp.rings, sp.segments));
                 const indices = try a.alloc(u32, core.sphereIndexCount(sp.rings, sp.segments));
                 const mesh = core.uvSphere(sp.radius, sp.rings, sp.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
-            else => {}, // builtin handled in core.loadScene; gltf/fedora next.
+            .fedora => |fed| {
+                // Standalone fedora (no head to fit): build straight from the
+                // explicit dimensions. The worn case (fit_to_joint set) is sized
+                // from the head later in buildFedora.
+                if (fed.fit_to_joint != null) return;
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
+                const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
+                const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
+                const mesh = core.fedora(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            else => {}, // builtin handled in core.loadScene; gltf next.
         }
     }
 
@@ -798,4 +822,21 @@ test "SceneRuntime reports a missing asset" {
     };
     var rt: SceneRuntime = undefined;
     try std.testing.expectError(error.AssetNotFound, rt.init(std.heap.c_allocator, sc, &.{}));
+}
+
+test "a sphere-only preview scene (no actor, no bodies) builds and updates" {
+    const json =
+        \\{ "schemaVersion":1, "name":"thumb", "entities":[
+        \\ { "name":"ball", "geometry":{"kind":"sphere","radius":1,"rings":16,"segments":24}, "material":{"color":[1,0.78,0.34,1],"metallic":1,"roughness":0.1} },
+        \\ { "name":"camera", "transform":{"position":[1,1,3]}, "camera":{"controller":{"kind":"orbit","target":[0,0,0],"distance":3}} }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scene_data = try core.parseScene(arena.allocator(), json);
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scene_data, &.{});
+    defer rt.deinit();
+    for (0..5) |_| try rt.update(1.0 / 60.0);
+    try std.testing.expect(rt.find("ball") != null);
 }

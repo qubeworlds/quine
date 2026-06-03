@@ -60,6 +60,17 @@ pub const HudInfo = struct {
     /// reached + rebuilt the scene.
     reloads: u32 = 0,
     fedora_r: f32 = -1,
+    /// Count of frames the editor has received over the room WebSocket (read off
+    /// `window.QUINE_MSG_COUNT`). If this climbs in a snapshot, the JS→wasm poll
+    /// bridge is delivering; if it stays 0 while the editor's activity dot
+    /// flashes, the messages reach JS but not the engine.
+    ws_msgs: u32 = 0,
+    /// Multiplayer-tick diagnostics: the engine's current world tick, the newest
+    /// message tick applied, and how many frames were dropped for arriving too
+    /// late (tick already passed).
+    world_tick: u64 = 0,
+    msg_tick: u64 = 0,
+    dropped: u32 = 0,
 };
 
 /// A translation gizmo to draw at `origin`, with three axis handles of world
@@ -88,6 +99,26 @@ pub fn viewProj(queue: *const core.RenderQueue, aspect: f32) m.Mat4 {
     return proj.mul(queue.view);
 }
 
+/// The fragment material uniform for one draw, from a core `Material`. Vertex
+/// colour is tinted by `base_color`, so white-vertex procedural meshes take their
+/// colour from here; `pbr`/`emissive` feed the (upcoming) BRDF.
+fn materialParams(mat: core.Material) shd.FsParams {
+    return .{
+        .base_color = .{ mat.base_color.x, mat.base_color.y, mat.base_color.z, mat.base_color.w },
+        // pbr.w carries the surface-finish code (0 plain, 2 dimpled, 3 basketball).
+        .pbr = .{ mat.metallic, mat.roughness, 0, @floatFromInt(@intFromEnum(mat.surface)) },
+        .emissive = .{ mat.emissive.x, mat.emissive.y, mat.emissive.z, 0 },
+    };
+}
+
+/// White, non-emissive material for draws that carry their own vertex colour
+/// (the reference grid and the gizmo) — multiplying by white leaves them as-is.
+const white_material: shd.FsParams = .{
+    .base_color = .{ 1, 1, 1, 1 },
+    .pbr = .{ 0, 0.5, 0, 0 },
+    .emissive = .{ 0, 0, 0, 0 },
+};
+
 /// Renderer state. Kept in a struct (rather than module globals) so the
 /// ownership and lifecycle are explicit at the call site in the app.
 pub const Renderer = struct {
@@ -106,6 +137,17 @@ pub const Renderer = struct {
     skinned_index_count: u32 = 0,
     pass_action: sg.PassAction = .{},
     cache: mesh_cache.MeshCache = .{},
+    /// Draw the world-space reference grid. Off for clean material thumbnails.
+    draw_grid: bool = true,
+    /// Preview mode (material thumbnails): draws a studio backdrop and tells the
+    /// mesh shader to apply the staging lights (fill/rim/softboxes) to the body.
+    /// Off for the live engine, so normal geometry is rendered plainly.
+    preview: bool = false,
+    /// Golf-ball dimples on the preview body: 0 = none, 1 = spherical mapping
+    /// (the material ball), 2 = surface/triplanar mapping (the golf-ball hat).
+    preview_dimples: u8 = 0,
+    /// Vertex-less fullscreen pipeline for the preview backdrop.
+    bg_pip: sg.Pipeline = .{},
 
     /// Initialize sokol-gfx and build the mesh pipeline. Must be called once
     /// after the GL/Metal/D3D11 context exists (i.e. inside sokol-app's init
@@ -187,6 +229,15 @@ pub const Renderer = struct {
             .label = "skinned-pipeline",
         });
 
+        // Preview backdrop: a vertex-less fullscreen triangle (the bg shader
+        // builds positions from gl_VertexIndex), depth-test off so it fills the
+        // frame behind the body. Only drawn when `preview` is set.
+        self.bg_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd.bgShaderDesc(sg.queryBackend())),
+            .depth = .{ .compare = .ALWAYS, .write_enabled = false },
+            .label = "bg-pipeline",
+        });
+
         // Debug-text overlay (the HUD). The Amstrad CPC font has a clean,
         // complete ASCII set (incl. lowercase), which reads better than the
         // default 8x8 fonts.
@@ -196,8 +247,21 @@ pub const Renderer = struct {
         });
     }
 
-    /// Upload the character's skinned mesh to the GPU once (at startup).
+    /// Drop all cached GPU geometry so the next frame re-uploads it. Called on a
+    /// scene hot-reload: the rebuilt meshes reuse handle indices, so the cache
+    /// must be invalidated or render keeps drawing the previous scene's buffers.
+    /// (In-place edits don't need this — they bump the mesh revision and resolve
+    /// re-uploads automatically.)
+    pub fn invalidateMeshes(self: *Renderer) void {
+        self.cache.reset();
+    }
+
+    /// Upload the character's skinned mesh to the GPU. Called at startup and on
+    /// every scene hot-reload, so it first destroys any previous buffers (else
+    /// each reload would leak the old skinned vertex/index buffers).
     pub fn uploadSkinned(self: *Renderer, mesh: core.SkinnedMeshData) void {
+        sg.destroyBuffer(self.skinned_vbuf); // no-op on the initial invalid handle
+        sg.destroyBuffer(self.skinned_ibuf);
         self.skinned_vbuf = sg.makeBuffer(.{ .data = sg.asRange(mesh.vertices), .label = "skinned-vertices" });
         self.skinned_ibuf = sg.makeBuffer(.{
             .usage = .{ .index_buffer = true },
@@ -224,17 +288,26 @@ pub const Renderer = struct {
         hud: ?HudInfo,
     ) void {
         const view_proj = viewProj(queue, aspect);
+        const eye4 = [4]f32{ queue.eye.x, queue.eye.y, queue.eye.z, 1 };
 
         sg.beginPass(.{ .action = self.pass_action, .swapchain = sglue.swapchain() });
 
+        // Preview backdrop fills the frame first (vertex-less fullscreen tri:
+        // the shader builds positions from gl_VertexIndex, so no bindings).
+        if (self.preview) {
+            sg.applyPipeline(self.bg_pip);
+            sg.draw(0, 3, 1);
+        }
+
         // World-space reference grid first (model = identity, just view+proj).
-        sg.applyPipeline(self.grid_pip);
-        {
+        if (self.draw_grid) {
+            sg.applyPipeline(self.grid_pip);
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = self.grid_vbuf;
             sg.applyBindings(bind);
-            const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
+            const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
+            sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
             sg.draw(0, self.grid_count, 1);
         }
 
@@ -251,8 +324,13 @@ pub const Renderer = struct {
             const params = shd.VsParams{
                 .mvp = view_proj.mul(item.model).m,
                 .model = item.model.m,
+                .eye_pos = eye4,
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
+            var fsp = materialParams(item.material);
+            if (self.preview) fsp.pbr[2] = 1; // staging lights (fill/rim/softboxes)
+            if (self.preview_dimples != 0) fsp.pbr[3] = @floatFromInt(self.preview_dimples); // dimple mode
+            sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {
                 sg.draw(0, gm.index_count, 1);
@@ -262,7 +340,7 @@ pub const Renderer = struct {
         }
 
         if (skinned) |s| self.drawSkinned(s, view_proj);
-        if (gizmo) |g| self.drawGizmo(g, view_proj);
+        if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
         if (hud) |info| drawHud(info);
 
         sg.endPass();
@@ -291,7 +369,7 @@ pub const Renderer = struct {
     }
 
     /// Draw the translation gizmo (three axis handles) on top of the scene.
-    fn drawGizmo(self: *Renderer, g: GizmoInfo, view_proj: m.Mat4) void {
+    fn drawGizmo(self: *Renderer, g: GizmoInfo, view_proj: m.Mat4, eye4: [4]f32) void {
         // Normal == light direction so the lit shader renders the handles at
         // full brightness.
         const lit = m.Vec3.init(0.4, 0.7, 1.0).normalize();
@@ -319,8 +397,9 @@ pub const Renderer = struct {
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.gizmo_vbuf;
         sg.applyBindings(bind);
-        const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
+        const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
+        sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
         sg.draw(0, 6, 1);
     }
 
@@ -331,7 +410,12 @@ pub const Renderer = struct {
         // blurry low-res overlay.
         const scale = 2.0 * info.dpi_scale;
         sdtx.canvas(@as(f32, @floatFromInt(info.width)) / scale, @as(f32, @floatFromInt(info.height)) / scale);
-        sdtx.origin(0.5, 0.5);
+        // Top margin of ~3.5 character cells (~56 CSS px). One cell is 8 canvas
+        // px, and the canvas-to-CSS scaling cancels DPI, so a cell is ~16 CSS px
+        // regardless of display. This clears the editor's overlay top bar, whose
+        // header would otherwise clip the first HUD lines (it's hidden in full
+        // screen, which is why the HUD looks fine there).
+        sdtx.origin(0.5, 3.5);
         sdtx.font(0);
         sdtx.color3b(0x00, 0xFF, 0x66);
         sdtx.print("quine\n", .{});
@@ -341,6 +425,8 @@ pub const Renderer = struct {
         sdtx.print("size     : {d} x {d}\n", .{ info.width, info.height });
         sdtx.print("mouse    : {d:.0}, {d:.0}\n", .{ info.mouse_x, info.mouse_y });
         sdtx.print("reload   : n={d} fedR={d:.2}\n", .{ info.reloads, info.fedora_r });
+        sdtx.print("messages : {d}\n", .{info.ws_msgs});
+        sdtx.print("tick     : {d} msg={d} drop={d}\n", .{ info.world_tick, info.msg_tick, info.dropped });
         sdtx.print("[tab / 3-finger] toggle hud\n", .{});
         sdtx.draw();
     }
