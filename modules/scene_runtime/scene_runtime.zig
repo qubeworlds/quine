@@ -151,7 +151,7 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const g = e.geometry orelse continue;
             if (g != .fedora) continue;
-            try self.buildFedora(a, &bindings[i], e, g.fedora);
+            try self.buildFedora(a, &bindings[i], g.fedora);
         }
 
         self.physics.optimize();
@@ -165,7 +165,6 @@ pub const SceneRuntime = struct {
         self: *SceneRuntime,
         a: std.mem.Allocator,
         b: *Binding,
-        e: core.scene.Entity,
         fed: anytype,
     ) !void {
         const pi = b.parent_idx orelse return;
@@ -186,7 +185,7 @@ pub const SceneRuntime = struct {
         const crown_height = (bounds.top - brim_y) * scale + fed.top_clearance;
         const brim_radius = crown_radius * fed.brim_flare;
 
-        const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
         const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
         const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
         const mesh = core.fedora(brim_radius, crown_radius, crown_height, fed.segments, color, verts, indices);
@@ -212,7 +211,7 @@ pub const SceneRuntime = struct {
         const g = e.geometry orelse return;
         switch (g) {
             .sphere => |sp| {
-                const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
                 const verts = try a.alloc(core.Vertex, core.sphereVertexCount(sp.rings, sp.segments));
                 const indices = try a.alloc(u32, core.sphereIndexCount(sp.rings, sp.segments));
                 const mesh = core.uvSphere(sp.radius, sp.rings, sp.segments, color, verts, indices);

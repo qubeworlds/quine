@@ -99,6 +99,25 @@ pub fn viewProj(queue: *const core.RenderQueue, aspect: f32) m.Mat4 {
     return proj.mul(queue.view);
 }
 
+/// The fragment material uniform for one draw, from a core `Material`. Vertex
+/// colour is tinted by `base_color`, so white-vertex procedural meshes take their
+/// colour from here; `pbr`/`emissive` feed the (upcoming) BRDF.
+fn materialParams(mat: core.Material) shd.FsParams {
+    return .{
+        .base_color = .{ mat.base_color.x, mat.base_color.y, mat.base_color.z, mat.base_color.w },
+        .pbr = .{ mat.metallic, mat.roughness, 0, 0 },
+        .emissive = .{ mat.emissive.x, mat.emissive.y, mat.emissive.z, 0 },
+    };
+}
+
+/// White, non-emissive material for draws that carry their own vertex colour
+/// (the reference grid and the gizmo) — multiplying by white leaves them as-is.
+const white_material: shd.FsParams = .{
+    .base_color = .{ 1, 1, 1, 1 },
+    .pbr = .{ 0, 0.5, 0, 0 },
+    .emissive = .{ 0, 0, 0, 0 },
+};
+
 /// Renderer state. Kept in a struct (rather than module globals) so the
 /// ownership and lifecycle are explicit at the call site in the app.
 pub const Renderer = struct {
@@ -259,6 +278,7 @@ pub const Renderer = struct {
             sg.applyBindings(bind);
             const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
+            sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
             sg.draw(0, self.grid_count, 1);
         }
 
@@ -277,6 +297,8 @@ pub const Renderer = struct {
                 .model = item.model.m,
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
+            const fsp = materialParams(item.material);
+            sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {
                 sg.draw(0, gm.index_count, 1);
@@ -345,6 +367,7 @@ pub const Renderer = struct {
         sg.applyBindings(bind);
         const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m };
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
+        sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
         sg.draw(0, 6, 1);
     }
 

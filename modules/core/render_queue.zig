@@ -21,12 +21,16 @@ const Entity = @import("core.zig").Entity;
 
 const Transform = components.Transform;
 const MeshRef = components.MeshRef;
+const Material = components.Material;
 const Camera = components.Camera;
 
-/// One thing to draw: a mesh, placed by a model matrix.
+/// One thing to draw: a mesh, placed by a model matrix, shaded by a material.
+/// The material defaults to plain white (no entity Material component) so meshes
+/// without an explicit material draw with their baked vertex colour unchanged.
 pub const DrawItem = struct {
     mesh: assets.MeshHandle,
     model: m.Mat4,
+    material: Material = .{},
 };
 
 /// Upper bound on draw items per frame — one per entity, matching the ECS
@@ -86,6 +90,7 @@ pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
         out.items[out.len] = .{
             .mesh = cur.get(MeshRef, e).?.mesh,
             .model = t.matrix(),
+            .material = if (cur.get(Material, e)) |mp| mp.* else .{},
         };
         out.len += 1;
     }

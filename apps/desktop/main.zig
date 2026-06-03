@@ -148,8 +148,8 @@ export fn quine_enqueue(msg: [*:0]const u8) void {
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
 fn fedoraRed() f32 {
     const fed = App.stage.find("fedora") orelse return -1;
-    const mr = App.stage.world.get(core.MeshRef, fed.entity) orelse return -1;
-    return App.stage.world.meshes.get(mr.mesh).vertices[0].color.x;
+    const mat = App.stage.world.get(core.Material, fed.entity) orelse return -1;
+    return mat.base_color.x;
 }
 
 export fn init() void {
@@ -335,11 +335,14 @@ fn parseRgba(v: std.json.Value) ?m.Vec4 {
 /// rebuild, so the simulation keeps running.
 fn setEntityColor(name: []const u8, rgba: m.Vec4) void {
     const b = App.stage.find(name) orelse return;
-    const mr = App.stage.world.get(core.MeshRef, b.entity) orelse return;
-    // Recolour in place + bump the mesh revision; render re-uploads on the next
-    // frame when it notices the revision changed. No scene rebuild, no explicit
-    // render call (keeps the core→render one-way boundary).
-    App.stage.world.meshes.setColor(mr.mesh, rgba.x, rgba.y, rgba.z, rgba.w);
+    // Set the entity's Material base colour. Render reads it as a uniform each
+    // frame, so a recolour is a single field write — no mesh re-upload, no buffer
+    // churn (and it keeps the core→render one-way boundary).
+    if (App.stage.world.get(core.Material, b.entity)) |mat| {
+        mat.base_color = rgba;
+    } else {
+        App.stage.world.set(core.Material, b.entity, .{ .base_color = rgba });
+    }
     if (std.mem.eql(u8, name, "fedora")) App.fedora_r = rgba.x; // keep HUD diag in sync
 }
 

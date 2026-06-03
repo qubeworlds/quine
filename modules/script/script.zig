@@ -264,13 +264,12 @@ fn jsBumpSquash(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]
 
 const core = @import("core");
 
-/// Read the fedora mesh's first vertex color (the flat material color baked into
-/// the mesh at build time) — what a recolor must change.
+/// Read the fedora's material base colour — the colour render reads as a uniform
+/// (no longer baked into the mesh), which a recolor must change.
 fn fedoraColor(rt: *SceneRuntime) ?[4]f32 {
     const fed = rt.find("fedora") orelse return null;
-    const mr = rt.world.get(core.MeshRef, fed.entity) orelse return null;
-    const v = rt.world.meshes.get(mr.mesh).vertices[0].color;
-    return .{ v.x, v.y, v.z, v.w };
+    const col = (rt.world.get(core.Material, fed.entity) orelse return null).base_color;
+    return .{ col.x, col.y, col.z, col.w };
 }
 
 test "scene hot-reload: rebuild + rebind recolors the fedora, reusing the JS runtime" {
