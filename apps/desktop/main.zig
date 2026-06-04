@@ -246,6 +246,13 @@ fn loadScene() void {
         if (std.c.getenv("QUINE_THUMB_SDF") != null) {
             loadSceneFrom(sdf_thumb_json);
             App.stage.world.sdf_scene = core.sdfDrillWall();
+            // QUINE_THUMB_T=<seconds>: render the drill animation at a chosen time
+            // (seed the world clock so tick's advance keeps it there).
+            if (std.c.getenv("QUINE_THUMB_T")) |tv| {
+                const tsec = std.fmt.parseFloat(f64, std.mem.span(tv)) catch 0;
+                App.stage.world.time = tsec;
+                App.stage.world.sdf_scene.?.advance(tsec);
+            }
             return;
         }
         if (t.scene) |path| {

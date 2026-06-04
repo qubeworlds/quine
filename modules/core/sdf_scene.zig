@@ -69,9 +69,29 @@ pub const Aabb = struct {
     max: Vec3,
 };
 
+/// Parameters for a deterministic "drill bores through a wall" animation. The bit
+/// tip advances along -Z from `z_start` (in front of the wall) to `z_end` (out the
+/// back) over `duration` seconds; `advance(time)` rebuilds the bit, shaft and the
+/// bored channel for the current tip, so the field is a pure function of `time`
+/// (replayable). Node 0 (the wall) is left untouched.
+pub const DrillAnim = struct {
+    duration: f32 = 3.0,
+    z_start: f32 = 0.8,
+    z_end: f32 = -0.5,
+    /// Wall near-face z (where the bored channel opens) and the bore radius.
+    entry_z: f32 = 0.22,
+    bore_radius: f32 = 0.20,
+};
+
 pub const SdfScene = struct {
     nodes: [max_nodes]Node = undefined,
     len: usize = 0,
+    /// Optional drill animation driven by `advance(time)`.
+    drill: ?DrillAnim = null,
+    /// Region changed by the last `advance()` — the carved channel AABB. The unit
+    /// the sparse-brick cache will re-rasterize incrementally (step 2). Null when
+    /// nothing was carved this step.
+    dirty: ?Aabb = null,
 
     pub fn add(self: *SdfScene, n: Node) void {
         if (self.len >= max_nodes) return;
@@ -134,12 +154,46 @@ pub const SdfScene = struct {
         return (Vec3{ .x = dx, .y = dy, .z = dz }).normalize();
     }
 
-    /// Advance time-varying parameters. v1 is a no-op (the editor's keyframe →
-    /// param binding lands next); kept so `World.tick` can call it unconditionally
-    /// and remain deterministic.
+    /// Advance time-varying parameters deterministically. Drives the drill
+    /// animation (if configured) from `time`; a no-op otherwise. Called from
+    /// `World.tick`, so the same tick count always yields the same field.
     pub fn advance(self: *SdfScene, time: f64) void {
-        _ = self;
-        _ = time;
+        if (self.drill) |dr| {
+            const p = std.math.clamp(@as(f32, @floatCast(time)) / dr.duration, 0.0, 1.0);
+            self.setDrill(dr, m.lerp(dr.z_start, dr.z_end, p));
+        }
+    }
+
+    /// (Re)build the animated part of the drill scene for a given bit-tip Z: the
+    /// bored channel (subtracted, only as deep as the bit has reached), the funnel
+    /// mouth, the tapered steel bit, and the orange shaft. Node 0 (the wall) is
+    /// preserved. Records the carved region in `dirty`.
+    pub fn setDrill(self: *SdfScene, dr: DrillAnim, tip_z: f32) void {
+        const steel = Vec3{ .x = 0.62, .y = 0.64, .z = 0.70 };
+        const orange = Vec3{ .x = 0.85, .y = 0.45, .z = 0.20 };
+        const r = dr.bore_radius;
+        self.len = 1; // keep the wall at index 0
+        self.dirty = null;
+
+        // Bored channel: a subtracted, slightly-rounded box from the entry face
+        // back to the bit tip — only where the bit has actually advanced past the
+        // near face, so the hole grows as the drill goes in.
+        if (tip_z < dr.entry_z) {
+            const z0 = tip_z;
+            const z1 = dr.entry_z + 0.05;
+            const cz = 0.5 * (z0 + z1);
+            const hz = 0.5 * (z1 - z0);
+            self.add(.{ .prim = .round_box, .op = .subtract, .center = .{ .z = cz }, .half = .{ .x = r, .y = r, .z = hz }, .radius = 0.04, .k = 0.05 });
+            self.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = dr.entry_z }, .radius = r + 0.06, .k = 0.10 }); // funnel mouth
+            self.dirty = .{ .min = .{ .x = -r - 0.1, .y = -r - 0.1, .z = z0 - 0.1 }, .max = .{ .x = r + 0.1, .y = r + 0.1, .z = z1 + 0.1 } };
+        }
+
+        // Tapered steel bit: a tip sphere widening back toward the shaft.
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.02 }, .radius = 0.12, .k = 0.05, .color = steel });
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.22 }, .radius = 0.17, .k = 0.06, .color = steel });
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.42 }, .radius = 0.19, .k = 0.06, .color = steel });
+        // Orange shaft behind the bit.
+        self.add(.{ .prim = .round_box, .op = .smooth_union, .center = .{ .z = tip_z + 1.15 }, .half = .{ .x = 0.12, .y = 0.12, .z = 0.62 }, .radius = 0.05, .k = 0.04, .color = orange });
     }
 
     /// World-space AABB enclosing the additive (union) nodes, each expanded by its
@@ -240,31 +294,17 @@ pub fn demo() SdfScene {
 }
 
 /// The drill→wall validation scene as SDF/CSG geometry (the geometry counterpart
-/// to the editor's `createDrillWallDocument`): a wall slab the drill has bored a
-/// hole through, with the bit still seated in the carved pocket. Built bottom-up
-/// in the node order the field is folded:
-///   1) wall slab (box, union)
-///   2) bore + chamfer carved out of the wall (spheres, smooth-subtract) — this
-///      is exactly the actor-mutation a drill applies, authored statically here
-///   3) drill shaft (round_box, union) and conical-ish bit (spheres, union)
-/// +Z faces the camera; the drill comes in along +Z toward the wall at z≈0.
+/// to the editor's `createDrillWallDocument`): a wall slab plus a drill whose bit
+/// + bored channel are driven by `advance(time)` — the bit advances along -Z and
+/// the hole grows as it passes through. Node 0 is the wall; `setDrill` rebuilds
+/// the rest each step. +Z faces the camera; the drill comes in from +Z.
 pub fn drillWall() SdfScene {
     var s = SdfScene{};
-    const steel = Vec3{ .x = 0.62, .y = 0.64, .z = 0.70 };
-    const wall_col = Vec3{ .x = 0.52, .y = 0.40, .z = 0.34 }; // terracotta-ish brick
-
-    // 1) Wall slab.
+    const wall_col = Vec3{ .x = 0.52, .y = 0.40, .z = 0.34 }; // terracotta brick
     s.add(.{ .prim = .box, .op = .union_op, .center = .{}, .half = .{ .x = 1.6, .y = 1.0, .z = 0.22 }, .color = wall_col });
-    // 2) Bore through the slab + a chamfered mouth where the bit widened it.
-    s.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = 0.0 }, .radius = 0.34, .k = 0.06 });
-    s.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = 0.22 }, .radius = 0.30, .k = 0.10 }); // funnel on the near face
-
-    // 3) Drill bit: a chain of spheres tapering to a point (a cone stand-in) sunk
-    // into the bore, plus the shaft behind it.
-    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = -0.05 }, .radius = 0.27, .k = 0.05, .color = steel });
-    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = 0.18 }, .radius = 0.20, .k = 0.06, .color = steel });
-    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = 0.40 }, .radius = 0.13, .k = 0.05, .color = steel });
-    s.add(.{ .prim = .round_box, .op = .smooth_union, .center = .{ .z = 1.05 }, .half = .{ .x = 0.12, .y = 0.12, .z = 0.62 }, .radius = 0.05, .k = 0.04, .color = .{ .x = 0.85, .y = 0.45, .z = 0.20 } });
+    const dr = DrillAnim{};
+    s.drill = dr;
+    s.setDrill(dr, dr.z_start); // t = 0 state: bit approaching, wall intact
     return s;
 }
 
@@ -339,7 +379,8 @@ test "normal points outward on a sphere" {
 }
 
 test "AABB cull is exact: eval matches the brute-force fold everywhere" {
-    const s = drillWall();
+    var s = drillWall();
+    s.advance(1.6); // mid-drill: bit seated, channel carved — exercises every op
     // Sweep a grid spanning the scene (and well outside it) and require the
     // accelerated eval to byte-match the un-culled reference at every sample.
     var i: i32 = -20;
@@ -362,18 +403,37 @@ test "AABB cull is exact: eval matches the brute-force fold everywhere" {
     }
 }
 
-test "drill scene: solid wall, bored gap around the bit, solid shaft, open air" {
-    const s = drillWall();
-    // Wall plane, off-axis (away from the bore): inside solid wall.
-    try testing.expect(s.dist(.{ .x = 1.0, .y = 0.0, .z = 0.0 }) < 0.0);
-    // The bore removed material: a ring point that would be solid wall without the
-    // carve (just outside the seated bit, inside the bored radius) is no longer
-    // deep solid — the subtract pushed the distance up toward/î past the surface.
-    const bored = s.dist(.{ .x = 0.32, .y = 0.0, .z = 0.0 });
-    const solid = s.dist(.{ .x = 1.0, .y = 0.0, .z = 0.0 });
-    try testing.expect(bored > solid); // carved region is less-deep than intact wall
-    // The shaft well behind the wall is solid drill.
-    try testing.expect(s.dist(.{ .z = 1.05 }) < 0.0);
-    // Open air above the wall is empty.
-    try testing.expect(s.dist(.{ .y = 2.0 }) > 0.0);
+test "drill carves the wall progressively as time advances" {
+    var s = drillWall();
+
+    // t = 0: the bit is still in front of the wall — nothing carved yet, and the
+    // wall is intact at the (future) bore centre and off to the side.
+    s.advance(0.0);
+    try testing.expect(s.dirty == null);
+    try testing.expect(s.dist(.{ .x = 0.0, .y = 0.0, .z = 0.0 }) < 0.0); // solid wall
+    const off_axis_0 = s.dist(.{ .x = 1.2, .y = 0.0, .z = 0.0 }); // never touched
+    try testing.expect(off_axis_0 < 0.0);
+
+    // Mid-drill: the bit has entered, so a carve region now exists.
+    s.advance(1.6);
+    try testing.expect(s.dirty != null);
+    const mid_min_z = s.dirty.?.min.z;
+
+    // Later in the pass the bored channel reaches farther through the slab: its
+    // dirty region's near edge moves toward (and past) the back face.
+    s.advance(3.0);
+    try testing.expect(s.dirty != null);
+    try testing.expect(s.dirty.?.min.z < mid_min_z); // channel deepened
+    try testing.expect(s.dirty.?.min.z < -0.22); // bored clean through the back face
+
+    // The untouched wall beside the bore stays solid throughout.
+    try testing.expect(s.dist(.{ .x = 1.2, .y = 0.0, .z = 0.0 }) < 0.0);
+
+    // Determinism: the same time always yields the same field.
+    var a = drillWall();
+    var b = drillWall();
+    a.advance(1.3);
+    b.advance(1.3);
+    try testing.expectEqual(a.len, b.len);
+    try testing.expectApproxEqAbs(a.dist(.{ .x = 0.1, .z = 0.1 }), b.dist(.{ .x = 0.1, .z = 0.1 }), 1e-6);
 }
