@@ -223,12 +223,10 @@ pub fn spawnRenderable(
                     .z = @max((hi.z - lo.z) * 0.5, voxel),
                 };
 
-                // Physics hull: points relative to centroid.
-                const local = try mesh_alloc.alloc([3]f32, pts.items.len);
-                for (pts.items, local) |src, *dst| dst.* = .{ src[0] - centroid.x, src[1] - centroid.y, src[2] - centroid.z };
+                // Box shape sized to the chunk extent (matches the rendered box).
                 const id = physics.createBody(.{
                     .motion = .dynamic,
-                    .shape = .{ .convex_hull = .{ .points = local } },
+                    .shape = .{ .box = .{ .half_extents = .{ half.x, half.y, half.z } } },
                     .position = .{ centroid.x, centroid.y, centroid.z },
                     .mass = opts.mass,
                     .restitution = opts.restitution,
@@ -410,18 +408,18 @@ pub const Stream = struct {
                         .y = @max((hi.y - lo.y) * 0.5, self.voxel),
                         .z = @max((hi.z - lo.z) * 0.5, self.voxel),
                     };
-                    const local = try mesh_alloc.alloc([3]f32, pts.items.len);
-                    for (pts.items, local) |src, *dst| dst.* = .{ src[0] - centroid.x, src[1] - centroid.y, src[2] - centroid.z };
+                    // Box shape sized to the chunk extent — matches the rendered
+                    // box and avoids any convex-hull edge cases on the wasm build.
                     const id = physics.createBody(.{
                         .motion = .dynamic,
-                        .shape = .{ .convex_hull = .{ .points = local } },
+                        .shape = .{ .box = .{ .half_extents = .{ half.x, half.y, half.z } } },
                         .position = .{ centroid.x, centroid.y, centroid.z },
                         .mass = self.opts.mass,
                         .restitution = self.opts.restitution,
                         .friction = self.opts.friction,
                         .tag = self.opts.tag,
                     }) catch {
-                        self.shattered[ci] = true; // degenerate hull — don't retry
+                        self.shattered[ci] = true;
                         continue;
                     };
                     const out = centroid.sub(wall_center);

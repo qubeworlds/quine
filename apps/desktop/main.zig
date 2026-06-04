@@ -526,11 +526,12 @@ export fn frame() void {
         ticks += 1;
     }
     // Live SDF drill demo: stream debris as cells clear, and track the chunks as
-    // they fall (their render transforms follow the Jolt bodies).
-    if (drill_stream) |*st| {
-        _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, &App.stage.world.sdf_scene.?, 2) catch {};
+    // they fall (their render transforms follow the Jolt bodies). Guard the SDF
+    // scene — a scene push (room WebSocket) can rebuild the world without one.
+    if (drill_stream) |*st| if (App.stage.world.sdf_scene) |*sc| {
+        _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
         st.sync(&App.stage.world, &App.stage.physics);
-    }
+    };
 
     const w = sapp.widthf();
     const h = sapp.heightf();
