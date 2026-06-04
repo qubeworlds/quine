@@ -87,6 +87,11 @@ pub const SdfNode = @import("sdf_scene.zig").Node;
 pub const sdfDemo = @import("sdf_scene.zig").demo;
 pub const sdfDrillWall = @import("sdf_scene.zig").drillWall;
 
+/// Sparse 8³ distance-brick cache over an SdfScene — empty-space skipping for the
+/// raymarcher and the per-brick unit of change for destructible debris + meshing.
+pub const sdf_cache = @import("sdf_cache.zig");
+pub const SdfCache = sdf_cache.Cache;
+
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
@@ -100,6 +105,7 @@ test {
     _ = @import("eye.zig");
     _ = @import("sdf.zig");
     _ = @import("sdf_scene.zig");
+    _ = @import("sdf_cache.zig");
     _ = @import("png.zig");
 }
 
