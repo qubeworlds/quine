@@ -17,6 +17,7 @@ const sglue = sokol.glue;
 const sdtx = sokol.debugtext;
 const shd = @import("shader");
 const shd_skin = @import("shader_skin");
+const shd_rm = @import("shader_raymarch");
 const core = @import("core");
 const m = @import("math");
 const mesh_cache = @import("mesh_cache.zig");
@@ -161,6 +162,8 @@ pub const Renderer = struct {
     preview_dimples: u8 = 0,
     /// Vertex-less fullscreen pipeline for the preview backdrop.
     bg_pip: sg.Pipeline = .{},
+    /// Vertex-less fullscreen pipeline that sphere-traces an SDF/CSG scene.
+    raymarch_pip: sg.Pipeline = .{},
 
     /// Initialize sokol-gfx and build the mesh pipeline. Must be called once
     /// after the GL/Metal/D3D11 context exists (i.e. inside sokol-app's init
@@ -285,6 +288,15 @@ pub const Renderer = struct {
             .label = "bg-pipeline",
         });
 
+        // Raymarch pipeline: vertex-less fullscreen triangle that sphere-traces
+        // an SDF scene from a uniform node array. Depth test off (it owns the
+        // frame for SDF-only scenes); it writes its own background on a miss.
+        self.raymarch_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd_rm.raymarchShaderDesc(sg.queryBackend())),
+            .depth = .{ .compare = .ALWAYS, .write_enabled = false },
+            .label = "raymarch-pipeline",
+        });
+
         // Debug-text overlay (the HUD). The Amstrad CPC font has a clean,
         // complete ASCII set (incl. lowercase), which reads better than the
         // default 8x8 fonts.
@@ -378,6 +390,10 @@ pub const Renderer = struct {
             sg.applyPipeline(self.bg_pip);
             sg.draw(0, 3, 1);
         }
+
+        // SDF/CSG scene (if any): sphere-traced as a fullscreen pass. Drawn before
+        // the meshes/grid so they can composite on top (v1 targets SDF-only).
+        if (queue.sdf) |s| self.drawSdf(s, queue, aspect);
 
         // World-space reference grid first (model = identity, just view+proj).
         if (self.draw_grid) {
@@ -549,6 +565,36 @@ pub const Renderer = struct {
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
         sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
         sg.draw(0, 6, 1);
+    }
+
+    /// Sphere-trace an SDF/CSG scene as a fullscreen pass. The camera ray basis is
+    /// derived from the queue's view matrix (its 3×3 rows are right/up/-forward in
+    /// world space), so no matrix inverse is needed and it is backend-independent.
+    /// Node params are packed into the uniform array the raymarch shader decodes.
+    fn drawSdf(self: *Renderer, sdf: *const core.SdfScene, queue: *const core.RenderQueue, aspect: f32) void {
+        const vm = queue.view.m; // column-major: m[col*4 + row]
+        // Rows of the upper-left 3×3: right = (m0,m4,m8), up = (m1,m5,m9), -fwd = (m2,m6,m10).
+        const right = [3]f32{ vm[0], vm[4], vm[8] };
+        const up = [3]f32{ vm[1], vm[5], vm[9] };
+        const fwd = [3]f32{ -vm[2], -vm[6], -vm[10] };
+        const tan_half = @tan(queue.fov_y * 0.5);
+
+        var p: shd_rm.RmParams = std.mem.zeroes(shd_rm.RmParams);
+        p.cam_eye = .{ queue.eye.x, queue.eye.y, queue.eye.z, tan_half };
+        p.cam_right = .{ right[0], right[1], right[2], aspect };
+        p.cam_up = .{ up[0], up[1], up[2], @floatFromInt(sdf.len) };
+        p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], 0 };
+
+        for (sdf.nodes[0..sdf.len], 0..) |n, i| {
+            const prim_op: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op));
+            p.nodes[i * 3 + 0] = .{ n.center.x, n.center.y, n.center.z, prim_op };
+            p.nodes[i * 3 + 1] = .{ n.half.x, n.half.y, n.half.z, n.radius };
+            p.nodes[i * 3 + 2] = .{ n.color.x, n.color.y, n.color.z, n.k };
+        }
+
+        sg.applyPipeline(self.raymarch_pip);
+        sg.applyUniforms(shd_rm.UB_rm_params, sg.asRange(&p));
+        sg.draw(0, 3, 1);
     }
 
     /// Render the debug overlay (must be called inside an active pass).

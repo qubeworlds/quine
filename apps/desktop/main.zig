@@ -230,8 +230,24 @@ export fn init() void {
 /// Load the scene from data into a SceneRuntime, attach the JS skill, and set up
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
+/// Camera-only scene for the SDF raymarch thumbnail: an orbit camera framing the
+/// origin, with no drawable mesh (so nothing occludes the fullscreen SDF pass).
+const sdf_thumb_json =
+    \\{ "schemaVersion":1, "name":"sdf", "entities":[
+    \\ { "name":"camera", "transform":{"position":[3,2,5]},
+    \\   "camera":{"controller":{"kind":"orbit","target":[0,0.1,0],"distance":5,"yaw":0.7,"pitch":0.32}} }
+    \\] }
+;
+
 fn loadScene() void {
     if (thumb_cfg) |t| {
+        // QUINE_THUMB_SDF=1: render the built-in SDF/CSG demo via the raymarcher
+        // (camera-only scene + world.sdf_scene), bypassing the material sphere.
+        if (std.c.getenv("QUINE_THUMB_SDF") != null) {
+            loadSceneFrom(sdf_thumb_json);
+            App.stage.world.sdf_scene = core.sdfDemo();
+            return;
+        }
         if (t.scene) |path| {
             // Headless single-frame capture of an arbitrary scene file (libc IO,
             // matching captureThumb). Falls back to the material sphere on error.
