@@ -337,6 +337,12 @@ pub const World = struct {
         return self.bi().getLinearVelocity(id);
     }
 
+    /// Body orientation as a quaternion (x, y, z, w) — lets render follow a
+    /// tumbling debris chunk instead of a fixed-orientation box.
+    pub fn bodyRotation(self: *World, id: BodyId) [4]f32 {
+        return self.bi().getRotation(id);
+    }
+
     /// Set a dynamic body's linear velocity (and wake it). Used to "bump" the
     /// ball upward when the actor heads it.
     pub fn setBodyVelocity(self: *World, id: BodyId, v: [3]f32) void {
