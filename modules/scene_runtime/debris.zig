@@ -443,6 +443,18 @@ pub const Stream = struct {
     pub fn sync(self: *Stream, world: *core.World, physics: *phys.World) void {
         syncRenderable(world, physics, self.pieces.items);
     }
+
+    /// Clear all spawned debris (remove bodies + despawn render entities) and mark
+    /// every cell un-shattered, so the drill can run again from scratch (demo loop).
+    pub fn reset(self: *Stream, list_alloc: std.mem.Allocator, world: *core.World, physics: *phys.World) void {
+        for (self.pieces.items) |pc| {
+            physics.removeBody(pc.body);
+            world.despawn(pc.entity);
+        }
+        self.pieces.clearRetainingCapacity();
+        _ = list_alloc;
+        @memset(self.shattered, false);
+    }
 };
 
 // =============================================================================

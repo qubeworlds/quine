@@ -235,7 +235,7 @@ export fn init() void {
 const sdf_thumb_json =
     \\{ "schemaVersion":1, "name":"sdf", "entities":[
     \\ { "name":"camera", "transform":{"position":[3,2,6]},
-    \\   "camera":{"controller":{"kind":"orbit","target":[0,-0.35,0.3],"distance":6.5,"yaw":0.7,"pitch":0.22}} }
+    \\   "camera":{"controller":{"kind":"orbit","target":[0,0.7,0.3],"distance":7,"yaw":0.7,"pitch":0.12}} }
     \\] }
 ;
 
@@ -529,6 +529,13 @@ export fn frame() void {
     // they fall (their render transforms follow the Jolt bodies). Guard the SDF
     // scene — a scene push (room WebSocket) can rebuild the world without one.
     if (drill_stream) |*st| if (App.stage.world.sdf_scene) |*sc| {
+        // Loop the live demo: once the drill has finished and debris settled,
+        // clear the rubble and run it again. (Not in thumbnail capture mode.)
+        if (thumb_cfg == null and App.stage.world.time > 6.0) {
+            st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
+            App.stage.world.time = 0;
+            sc.advance(0);
+        }
         _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
         st.sync(&App.stage.world, &App.stage.physics);
     };
@@ -730,22 +737,15 @@ var thumb_frame: u32 = 0;
 /// clears cells and tracks them as they fall. Driven from `frame()`.
 var drill_stream: ?scene_runtime.debris.Stream = null;
 
-/// A static floor (with a visible mesh) just below the wall, for debris to land on.
+/// A static ground whose top is the y=0 grid plane, so the wall stands on the
+/// grid and debris come to rest on it (the reference grid is the visible floor).
 fn addDrillFloor() void {
-    const a = std.heap.c_allocator;
-    const floor_col = m.Vec4{ .x = 0.16, .y = 0.17, .z = 0.20, .w = 1 };
     _ = App.stage.physics.createBody(.{
         .motion = .static,
-        .shape = .{ .box = .{ .half_extents = .{ 8, 0.5, 8 } } },
-        .position = .{ 0, -1.7, 0 }, // top at y = -1.2
-        .friction = 0.7,
+        .shape = .{ .box = .{ .half_extents = .{ 16, 0.5, 16 } } },
+        .position = .{ 0, -0.5, 0 }, // top at y = 0
+        .friction = 0.8,
     }) catch {};
-    if (scene_runtime.debris.cubeMesh(a, .{ .x = 8, .y = 0.5, .z = 8 }, floor_col)) |fm| {
-        const fe = App.stage.world.spawn();
-        App.stage.world.set(core.Transform, fe, .{ .position = .{ .y = -1.7 } });
-        App.stage.world.set(core.MeshRef, fe, .{ .mesh = App.stage.world.meshes.add(fm) });
-        App.stage.world.set(core.Material, fe, .{ .base_color = floor_col });
-    } else |_| {}
 }
 
 /// Live drill demo (the running app, native `QUINE_SDF_DEMO=drill` or web
@@ -766,7 +766,7 @@ fn setupLiveDrill() void {
 /// already settled on the floor.
 fn setupDebrisThumb() void {
     const a = std.heap.c_allocator;
-    App.renderer.draw_grid = false;
+    App.renderer.draw_grid = true; // the grid is the floor the wall stands on
     App.renderer.preview = false;
     addDrillFloor();
     App.stage.world.time = 0;

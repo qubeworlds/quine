@@ -311,6 +311,12 @@ pub const World = struct {
         });
     }
 
+    /// Remove a body from the simulation and free it (e.g. clearing debris on a
+    /// demo loop).
+    pub fn removeBody(self: *World, id: BodyId) void {
+        self.bi().removeAndDestroyBody(id);
+    }
+
     /// Advance one fixed step. The contact table is cleared first, so after the
     /// call it holds this step's strongest contacts.
     pub fn step(self: *World, dt: f32) !void {

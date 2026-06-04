@@ -260,7 +260,8 @@ test "empty cells fall back to a sign-correct distance" {
     defer cache.deinit(testing.allocator);
 
     // A point far out in open air is positive (outside); deep in the slab is
-    // negative (inside) — both handled whether or not a brick covers them.
-    try testing.expect(cache.sample(&scene, .{ .x = 0, .y = 5, .z = 0 }) > 0);
-    try testing.expect(cache.sample(&scene, .{ .x = 1.4, .y = 0, .z = 0 }) < 0);
+    // negative (inside) — both handled whether or not a brick covers them. The
+    // wall stands on y=0 (centre at y≈1), so probe its interior at y=1.
+    try testing.expect(cache.sample(&scene, .{ .x = 0, .y = 6, .z = 0 }) > 0);
+    try testing.expect(cache.sample(&scene, .{ .x = 1.4, .y = 1.0, .z = 0 }) < 0);
 }

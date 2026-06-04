@@ -81,6 +81,9 @@ pub const DrillAnim = struct {
     /// Wall near-face z (where the bored channel opens) and the bore radius.
     entry_z: f32 = 0.22,
     bore_radius: f32 = 0.20,
+    /// Height of the bore axis / wall centre. The wall (half-height 1) stands on
+    /// the y=0 ground when this is 1, so the slab rests on the grid.
+    base_y: f32 = 1.0,
 };
 
 pub const SdfScene = struct {
@@ -172,6 +175,7 @@ pub const SdfScene = struct {
         const steel = Vec3{ .x = 0.62, .y = 0.64, .z = 0.70 };
         const orange = Vec3{ .x = 0.85, .y = 0.45, .z = 0.20 };
         const r = dr.bore_radius;
+        const y = dr.base_y; // bore axis height = wall centre, so the slab stands on y=0
         self.len = 1; // keep the wall at index 0
         self.dirty = null;
 
@@ -183,17 +187,17 @@ pub const SdfScene = struct {
             const z1 = dr.entry_z + 0.05;
             const cz = 0.5 * (z0 + z1);
             const hz = 0.5 * (z1 - z0);
-            self.add(.{ .prim = .round_box, .op = .subtract, .center = .{ .z = cz }, .half = .{ .x = r, .y = r, .z = hz }, .radius = 0.04, .k = 0.05 });
-            self.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = dr.entry_z }, .radius = r + 0.06, .k = 0.10 }); // funnel mouth
-            self.dirty = .{ .min = .{ .x = -r - 0.1, .y = -r - 0.1, .z = z0 - 0.1 }, .max = .{ .x = r + 0.1, .y = r + 0.1, .z = z1 + 0.1 } };
+            self.add(.{ .prim = .round_box, .op = .subtract, .center = .{ .y = y, .z = cz }, .half = .{ .x = r, .y = r, .z = hz }, .radius = 0.04, .k = 0.05 });
+            self.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .y = y, .z = dr.entry_z }, .radius = r + 0.06, .k = 0.10 }); // funnel mouth
+            self.dirty = .{ .min = .{ .x = -r - 0.1, .y = y - r - 0.1, .z = z0 - 0.1 }, .max = .{ .x = r + 0.1, .y = y + r + 0.1, .z = z1 + 0.1 } };
         }
 
         // Tapered steel bit: a tip sphere widening back toward the shaft.
-        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.02 }, .radius = 0.12, .k = 0.05, .color = steel });
-        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.22 }, .radius = 0.17, .k = 0.06, .color = steel });
-        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = tip_z + 0.42 }, .radius = 0.19, .k = 0.06, .color = steel });
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .y = y, .z = tip_z + 0.02 }, .radius = 0.12, .k = 0.05, .color = steel });
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .y = y, .z = tip_z + 0.22 }, .radius = 0.17, .k = 0.06, .color = steel });
+        self.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .y = y, .z = tip_z + 0.42 }, .radius = 0.19, .k = 0.06, .color = steel });
         // Orange shaft behind the bit.
-        self.add(.{ .prim = .round_box, .op = .smooth_union, .center = .{ .z = tip_z + 1.15 }, .half = .{ .x = 0.12, .y = 0.12, .z = 0.62 }, .radius = 0.05, .k = 0.04, .color = orange });
+        self.add(.{ .prim = .round_box, .op = .smooth_union, .center = .{ .y = y, .z = tip_z + 1.15 }, .half = .{ .x = 0.12, .y = 0.12, .z = 0.62 }, .radius = 0.05, .k = 0.04, .color = orange });
     }
 
     /// World-space AABB enclosing the additive (union) nodes, each expanded by its
@@ -301,8 +305,8 @@ pub fn demo() SdfScene {
 pub fn drillWall() SdfScene {
     var s = SdfScene{};
     const wall_col = Vec3{ .x = 0.52, .y = 0.40, .z = 0.34 }; // terracotta brick
-    s.add(.{ .prim = .box, .op = .union_op, .center = .{}, .half = .{ .x = 1.6, .y = 1.0, .z = 0.22 }, .color = wall_col });
     const dr = DrillAnim{};
+    s.add(.{ .prim = .box, .op = .union_op, .center = .{ .y = dr.base_y }, .half = .{ .x = 1.6, .y = 1.0, .z = 0.22 }, .color = wall_col });
     s.drill = dr;
     s.setDrill(dr, dr.z_start); // t = 0 state: bit approaching, wall intact
     return s;
@@ -410,8 +414,9 @@ test "drill carves the wall progressively as time advances" {
     // wall is intact at the (future) bore centre and off to the side.
     s.advance(0.0);
     try testing.expect(s.dirty == null);
-    try testing.expect(s.dist(.{ .x = 0.0, .y = 0.0, .z = 0.0 }) < 0.0); // solid wall
-    const off_axis_0 = s.dist(.{ .x = 1.2, .y = 0.0, .z = 0.0 }); // never touched
+    // The wall stands on y=0 (centre at y≈1), so probe solid material at y=1.
+    try testing.expect(s.dist(.{ .x = 0.0, .y = 1.0, .z = 0.0 }) < 0.0); // solid wall
+    const off_axis_0 = s.dist(.{ .x = 1.2, .y = 1.0, .z = 0.0 }); // never touched
     try testing.expect(off_axis_0 < 0.0);
 
     // Mid-drill: the bit has entered, so a carve region now exists.
@@ -427,7 +432,7 @@ test "drill carves the wall progressively as time advances" {
     try testing.expect(s.dirty.?.min.z < -0.22); // bored clean through the back face
 
     // The untouched wall beside the bore stays solid throughout.
-    try testing.expect(s.dist(.{ .x = 1.2, .y = 0.0, .z = 0.0 }) < 0.0);
+    try testing.expect(s.dist(.{ .x = 1.2, .y = 1.0, .z = 0.0 }) < 0.0);
 
     // Determinism: the same time always yields the same field.
     var a = drillWall();
