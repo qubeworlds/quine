@@ -537,10 +537,14 @@ export fn frame() void {
     // scene — a scene push (room WebSocket) can rebuild the world without one.
     if (drill_stream) |*st| if (App.stage.world.sdf_scene) |*sc| {
         if (drill_time_override) |t| {
-            // Timeline-bound: the carve follows the editor playhead (scrubbable).
-            // Clear any free-run rubble once, then just advance the SDF to `t`.
-            if (st.pieces.items.len > 0) st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
+            // Timeline-bound: the carve follows the editor playhead. Scrubbing
+            // back clears the rubble (physics can't run in reverse); going forward
+            // streams debris that fall via the normal forward physics steps.
+            if (t + 0.0001 < last_drill_t) st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
+            last_drill_t = t;
             sc.advance(t);
+            _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
+            st.sync(&App.stage.world, &App.stage.physics);
         } else {
             // Free-running: loop once the drill is through + rubble settled.
             if (thumb_cfg == null and App.stage.world.time > 6.0) {
@@ -751,9 +755,10 @@ var thumb_frame: u32 = 0;
 var drill_stream: ?scene_runtime.debris.Stream = null;
 
 /// When set (via a `drill_time` host message), the keyframe editor's playhead
-/// drives the drill: the carve follows this time exactly (scrubbable), and the
-/// free-running loop + debris streaming are suspended.
+/// drives the drill: the carve follows this time exactly. Debris stream + fall as
+/// the time advances forward; scrubbing back clears the rubble and re-drills.
 var drill_time_override: ?f64 = null;
+var last_drill_t: f64 = -1;
 
 /// A static ground whose top is the y=0 grid plane, so the wall stands on the
 /// grid and debris come to rest on it (the reference grid is the visible floor).
