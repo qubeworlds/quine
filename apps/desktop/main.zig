@@ -246,13 +246,15 @@ fn loadScene() void {
         if (std.c.getenv("QUINE_THUMB_SDF") != null) {
             loadSceneFrom(sdf_thumb_json);
             App.stage.world.sdf_scene = core.sdfDrillWall();
+            const debris_on = std.c.getenv("QUINE_THUMB_DEBRIS") != null;
             // QUINE_THUMB_T=<seconds>: render the drill animation at a chosen time
-            // (seed the world clock so tick's advance keeps it there).
-            if (std.c.getenv("QUINE_THUMB_T")) |tv| {
-                const tsec = std.fmt.parseFloat(f64, std.mem.span(tv)) catch 0;
-                App.stage.world.time = tsec;
-                App.stage.world.sdf_scene.?.advance(tsec);
-            }
+            // (seed the world clock so tick's advance keeps it there). With debris
+            // on, default to a time where the bore is well established.
+            var tsec: f64 = if (debris_on) 2.5 else 0;
+            if (std.c.getenv("QUINE_THUMB_T")) |tv| tsec = std.fmt.parseFloat(f64, std.mem.span(tv)) catch tsec;
+            App.stage.world.time = tsec;
+            App.stage.world.sdf_scene.?.advance(tsec);
+            if (debris_on) setupDebrisThumb();
             return;
         }
         if (t.scene) |path| {
@@ -518,6 +520,8 @@ export fn frame() void {
         App.accumulator -= fixed_dt;
         ticks += 1;
     }
+    // Keep debris render transforms tracking their Jolt bodies (SDF drill demo).
+    if (debris_pieces.len > 0) scene_runtime.debris.syncRenderable(&App.stage.world, &App.stage.physics, debris_pieces);
 
     const w = sapp.widthf();
     const h = sapp.heightf();
@@ -711,6 +715,46 @@ const ThumbGeo = enum { sphere, fedora };
 const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain", scene: ?[*:0]const u8 = null };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
+
+/// Renderable debris chunks spawned for the SDF drill thumbnail (synced from
+/// their Jolt bodies each frame so they're drawn settling on the floor).
+var debris_pieces: []scene_runtime.debris.Piece = &.{};
+
+/// Set up the destructible-wall debris demo for the thumbnail: a floor, the
+/// drilled-out chunks as physics + mesh entities, then pre-step physics so they
+/// have settled by the time the frame is captured.
+fn setupDebrisThumb() void {
+    const a = std.heap.c_allocator;
+    App.renderer.draw_grid = false;
+    App.renderer.preview = false; // plain shading (no studio staging on the rubble)
+
+    // Floor: a static slab whose top sits just below the wall, plus a mesh for it.
+    const floor_col = m.Vec4{ .x = 0.16, .y = 0.17, .z = 0.20, .w = 1 };
+    _ = App.stage.physics.createBody(.{
+        .motion = .static,
+        .shape = .{ .box = .{ .half_extents = .{ 8, 0.5, 8 } } },
+        .position = .{ 0, -1.7, 0 }, // top at y = -1.2
+        .friction = 0.7,
+    }) catch {};
+    if (scene_runtime.debris.cubeMesh(a, .{ .x = 8, .y = 0.5, .z = 8 }, floor_col)) |fm| {
+        const fe = App.stage.world.spawn();
+        App.stage.world.set(core.Transform, fe, .{ .position = .{ .y = -1.7 } });
+        App.stage.world.set(core.MeshRef, fe, .{ .mesh = App.stage.world.meshes.add(fm) });
+        App.stage.world.set(core.Material, fe, .{ .base_color = floor_col });
+    } else |_| {}
+
+    // Debris from the cleared bricks.
+    const scene_ptr = &(App.stage.world.sdf_scene.?);
+    var cache = core.sdf_cache.build(a, scene_ptr, 0.08) catch return;
+    defer cache.deinit(a);
+    debris_pieces = scene_runtime.debris.spawnRenderable(a, a, &App.stage.world, &App.stage.physics, scene_ptr, &cache, .{}) catch &.{};
+
+    // Pre-settle: let the chunks fall and come to rest before the capture frames.
+    App.stage.physics.optimize();
+    var s: usize = 0;
+    while (s < 120) : (s += 1) App.stage.physics.step(@floatCast(fixed_dt)) catch {};
+    scene_runtime.debris.syncRenderable(&App.stage.world, &App.stage.physics, debris_pieces);
+}
 
 extern fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, fmt: c_uint, typ: c_uint, pixels: ?*anyopaque) void;
 extern fn glFinish() void;

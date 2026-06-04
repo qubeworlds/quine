@@ -135,6 +135,169 @@ pub fn spawnWallDebris(
 }
 
 // =============================================================================
+// Renderable debris: physics body + a visible mesh entity in the ECS world
+// =============================================================================
+
+/// A spawned debris chunk: its render entity (transform synced from physics) and
+/// its Jolt body.
+pub const Piece = struct {
+    entity: core.Entity,
+    body: phys.BodyId,
+};
+
+/// Like `spawnWallDebris`, but also gives each chunk a visible mesh in `world`
+/// (an ECS entity with Transform + MeshRef + Material) so it renders. The chunk
+/// is drawn as a box sized to its removed-material extent — cheap, and enough to
+/// read as rubble; the convex *physics* hull still uses the real points. Call
+/// `syncRenderable` each frame to copy body positions into the transforms.
+/// `mesh_alloc` owns the per-chunk vertex/index buffers (must outlive rendering).
+pub fn spawnRenderable(
+    mesh_alloc: std.mem.Allocator,
+    list_alloc: std.mem.Allocator,
+    world: *core.World,
+    physics: *phys.World,
+    scene: *const core.SdfScene,
+    cache: *const core.SdfCache,
+    opts: Options,
+) ![]Piece {
+    var wall = core.SdfScene{};
+    if (scene.len == 0) return list_alloc.alloc(Piece, 0);
+    wall.add(scene.nodes[0]);
+    const wall_center = scene.nodes[0].center;
+    const col = m.Vec4{ .x = 0.52, .y = 0.40, .z = 0.34, .w = 1 }; // wall brick colour
+
+    var pieces: std.ArrayList(Piece) = .empty;
+    errdefer pieces.deinit(list_alloc);
+    var pts: std.ArrayList([3]f32) = .empty;
+    defer pts.deinit(mesh_alloc);
+
+    const d = core.sdf_cache.brick_dim;
+    const voxel = cache.voxel;
+
+    var cz: u32 = 0;
+    while (cz < cache.dim[2]) : (cz += 1) {
+        var cy: u32 = 0;
+        while (cy < cache.dim[1]) : (cy += 1) {
+            var cx: u32 = 0;
+            while (cx < cache.dim[0]) : (cx += 1) {
+                if (pieces.items.len >= opts.max_bodies) break;
+                const ci = (@as(usize, cz) * cache.dim[1] + cy) * cache.dim[0] + cx;
+                if (cache.cell_index[ci] < 0) continue;
+                const cell_origin = Vec3{
+                    .x = cache.origin.x + @as(f32, @floatFromInt(cx)) * cache.cell_size,
+                    .y = cache.origin.y + @as(f32, @floatFromInt(cy)) * cache.cell_size,
+                    .z = cache.origin.z + @as(f32, @floatFromInt(cz)) * cache.cell_size,
+                };
+
+                pts.clearRetainingCapacity();
+                var sum = Vec3{};
+                var lo = Vec3.splat(std.math.inf(f32));
+                var hi = Vec3.splat(-std.math.inf(f32));
+                var k: u32 = 0;
+                while (k < d) : (k += 1) {
+                    var j: u32 = 0;
+                    while (j < d) : (j += 1) {
+                        var i: u32 = 0;
+                        while (i < d) : (i += 1) {
+                            const p = Vec3{
+                                .x = cell_origin.x + @as(f32, @floatFromInt(i)) * voxel,
+                                .y = cell_origin.y + @as(f32, @floatFromInt(j)) * voxel,
+                                .z = cell_origin.z + @as(f32, @floatFromInt(k)) * voxel,
+                            };
+                            if (wall.dist(p) < 0.0 and scene.dist(p) > 0.0) {
+                                try pts.append(mesh_alloc, .{ p.x, p.y, p.z });
+                                sum = sum.add(p);
+                                lo = .{ .x = @min(lo.x, p.x), .y = @min(lo.y, p.y), .z = @min(lo.z, p.z) };
+                                hi = .{ .x = @max(hi.x, p.x), .y = @max(hi.y, p.y), .z = @max(hi.z, p.z) };
+                            }
+                        }
+                    }
+                }
+                if (pts.items.len < opts.min_points) continue;
+
+                const n: f32 = @floatFromInt(pts.items.len);
+                const centroid = sum.scale(1.0 / n);
+                const half = Vec3{
+                    .x = @max((hi.x - lo.x) * 0.5, voxel),
+                    .y = @max((hi.y - lo.y) * 0.5, voxel),
+                    .z = @max((hi.z - lo.z) * 0.5, voxel),
+                };
+
+                // Physics hull: points relative to centroid.
+                const local = try mesh_alloc.alloc([3]f32, pts.items.len);
+                for (pts.items, local) |src, *dst| dst.* = .{ src[0] - centroid.x, src[1] - centroid.y, src[2] - centroid.z };
+                const id = physics.createBody(.{
+                    .motion = .dynamic,
+                    .shape = .{ .convex_hull = .{ .points = local } },
+                    .position = .{ centroid.x, centroid.y, centroid.z },
+                    .mass = opts.mass,
+                    .restitution = opts.restitution,
+                    .friction = opts.friction,
+                    .tag = opts.tag,
+                }) catch continue;
+                const out = centroid.sub(wall_center);
+                physics.setBodyVelocity(id, .{ out.x * 0.8, 0.6 * opts.throw_speed, opts.throw_speed });
+
+                // Render entity: a box of the chunk's extent at the centroid.
+                const mesh = try cubeMesh(mesh_alloc, half, col);
+                const ent = world.spawn();
+                world.set(core.Transform, ent, .{ .position = centroid });
+                world.set(core.MeshRef, ent, .{ .mesh = world.meshes.add(mesh) });
+                world.set(core.Material, ent, .{ .base_color = col });
+                try pieces.append(list_alloc, .{ .entity = ent, .body = id });
+            }
+        }
+    }
+    return pieces.toOwnedSlice(list_alloc);
+}
+
+/// Copy each debris body's current position into its render transform.
+pub fn syncRenderable(world: *core.World, physics: *phys.World, pieces: []const Piece) void {
+    for (pieces) |pc| {
+        if (world.get(core.Transform, pc.entity)) |t| {
+            const p = physics.bodyPosition(pc.body);
+            t.position = .{ .x = p[0], .y = p[1], .z = p[2] };
+        }
+    }
+}
+
+/// A flat-shaded axis-aligned box mesh (24 verts, 36 indices) of half-extent
+/// `half`, in body-local space. Used for debris chunks and the demo floor.
+pub fn cubeMesh(alloc: std.mem.Allocator, half: Vec3, color: m.Vec4) !core.MeshData {
+    const faces = [6]struct { n: Vec3, u: Vec3, v: Vec3 }{
+        .{ .n = .{ .x = 1 }, .u = .{ .z = 1 }, .v = .{ .y = 1 } },
+        .{ .n = .{ .x = -1 }, .u = .{ .z = -1 }, .v = .{ .y = 1 } },
+        .{ .n = .{ .y = 1 }, .u = .{ .x = 1 }, .v = .{ .z = 1 } },
+        .{ .n = .{ .y = -1 }, .u = .{ .x = 1 }, .v = .{ .z = -1 } },
+        .{ .n = .{ .z = 1 }, .u = .{ .x = -1 }, .v = .{ .y = 1 } },
+        .{ .n = .{ .z = -1 }, .u = .{ .x = 1 }, .v = .{ .y = 1 } },
+    };
+    const verts = try alloc.alloc(core.Vertex, 24);
+    const idx = try alloc.alloc(u32, 36);
+    for (faces, 0..) |f, fi| {
+        // Face centre on the box surface = n * (half along n).
+        const center = Vec3{ .x = f.n.x * half.x, .y = f.n.y * half.y, .z = f.n.z * half.z };
+        const ue = Vec3{ .x = f.u.x * half.x, .y = f.u.y * half.y, .z = f.u.z * half.z };
+        const ve = Vec3{ .x = f.v.x * half.x, .y = f.v.y * half.y, .z = f.v.z * half.z };
+        const base: u32 = @intCast(fi * 4);
+        const corners = [4]Vec3{
+            center.sub(ue).sub(ve),
+            center.add(ue).sub(ve),
+            center.add(ue).add(ve),
+            center.sub(ue).add(ve),
+        };
+        for (corners, 0..) |p, ci| verts[fi * 4 + ci] = .{ .position = p, .normal = f.n, .color = color };
+        idx[fi * 6 + 0] = base + 0;
+        idx[fi * 6 + 1] = base + 1;
+        idx[fi * 6 + 2] = base + 2;
+        idx[fi * 6 + 3] = base + 0;
+        idx[fi * 6 + 4] = base + 2;
+        idx[fi * 6 + 5] = base + 3;
+    }
+    return .{ .vertices = verts, .indices = idx };
+}
+
+// =============================================================================
 // Tests (link Jolt; use the C allocator like the other physics-backed tests)
 // =============================================================================
 
@@ -177,4 +340,36 @@ test "drill debris: cleared wall material spawns convex chunks that fall and set
         const v = physics.bodyVelocity(id);
         try std.testing.expect(@abs(v[1]) < 0.3); // settled vertically
     }
+}
+
+test "renderable debris: chunks get mesh entities whose transforms track physics" {
+    const alloc = std.heap.c_allocator;
+    var physics: phys.World = undefined;
+    try physics.init(alloc);
+    defer physics.deinit();
+    _ = try physics.createBody(.{
+        .motion = .static,
+        .shape = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } },
+        .position = .{ 0, -3, 0 },
+    });
+
+    var world = core.World{};
+    var scene = core.sdfDrillWall();
+    scene.advance(1.6);
+    var cache = try core.sdf_cache.build(alloc, &scene, 0.08);
+    defer cache.deinit(alloc);
+
+    const pieces = try spawnRenderable(alloc, alloc, &world, &physics, &scene, &cache, .{});
+    defer alloc.free(pieces);
+    try std.testing.expect(pieces.len > 0);
+
+    // Each piece has a drawable mesh.
+    for (pieces) |pc| try std.testing.expect(world.get(core.MeshRef, pc.entity) != null);
+
+    // Step and sync: the render transforms follow the bodies as they fall.
+    const y0 = world.get(core.Transform, pieces[0].entity).?.position.y;
+    for (0..200) |_| try physics.step(1.0 / 60.0);
+    syncRenderable(&world, &physics, pieces);
+    const y1 = world.get(core.Transform, pieces[0].entity).?.position.y;
+    try std.testing.expect(y1 < y0); // the chunk visibly fell
 }
