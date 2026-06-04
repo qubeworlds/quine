@@ -272,6 +272,24 @@ pub fn fedora(
     verts: []Vertex,
     indices: []u32,
 ) MeshData {
+    return fedoraOval(brim_radius, crown_radius, crown_height, 1.0, segments, color, verts, indices);
+}
+
+/// As `fedora`, but the cross-section is an ellipse: `depth_scale` stretches the
+/// Z (front-to-back) radius relative to the X (side-to-side) radius. A head is
+/// deeper than it is wide, so an oval crown (depth_scale ~1.3) hugs it — tight at
+/// the temples while still clearing the back of the skull, where a circle wide
+/// enough to clear the back would bulge at the sides.
+pub fn fedoraOval(
+    brim_radius: f32,
+    crown_radius: f32,
+    crown_height: f32,
+    depth_scale: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
     const seg_f = @as(f32, @floatFromInt(segments));
     const ring = segments + 1;
     var vi: usize = 0;
@@ -289,12 +307,16 @@ pub fn fedora(
         var s: u32 = 0;
         while (s <= segments) : (s += 1) {
             const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
-            verts[vi] = .{ .position = crownPoint(@cos(theta), @sin(theta), p, crown_radius, crown_height, dome), .normal = .{}, .color = color };
+            var cp = crownPoint(@cos(theta), @sin(theta), p, crown_radius, crown_height, dome);
+            cp.z *= depth_scale; // oval cross-section: deeper front-to-back than wide
+            verts[vi] = .{ .position = cp, .normal = .{}, .color = color };
             vi += 1;
         }
     }
     const apex: u32 = @intCast(vi);
-    verts[vi] = .{ .position = crownPoint(1.0, 0.0, crownProfile(1.0, crown_radius, crown_height), crown_radius, crown_height, 1.0), .normal = .{}, .color = color };
+    var apex_p = crownPoint(1.0, 0.0, crownProfile(1.0, crown_radius, crown_height), crown_radius, crown_height, 1.0);
+    apex_p.z *= depth_scale;
+    verts[vi] = .{ .position = apex_p, .normal = .{}, .color = color };
     vi += 1;
 
     i = 0;
@@ -328,7 +350,7 @@ pub fn fedora(
     s = 0;
     while (s <= segments) : (s += 1) {
         const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
-        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, 0, @sin(theta) * crown_radius), .normal = .{}, .color = color };
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, 0, @sin(theta) * crown_radius * depth_scale), .normal = .{}, .color = color };
         vi += 1;
     }
     const brim_outer: u32 = @intCast(vi);
@@ -338,7 +360,7 @@ pub fn fedora(
     while (s <= segments) : (s += 1) {
         const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
         const cx = @cos(theta);
-        verts[vi] = .{ .position = m.Vec3.init(cx * brim_radius, -snap * cx - droop, @sin(theta) * brim_radius), .normal = .{}, .color = color };
+        verts[vi] = .{ .position = m.Vec3.init(cx * brim_radius, -snap * cx - droop, @sin(theta) * brim_radius * depth_scale), .normal = .{}, .color = color };
         vi += 1;
     }
     s = 0;

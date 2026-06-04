@@ -638,7 +638,7 @@ pub const SceneRuntime = struct {
                 const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
                 const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
                 const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
-                const mesh = core.fedora(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.segments, color, verts, indices);
+                const mesh = core.fedoraOval(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.depth_scale, fed.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             else => {}, // builtin handled in core.loadScene; gltf next.

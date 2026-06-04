@@ -46,6 +46,7 @@ pub const uvSphere = assets.uvSphere;
 pub const sphereVertexCount = assets.sphereVertexCount;
 pub const sphereIndexCount = assets.sphereIndexCount;
 pub const fedora = assets.fedora;
+pub const fedoraOval = assets.fedoraOval;
 pub const fedoraVertexCount = assets.fedoraVertexCount;
 pub const fedoraIndexCount = assets.fedoraIndexCount;
 pub const nose = assets.nose;

@@ -40,6 +40,9 @@ pub const Geometry = union(enum) {
         crown_radius: f32 = 0.45,
         crown_height: f32 = 0.5,
         brim_radius: f32 = 0.75,
+        /// Z (front-to-back) radius as a multiple of the X radius. 1.0 = round;
+        /// >1 = an oval crown that hugs a head (deeper than it is wide).
+        depth_scale: f32 = 1.0,
         segments: u32 = 24,
         crown_fit: f32 = 1.05,
         brim_flare: f32 = 1.35,
@@ -324,6 +327,7 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("crownRadius")) |x| g.fedora.crown_radius = try asF32(x);
         if (o.get("crownHeight")) |x| g.fedora.crown_height = try asF32(x);
         if (o.get("brimRadius")) |x| g.fedora.brim_radius = try asF32(x);
+        if (o.get("depthScale")) |x| g.fedora.depth_scale = try asF32(x);
         if (o.get("segments")) |x| g.fedora.segments = try asU32(x);
         if (o.get("crownFit")) |x| g.fedora.crown_fit = try asF32(x);
         if (o.get("brimFlare")) |x| g.fedora.brim_flare = try asF32(x);
