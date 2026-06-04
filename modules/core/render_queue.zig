@@ -23,6 +23,7 @@ const Transform = components.Transform;
 const MeshRef = components.MeshRef;
 const Material = components.Material;
 const Camera = components.Camera;
+const SdfScene = @import("sdf_scene.zig").SdfScene;
 
 /// One thing to draw: a mesh, placed by a model matrix, shaded by a material.
 /// The material defaults to plain white (no entity Material component) so meshes
@@ -56,6 +57,9 @@ pub const RenderQueue = struct {
     fov_y: f32 = 1.047,
     near: f32 = 0.1,
     far: f32 = 100.0,
+    /// Optional SDF/CSG scene to raymarch this frame, borrowed from the world
+    /// (read-only). Null for pure-mesh frames.
+    sdf: ?*const SdfScene = null,
 
     pub fn slice(self: *const RenderQueue) []const DrawItem {
         return self.items[0..self.len];
@@ -70,6 +74,8 @@ pub const RenderQueue = struct {
 /// mutates the world.
 pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
     out.len = 0;
+    // Borrow the world's SDF scene (if any) for the render layer to raymarch.
+    out.sdf = if (cur.sdf_scene) |*s| s else null;
 
     // Camera: the first entity that has both a Camera and a Transform defines
     // the view matrix and the projection intrinsics. Absent a camera, an

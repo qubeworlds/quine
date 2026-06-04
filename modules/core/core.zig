@@ -77,6 +77,11 @@ pub const eye = @import("eye.zig");
 /// (a face as one blended skin rather than assembled primitives).
 pub const sdf = @import("sdf.zig");
 
+/// Deterministic SDF/CSG *scene* (raymarch + collision source). A fixed-capacity
+/// array of CSG nodes the render layer raymarches and the mesher polygonises.
+pub const SdfScene = @import("sdf_scene.zig").SdfScene;
+pub const SdfNode = @import("sdf_scene.zig").Node;
+
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
@@ -89,6 +94,7 @@ test {
     _ = @import("tick.zig");
     _ = @import("eye.zig");
     _ = @import("sdf.zig");
+    _ = @import("sdf_scene.zig");
     _ = @import("png.zig");
 }
 
@@ -146,6 +152,10 @@ pub const World = struct {
 
     /// CPU-side geometry, referenced from entities by `MeshRef` handles.
     meshes: MeshRegistry = .{},
+
+    /// Optional SDF/CSG scene the render layer raymarches (and the mesher will
+    /// polygonise for collision). Null for pure-mesh worlds.
+    sdf_scene: ?SdfScene = null,
 
     /// Create a world in its initial, deterministic state: a spinning triangle
     /// viewed by a camera pulled back along +Z.
@@ -212,6 +222,7 @@ pub const World = struct {
         systems.spin(self, dt);
         systems.squash(self, dt);
         systems.gaze(self, dt);
+        if (self.sdf_scene) |*s| s.advance(self.time);
     }
 };
 
