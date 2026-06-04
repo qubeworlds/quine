@@ -298,6 +298,156 @@ pub fn cubeMesh(alloc: std.mem.Allocator, half: Vec3, color: m.Vec4) !core.MeshD
 }
 
 // =============================================================================
+// Live streaming: spawn debris over time as the drill clears cells
+// =============================================================================
+
+/// Streams debris during play. A fixed coarse grid over the wall tracks which
+/// cells have already shattered; each `update` spawns chunks for cells that have
+/// *newly* cleared (their removed-material count crossed `min_points`), throttled
+/// to `max_per_update` so the rubble appears as the drill breaks through rather
+/// than all at once. Owns the spawned pieces; `sync` tracks their bodies.
+pub const Stream = struct {
+    origin: Vec3,
+    cell_size: f32,
+    voxel: f32,
+    dim: [3]u32,
+    shattered: []bool,
+    pieces: std.ArrayList(Piece) = .empty,
+    opts: Options = .{},
+
+    /// Grid spans the wall (scene node 0), padded a little. `voxel` sets both the
+    /// sampling resolution and the cell size (= (brick_dim-1)*voxel).
+    pub fn init(alloc: std.mem.Allocator, scene: *const core.SdfScene, voxel: f32, opts: Options) !Stream {
+        const cell_size = @as(f32, @floatFromInt(core.sdf_cache.brick_dim - 1)) * voxel;
+        const wb = core.sdf_scene.nodeAabb(scene.nodes[0]);
+        const pad = Vec3.splat(cell_size);
+        const lo = wb.min.sub(pad);
+        const hi = wb.max.add(pad);
+        const ext = hi.sub(lo);
+        const dim = [3]u32{
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.x / cell_size)))),
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.y / cell_size)))),
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.z / cell_size)))),
+        };
+        const shattered = try alloc.alloc(bool, @as(usize, dim[0]) * dim[1] * dim[2]);
+        @memset(shattered, false);
+        return .{ .origin = lo, .cell_size = cell_size, .voxel = voxel, .dim = dim, .shattered = shattered, .opts = opts };
+    }
+
+    pub fn deinit(self: *Stream, alloc: std.mem.Allocator) void {
+        alloc.free(self.shattered);
+        self.pieces.deinit(alloc);
+        self.* = undefined;
+    }
+
+    /// Spawn debris for newly-cleared cells (up to `max_per_update`). Returns how
+    /// many chunks spawned this call. `mesh_alloc` owns the chunk meshes/hulls and
+    /// the pieces list; it must outlive rendering.
+    pub fn update(
+        self: *Stream,
+        mesh_alloc: std.mem.Allocator,
+        world: *core.World,
+        physics: *phys.World,
+        scene: *const core.SdfScene,
+        max_per_update: usize,
+    ) !usize {
+        if (scene.len == 0) return 0;
+        var wall = core.SdfScene{};
+        wall.add(scene.nodes[0]);
+        const wall_center = scene.nodes[0].center;
+        const col = m.Vec4{ .x = 0.52, .y = 0.40, .z = 0.34, .w = 1 };
+        const d = core.sdf_cache.brick_dim;
+
+        var pts: std.ArrayList([3]f32) = .empty;
+        defer pts.deinit(mesh_alloc);
+
+        var spawned: usize = 0;
+        var cz: u32 = 0;
+        while (cz < self.dim[2]) : (cz += 1) {
+            var cy: u32 = 0;
+            while (cy < self.dim[1]) : (cy += 1) {
+                var cx: u32 = 0;
+                while (cx < self.dim[0]) : (cx += 1) {
+                    if (spawned >= max_per_update) return spawned;
+                    const ci = (@as(usize, cz) * self.dim[1] + cy) * self.dim[0] + cx;
+                    if (self.shattered[ci]) continue;
+
+                    const cell_origin = Vec3{
+                        .x = self.origin.x + @as(f32, @floatFromInt(cx)) * self.cell_size,
+                        .y = self.origin.y + @as(f32, @floatFromInt(cy)) * self.cell_size,
+                        .z = self.origin.z + @as(f32, @floatFromInt(cz)) * self.cell_size,
+                    };
+                    pts.clearRetainingCapacity();
+                    var sum = Vec3{};
+                    var lo = Vec3.splat(std.math.inf(f32));
+                    var hi = Vec3.splat(-std.math.inf(f32));
+                    var k: u32 = 0;
+                    while (k < d) : (k += 1) {
+                        var j: u32 = 0;
+                        while (j < d) : (j += 1) {
+                            var i: u32 = 0;
+                            while (i < d) : (i += 1) {
+                                const p = Vec3{
+                                    .x = cell_origin.x + @as(f32, @floatFromInt(i)) * self.voxel,
+                                    .y = cell_origin.y + @as(f32, @floatFromInt(j)) * self.voxel,
+                                    .z = cell_origin.z + @as(f32, @floatFromInt(k)) * self.voxel,
+                                };
+                                if (wall.dist(p) < 0.0 and scene.dist(p) > 0.0) {
+                                    try pts.append(mesh_alloc, .{ p.x, p.y, p.z });
+                                    sum = sum.add(p);
+                                    lo = .{ .x = @min(lo.x, p.x), .y = @min(lo.y, p.y), .z = @min(lo.z, p.z) };
+                                    hi = .{ .x = @max(hi.x, p.x), .y = @max(hi.y, p.y), .z = @max(hi.z, p.z) };
+                                }
+                            }
+                        }
+                    }
+                    if (pts.items.len < self.opts.min_points) continue; // not cleared yet
+
+                    const n: f32 = @floatFromInt(pts.items.len);
+                    const centroid = sum.scale(1.0 / n);
+                    const half = Vec3{
+                        .x = @max((hi.x - lo.x) * 0.5, self.voxel),
+                        .y = @max((hi.y - lo.y) * 0.5, self.voxel),
+                        .z = @max((hi.z - lo.z) * 0.5, self.voxel),
+                    };
+                    const local = try mesh_alloc.alloc([3]f32, pts.items.len);
+                    for (pts.items, local) |src, *dst| dst.* = .{ src[0] - centroid.x, src[1] - centroid.y, src[2] - centroid.z };
+                    const id = physics.createBody(.{
+                        .motion = .dynamic,
+                        .shape = .{ .convex_hull = .{ .points = local } },
+                        .position = .{ centroid.x, centroid.y, centroid.z },
+                        .mass = self.opts.mass,
+                        .restitution = self.opts.restitution,
+                        .friction = self.opts.friction,
+                        .tag = self.opts.tag,
+                    }) catch {
+                        self.shattered[ci] = true; // degenerate hull — don't retry
+                        continue;
+                    };
+                    const out = centroid.sub(wall_center);
+                    physics.setBodyVelocity(id, .{ out.x * 0.8, 0.6 * self.opts.throw_speed, self.opts.throw_speed });
+
+                    const mesh = try cubeMesh(mesh_alloc, half, col);
+                    const ent = world.spawn();
+                    world.set(core.Transform, ent, .{ .position = centroid });
+                    world.set(core.MeshRef, ent, .{ .mesh = world.meshes.add(mesh) });
+                    world.set(core.Material, ent, .{ .base_color = col });
+                    try self.pieces.append(mesh_alloc, .{ .entity = ent, .body = id });
+                    self.shattered[ci] = true;
+                    spawned += 1;
+                }
+            }
+        }
+        return spawned;
+    }
+
+    /// Track every spawned chunk's body position into its render transform.
+    pub fn sync(self: *Stream, world: *core.World, physics: *phys.World) void {
+        syncRenderable(world, physics, self.pieces.items);
+    }
+};
+
+// =============================================================================
 // Tests (link Jolt; use the C allocator like the other physics-backed tests)
 // =============================================================================
 
@@ -372,4 +522,43 @@ test "renderable debris: chunks get mesh entities whose transforms track physics
     syncRenderable(&world, &physics, pieces);
     const y1 = world.get(core.Transform, pieces[0].entity).?.position.y;
     try std.testing.expect(y1 < y0); // the chunk visibly fell
+}
+
+test "live stream: debris appear over time as the drill bores, then settle on the floor" {
+    const alloc = std.heap.c_allocator;
+    var physics: phys.World = undefined;
+    try physics.init(alloc);
+    defer physics.deinit();
+    _ = try physics.createBody(.{
+        .motion = .static,
+        .shape = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } },
+        .position = .{ 0, -3, 0 }, // floor top at y = -2
+    });
+
+    var world = core.World{};
+    world.sdf_scene = core.sdfDrillWall();
+
+    var stream = try Stream.init(alloc, &world.sdf_scene.?, 0.08, .{});
+    defer stream.deinit(alloc);
+
+    // Before the drill enters, nothing has been cleared → no debris.
+    world.tick(0.0);
+    _ = try stream.update(alloc, &world, &physics, &world.sdf_scene.?, 8);
+    try std.testing.expectEqual(@as(usize, 0), stream.pieces.items.len);
+
+    // Run the sim: the drill bores (world.tick advances the SDF), the stream
+    // spawns chunks as cells clear, physics drops them.
+    const dt: f32 = 1.0 / 60.0;
+    for (0..300) |_| {
+        world.tick(dt);
+        _ = try stream.update(alloc, &world, &physics, &world.sdf_scene.?, 2);
+        try physics.step(dt);
+    }
+    stream.sync(&world, &physics);
+
+    try std.testing.expect(stream.pieces.items.len > 0); // debris appeared during play
+    // Everything that spawned has fallen out of the wall toward the floor.
+    for (stream.pieces.items) |pc| {
+        try std.testing.expect(world.get(core.Transform, pc.entity).?.position.y < -1.0);
+    }
 }

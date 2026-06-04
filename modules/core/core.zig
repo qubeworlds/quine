@@ -79,8 +79,9 @@ pub const sdf = @import("sdf.zig");
 
 /// Deterministic SDF/CSG *scene* (raymarch + collision source). A fixed-capacity
 /// array of CSG nodes the render layer raymarches and the mesher polygonises.
-pub const SdfScene = @import("sdf_scene.zig").SdfScene;
-pub const SdfNode = @import("sdf_scene.zig").Node;
+pub const sdf_scene = @import("sdf_scene.zig");
+pub const SdfScene = sdf_scene.SdfScene;
+pub const SdfNode = sdf_scene.Node;
 /// Built-in SDF scenes for the raymarch path before scene-JSON plumbing lands:
 /// `sdfDemo` (a wall with a sphere fused on) and `sdfDrillWall` (the drill→wall
 /// validation scene as CSG geometry).
