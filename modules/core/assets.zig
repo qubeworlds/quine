@@ -380,6 +380,110 @@ pub fn fedoraOval(
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
 
+/// Build a fedora whose band conforms to a measured head contour: `radii[s]` is
+/// the head's silhouette radius at segment `s` (angle `s/len·2π`) around the
+/// contact ring. The crown rises from that exact contour and blends to a round
+/// dome at the top; the brim extends `brim_width` outward from the contour. This
+/// is the "soft felt adapts to the head" fit — it sits snug on any head shape
+/// (round, oval, or irregular), not just an ellipse. `segments = radii.len`;
+/// buffers are sized by `fedoraVertexCount`/`fedoraIndexCount(segments)`.
+pub fn fedoraContour(
+    radii: []const f32,
+    crown_height: f32,
+    brim_width: f32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const segments: u32 = @intCast(radii.len);
+    const seg_f = @as(f32, @floatFromInt(segments));
+    const ring = segments + 1;
+    var mean: f32 = 0;
+    for (radii) |r| mean += r;
+    mean /= seg_f;
+
+    var vi: usize = 0;
+    var ii: usize = 0;
+    const crown_base: u32 = @intCast(vi);
+    var i: u32 = 0;
+    while (i < FEDORA_RINGS) : (i += 1) {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(FEDORA_RINGS - 1)) * 0.94;
+        const p = crownProfile(t, 1.0, crown_height); // normalised radius (0..1) + height
+        const dome = smoothstep(0.5, 1.0, t); // blend the contour toward a round top
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const base = radii[s % segments];
+            const r = (base + (mean - base) * dome) * p.r;
+            const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+            verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * r, p.y, @sin(theta) * r), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+    const apex: u32 = @intCast(vi);
+    verts[vi] = .{ .position = m.Vec3.init(0, crown_height, 0), .normal = .{}, .color = color };
+    vi += 1;
+
+    i = 0;
+    while (i < FEDORA_RINGS - 1) : (i += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = crown_base + i * ring + s;
+            const b = a + ring;
+            indices[ii + 0] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = b;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b + 1;
+            indices[ii + 5] = b;
+            ii += 6;
+        }
+    }
+    const top_ring = crown_base + (FEDORA_RINGS - 1) * ring;
+    var s: u32 = 0;
+    while (s < segments) : (s += 1) {
+        indices[ii + 0] = top_ring + s;
+        indices[ii + 1] = top_ring + s + 1;
+        indices[ii + 2] = apex;
+        ii += 3;
+    }
+
+    // brim: inner ring on the contour at y=0, outer ring brim_width beyond it,
+    // with a snap/droop so it reads as a snap-brim hat rather than a flat disc.
+    const brim_inner: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const base = radii[s % segments];
+        const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * base, 0, @sin(theta) * base), .normal = .{}, .color = color };
+        vi += 1;
+    }
+    const brim_outer: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const base = radii[s % segments];
+        const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+        const cx = @cos(theta);
+        const out_r = base + brim_width;
+        verts[vi] = .{ .position = m.Vec3.init(cx * out_r, -brim_width * 0.45 * cx - brim_width * 0.08, @sin(theta) * out_r), .normal = .{}, .color = color };
+        vi += 1;
+    }
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const in0 = brim_inner + s;
+        const out0 = brim_outer + s;
+        indices[ii + 0] = in0;
+        indices[ii + 1] = out0;
+        indices[ii + 2] = in0 + 1;
+        indices[ii + 3] = in0 + 1;
+        indices[ii + 4] = out0;
+        indices[ii + 5] = out0 + 1;
+        ii += 6;
+    }
+
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
 // -----------------------------------------------------------------------------
 // Eye primitives — the building blocks the eye assembly composes. All
 // allocator-free with closed-form normals, oriented around +Z so they stack
