@@ -644,14 +644,19 @@ pub const SceneRuntime = struct {
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             .fedora => |fed| {
-                // Standalone fedora (no head to fit): build straight from the
-                // explicit dimensions. The worn case (fit_to_joint set) is sized
-                // from the head later in buildFedora.
+                // Standalone fedora (no head to fit): build the same snap-brim
+                // shape the worn hat uses (domed crown + drooping snap brim), just
+                // with uniform radii instead of a measured head contour. The worn
+                // case (fit_to_joint set) is sized from the head later in buildFedora.
                 if (fed.fit_to_joint != null) return;
                 const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
                 const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
                 const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
-                const mesh = core.fedoraOval(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.depth_scale, fed.segments, color, verts, indices);
+                const radii = try a.alloc(f32, fed.segments);
+                defer a.free(radii);
+                for (radii) |*r| r.* = fed.crown_radius;
+                const brim_width = @max(fed.brim_radius - fed.crown_radius, 0.0);
+                const mesh = core.fedoraContour(radii, fed.crown_height, brim_width, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             else => {}, // builtin handled in core.loadScene; gltf next.

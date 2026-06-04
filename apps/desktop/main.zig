@@ -742,12 +742,12 @@ fn thumbSceneJson(t: ThumbCfg) []const u8 {
             \\] }}
         , .{mat}) catch "",
         // Fedora: wider than tall, so frame it from a bit further out and lower the
-        // orbit target onto the crown; a slightly raised pitch shows the dent.
+        // orbit target onto the crown; a slightly raised pitch shows the snap brim.
         .fedora => std.fmt.allocPrint(a,
             \\{{ "schemaVersion":1, "name":"thumb", "entities":[
-            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.72,"brimRadius":1.15,"segments":96}}, {s} }},
+            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.5,"brimRadius":1.25,"segments":96}}, {s} }},
             \\ {{ "name":"camera", "transform":{{"position":[1.6,1.1,2.6]}},
-            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.35,0],"distance":2.9,"yaw":0.6,"pitch":0.34}}}} }}
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.12,0],"distance":2.7,"yaw":0.6,"pitch":0.30}}}} }}
             \\] }}
         , .{mat}) catch "",
     };
