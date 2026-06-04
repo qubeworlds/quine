@@ -109,7 +109,9 @@ pub const SceneRuntime = struct {
                 if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
                 var pose = try core.Pose.init(a, bnd.model.?.skeleton.nodes.len);
                 pose.sample(&bnd.model.?.skeleton, null, 0); // bind pose
-                bnd.head_joint = topmostJoint(&bnd.model.?.skeleton, &pose);
+                // Prefer the rig's named Head joint (RPM/VRM); fall back to the
+                // topmost joint for rigs without node names (e.g. CesiumMan).
+                bnd.head_joint = bnd.model.?.skeleton.findNode("Head") orelse topmostJoint(&bnd.model.?.skeleton, &pose);
                 bnd.head_bind_inv = rotationBasis(pose.global[bnd.head_joint]).affineInverse();
                 bnd.pose = pose;
                 if (e.animation) |an| {
@@ -219,27 +221,38 @@ pub const SceneRuntime = struct {
         const head_node = parent.head_joint;
         const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
 
-        const bounds = core.measureJointBounds(model, pose, head_node);
-        if (bounds.count == 0) return; // can't size it; leave bare
+        // Measure the head's actual contour at the contact ring and build a hat
+        // that conforms to it — soft felt that adapts to any head shape (round,
+        // oval, irregular), not just an ellipse. `seat_lift` lifts the band above
+        // the ears; a few % clearance keeps the band off the skin.
+        const segs = @min(fed.segments, 64);
+        var radii_buf: [64]f32 = undefined;
+        const radii = radii_buf[0..segs];
+        const hc = core.measureHeadContour(model, pose, head_node, 0.62, 0.1, radii);
+        if (!hc.ok) return; // can't size it; leave bare
 
-        // Sizing in world metres, exactly as measureHead derives it.
-        const head_radius_w = bounds.radius_xz * scale;
-        const half_height = (bounds.top - bounds.bottom) * 0.5;
-        const brim_y = bounds.centroid.y - fed.seat_drop_fraction * half_height; // model space
-        const crown_radius = head_radius_w * fed.crown_fit;
-        const crown_height = (bounds.top - brim_y) * scale + fed.top_clearance;
-        const brim_radius = crown_radius * fed.brim_flare;
+        var mean: f32 = 0;
+        for (radii) |*r| {
+            r.* *= scale * fed.crown_fit; // world metres + a little clearance
+            mean += r.*;
+        }
+        mean /= @floatFromInt(segs);
+        const crown_height = (hc.top - hc.seat_y) * scale + fed.top_clearance;
+        const brim_width = mean * (fed.brim_flare - 1.0);
 
         const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
-        const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
-        const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
-        const mesh = core.fedora(brim_radius, crown_radius, crown_height, fed.segments, color, verts, indices);
+        const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(segs));
+        const indices = try a.alloc(u32, core.fedoraIndexCount(segs));
+        const mesh = core.fedoraContour(radii, crown_height, brim_width, color, verts, indices);
         self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
 
-        // Seat the hat above the head joint (world Y), added to its parent offset
-        // so the per-tick parenting carries it along.
-        const joint_y = pose.global[head_node].m[13];
-        b.parent_offset[1] += (brim_y - joint_y) * scale;
+        // Seat the hat at the contour centre (the ring centre is offset forward of
+        // the head joint by the face), added to the parent offset so the per-tick
+        // parenting carries it along.
+        const joint = pose.global[head_node];
+        b.parent_offset[0] += (hc.center.x - joint.m[12]) * scale;
+        b.parent_offset[1] += (hc.seat_y - joint.m[13]) * scale;
+        b.parent_offset[2] += (hc.center.z - joint.m[14]) * scale;
     }
 
     /// Expand a fitted `eyes` entity into its concrete parts. Sizes the eyeball
