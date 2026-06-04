@@ -92,6 +92,11 @@ pub const sdfDrillWall = @import("sdf_scene.zig").drillWall;
 pub const sdf_cache = @import("sdf_cache.zig");
 pub const SdfCache = sdf_cache.Cache;
 
+/// Marching-cubes polygoniser — SDF region / cached brick → triangle mesh for
+/// Jolt collision (the per-brick debris chunks).
+pub const marching_cubes = @import("marching_cubes.zig");
+pub const MarchMesh = marching_cubes.Mesh;
+
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
 pub const extract = render_queue.extract;
@@ -106,6 +111,7 @@ test {
     _ = @import("sdf.zig");
     _ = @import("sdf_scene.zig");
     _ = @import("sdf_cache.zig");
+    _ = @import("marching_cubes.zig");
     _ = @import("png.zig");
 }
 
