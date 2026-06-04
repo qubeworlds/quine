@@ -74,6 +74,10 @@ pub const Motion = enum { static, dynamic, kinematic };
 pub const Shape = union(enum) {
     box: struct { half_extents: [3]f32 },
     sphere: struct { radius: f32 },
+    /// Convex hull of a point cloud (positions relative to the body origin). The
+    /// shape for dynamic debris — Jolt mesh shapes are static-only, so a drilled-
+    /// out chunk becomes the convex hull of its marching-cubes vertices.
+    convex_hull: struct { points: []const [3]f32 },
 };
 
 /// Everything needed to stand up one body — the physics half of a scene
@@ -215,6 +219,11 @@ pub const World = struct {
             },
             .sphere => |sp| blk: {
                 const s = try jolt.SphereShapeSettings.create(sp.radius);
+                defer s.asShapeSettings().release();
+                break :blk try s.asShapeSettings().createShape();
+            },
+            .convex_hull => |ch| blk: {
+                const s = try jolt.ConvexHullShapeSettings.create(ch.points.ptr, @intCast(ch.points.len), @sizeOf([3]f32));
                 defer s.asShapeSettings().release();
                 break :blk try s.asShapeSettings().createShape();
             },
@@ -368,6 +377,37 @@ test "jolt: a sphere falls under gravity and rests on the ground" {
     const end_y = w.bodyPosition(ball)[1];
     try std.testing.expect(end_y < start_y); // it fell
     try std.testing.expectApproxEqAbs(radius, end_y, 0.05); // resting on the floor
+}
+
+test "jolt: a convex-hull debris chunk falls and settles on the ground" {
+    var w: World = undefined;
+    try w.init(std.heap.c_allocator);
+    defer w.deinit();
+
+    _ = try w.addGround(50, 1);
+    // The 8 corners of a 0.3³ cube — a stand-in for a drilled-out chunk's hull.
+    const h: f32 = 0.15;
+    const pts = [_][3]f32{
+        .{ -h, -h, -h }, .{ h, -h, -h }, .{ h, h, -h }, .{ -h, h, -h },
+        .{ -h, -h, h },  .{ h, -h, h },  .{ h, h, h },  .{ -h, h, h },
+    };
+    const chunk = try w.createBody(.{
+        .motion = .dynamic,
+        .shape = .{ .convex_hull = .{ .points = &pts } },
+        .position = .{ 0, 4, 0 },
+        .mass = 1.0,
+        .restitution = 0.1,
+        .friction = 0.6,
+    });
+    w.optimize();
+
+    const start_y = w.bodyPosition(chunk)[1];
+    for (0..400) |_| try w.step(1.0 / 60.0);
+
+    const end = w.bodyPosition(chunk);
+    try std.testing.expect(end[1] < start_y); // it fell
+    try std.testing.expect(end[1] > 0.0 and end[1] < 0.4); // came to rest on the floor
+    try std.testing.expect(@abs(w.bodyVelocity(chunk)[1]) < 0.1); // settled (not still falling)
 }
 
 test "jolt: ball dropped on a head collides (impact reported), then falls off to the floor" {

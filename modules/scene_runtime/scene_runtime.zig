@@ -22,6 +22,14 @@ const core = @import("core");
 const phys = @import("physics");
 const m = @import("math");
 
+/// Destructible-wall debris: cleared SDF material → falling Jolt bodies. Lives
+/// here because it bridges `core` (the SDF + cache) and `physics` (Jolt).
+pub const debris = @import("debris.zig");
+
+test {
+    _ = @import("debris.zig");
+}
+
 /// A named asset the loader can resolve (e.g. a `.glb`'s bytes). The app supplies
 /// these from `@embedFile`; tests supply them inline.
 pub const Asset = struct { name: []const u8, bytes: []const u8 };
@@ -97,6 +105,7 @@ pub const SceneRuntime = struct {
                 bnd.radius = switch (spec.shape) {
                     .sphere => |s| s.radius,
                     .box => 0,
+                    .convex_hull => 0, // debris only; not produced from scene colliders
                 };
                 bnd.body = try self.physics.createBody(spec);
             }
