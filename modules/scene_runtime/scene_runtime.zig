@@ -109,7 +109,9 @@ pub const SceneRuntime = struct {
                 if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
                 var pose = try core.Pose.init(a, bnd.model.?.skeleton.nodes.len);
                 pose.sample(&bnd.model.?.skeleton, null, 0); // bind pose
-                bnd.head_joint = topmostJoint(&bnd.model.?.skeleton, &pose);
+                // Prefer the rig's named Head joint (RPM/VRM); fall back to the
+                // topmost joint for rigs without node names (e.g. CesiumMan).
+                bnd.head_joint = bnd.model.?.skeleton.findNode("Head") orelse topmostJoint(&bnd.model.?.skeleton, &pose);
                 bnd.head_bind_inv = rotationBasis(pose.global[bnd.head_joint]).affineInverse();
                 bnd.pose = pose;
                 if (e.animation) |an| {
@@ -135,7 +137,20 @@ pub const SceneRuntime = struct {
             });
             bindings[i] = bnd;
         }
-        self.bindings = bindings;
+        // Reserve binding slots for eye sub-entities: each fitted `eyes` entity
+        // expands into 2 eyes × 5 parts = 10 child draws, appended after the
+        // authored entities so the per-tick parenting step carries them along
+        // like any other joint-parented child.
+        var extra_bindings: usize = 0;
+        for (scene_data.entities) |e| {
+            if (e.geometry) |g| {
+                if (g == .eyes and g.eyes.fit_to_joint != null) extra_bindings += 10;
+                if (g == .face) extra_bindings += 16; // 10 eye parts + nose + 2 brows + 2 lips + fedora
+            }
+        }
+        const all = try a.alloc(Binding, bindings.len + extra_bindings);
+        @memcpy(all[0..bindings.len], bindings);
+        self.bindings = all[0..bindings.len];
 
         // Resolve parenting now that every binding exists. A joint reference
         // binds to the parent's head joint (the only joint we resolve by name
@@ -143,10 +158,10 @@ pub const SceneRuntime = struct {
         for (scene_data.entities, 0..) |e, i| {
             const p = e.parent orelse continue;
             const pi = findIndex(scene_data, p.entity) orelse continue;
-            bindings[i].parent_idx = pi;
-            bindings[i].parent_offset = p.offset;
-            if (p.joint != null and bindings[pi].pose != null) {
-                bindings[i].parent_joint = bindings[pi].head_joint;
+            self.bindings[i].parent_idx = pi;
+            self.bindings[i].parent_offset = p.offset;
+            if (p.joint != null and self.bindings[pi].pose != null) {
+                self.bindings[i].parent_joint = self.bindings[pi].head_joint;
             }
         }
 
@@ -157,7 +172,33 @@ pub const SceneRuntime = struct {
             const g = e.geometry orelse continue;
             if (g != .fedora) continue;
             if (g.fedora.fit_to_joint == null) continue; // standalone built in buildMesh
-            try self.buildFedora(a, &bindings[i], g.fedora);
+            try self.buildFedora(a, &self.bindings[i], g.fedora);
+        }
+
+        // eyes meshes: expand each fitted `eyes` entity into its five parts per
+        // eye, sized from the same head bounds, into the reserved binding tail.
+        var cursor = bindings.len;
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .eyes) continue;
+            if (g.eyes.fit_to_joint == null) continue;
+            try self.buildEyes(a, i, g.eyes, all, &cursor);
+        }
+        // face composites: a whole procedural face seated in one frame.
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .face) continue;
+            try self.buildFace(a, i, g.face, assets, all, &cursor);
+        }
+        self.bindings = all[0..cursor];
+
+        // nose meshes: built on their own entity (like the fedora), seated in the
+        // same facial frame as the eyes so the whole face lines up.
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .nose) continue;
+            if (g.nose.fit_to_joint == null) continue;
+            try self.buildNose(a, &self.bindings[i], g.nose);
         }
 
         self.physics.optimize();
@@ -180,27 +221,406 @@ pub const SceneRuntime = struct {
         const head_node = parent.head_joint;
         const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
 
-        const bounds = core.measureJointBounds(model, pose, head_node);
-        if (bounds.count == 0) return; // can't size it; leave bare
+        // Measure the head's actual contour at the contact ring and build a hat
+        // that conforms to it — soft felt that adapts to any head shape (round,
+        // oval, irregular), not just an ellipse. `seat_lift` lifts the band above
+        // the ears; a few % clearance keeps the band off the skin.
+        const segs = @min(fed.segments, 64);
+        var radii_buf: [64]f32 = undefined;
+        const radii = radii_buf[0..segs];
+        const hc = core.measureHeadContour(model, pose, head_node, 0.62, 0.1, radii);
+        if (!hc.ok) return; // can't size it; leave bare
 
-        // Sizing in world metres, exactly as measureHead derives it.
-        const head_radius_w = bounds.radius_xz * scale;
-        const half_height = (bounds.top - bounds.bottom) * 0.5;
-        const brim_y = bounds.centroid.y - fed.seat_drop_fraction * half_height; // model space
-        const crown_radius = head_radius_w * fed.crown_fit;
-        const crown_height = (bounds.top - brim_y) * scale + fed.top_clearance;
-        const brim_radius = crown_radius * fed.brim_flare;
+        var mean: f32 = 0;
+        for (radii) |*r| {
+            r.* *= scale * fed.crown_fit; // world metres + a little clearance
+            mean += r.*;
+        }
+        mean /= @floatFromInt(segs);
+        const crown_height = (hc.top - hc.seat_y) * scale + fed.top_clearance;
+        const brim_width = mean * (fed.brim_flare - 1.0);
 
         const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour comes from the Material uniform
-        const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
-        const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
-        const mesh = core.fedora(brim_radius, crown_radius, crown_height, fed.segments, color, verts, indices);
+        const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(segs));
+        const indices = try a.alloc(u32, core.fedoraIndexCount(segs));
+        const mesh = core.fedoraContour(radii, crown_height, brim_width, color, verts, indices);
         self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
 
-        // Seat the hat above the head joint (world Y), added to its parent offset
-        // so the per-tick parenting carries it along.
+        // Seat the hat at the contour centre (the ring centre is offset forward of
+        // the head joint by the face), added to the parent offset so the per-tick
+        // parenting carries it along.
+        const joint = pose.global[head_node];
+        b.parent_offset[0] += (hc.center.x - joint.m[12]) * scale;
+        b.parent_offset[1] += (hc.seat_y - joint.m[13]) * scale;
+        b.parent_offset[2] += (hc.center.z - joint.m[14]) * scale;
+    }
+
+    /// Expand a fitted `eyes` entity into its concrete parts. Sizes the eyeball
+    /// from the parent's head joint (like `buildFedora`), places a left and a
+    /// right eye on the face, and for each spawns the five parts (`core.eye`):
+    /// each gets its own mesh + `Material`, the gaze-driven parts get a `Gaze`
+    /// component, and every part is appended to `all` as a child of the head
+    /// joint so the parenting step carries it with the head each tick.
+    fn buildEyes(
+        self: *SceneRuntime,
+        a: std.mem.Allocator,
+        eyes_idx: usize,
+        ey: anytype,
+        all: []Binding,
+        cursor: *usize,
+    ) !void {
+        const anchor = &self.bindings[eyes_idx];
+        const pi = anchor.parent_idx orelse return;
+        const parent = &self.bindings[pi];
+        const pose = if (parent.pose) |*ps| ps else return;
+        const head_node = parent.head_joint;
+        const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
+
+        const bounds = core.measureJointBounds(if (parent.model) |*mdl| mdl else return, pose, head_node);
+        if (bounds.count == 0) return; // can't size them; leave bare
+
+        const head_radius_w = bounds.radius_xz * scale;
+        const eyeball_r = head_radius_w * ey.size_fraction;
+        if (eyeball_r <= 0) return;
+
+        // Eye-centre offset from the head joint, in world metres (rotated by the
+        // head's tilt each tick by the parenting step). The head joint sits at the
+        // neck / skull base — behind and below the face — so anchoring "forward"
+        // off it buries the eyeballs in the skull and only a sliver pokes through
+        // ("stuck in sockets"). Anchor on the head's vertex centroid (the real
+        // middle of the skull) first, THEN push +Z onto the face and ±X apart.
+        const joint_x = pose.global[head_node].m[12];
         const joint_y = pose.global[head_node].m[13];
-        b.parent_offset[1] += (brim_y - joint_y) * scale;
+        const joint_z = pose.global[head_node].m[14];
+        const base_x = (bounds.centroid.x - joint_x) * scale;
+        const base_y = (bounds.centroid.y - joint_y) * scale;
+        const base_z = (bounds.centroid.z - joint_z) * scale;
+        const lateral = 0.5 * ey.spacing_fraction * head_radius_w;
+        const forward = ey.forward_fraction * head_radius_w;
+        // Drop below the skull centroid onto the face — scaled by the HEAD
+        // radius (a fraction of the eyeball is far too small to move them off the
+        // forehead) so the eyes land at eye level, not the crown.
+        const off_y = base_y - ey.drop_fraction * head_radius_w;
+
+        const gaze_dir = m.Vec3.init(ey.gaze[0], ey.gaze[1], ey.gaze[2]);
+        const spec = core.eye.Spec{
+            .radius = eyeball_r,
+            .pupil_scale = ey.pupil_scale,
+            .sclera_color = vec4(ey.sclera_color),
+            .iris_color = vec4(ey.iris_color),
+            .segments = ey.segments,
+        };
+
+        const sides = [_]f32{ -1.0, 1.0 };
+        for (sides) |sx| {
+            const eye_off = [3]f32{ base_x + sx * lateral, off_y, base_z + forward };
+            for (core.eye.all_parts) |part| {
+                const g = core.eye.partGeom(spec, part);
+                const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
+                const indices = try a.alloc(u32, core.eye.partIndexCount(g));
+                const mesh = core.eye.buildPart(g, verts, indices);
+
+                const sub = self.world.spawn();
+                self.world.set(core.Transform, sub, .{});
+                self.world.set(core.MeshRef, sub, .{ .mesh = self.world.meshes.add(mesh) });
+                self.world.set(core.Material, sub, g.material);
+                if (g.gaze) self.world.set(core.Gaze, sub, .{ .target = gaze_dir, .dir = gaze_dir });
+
+                all[cursor.*] = .{
+                    .name = try std.fmt.allocPrint(a, "{s}.{s}.{s}", .{
+                        anchor.name,
+                        if (sx < 0) "L" else "R",
+                        @tagName(part),
+                    }),
+                    .entity = sub,
+                    .parent_idx = pi,
+                    .parent_joint = head_node,
+                    .parent_offset = eye_off,
+                };
+                cursor.* += 1;
+            }
+        }
+    }
+
+    /// Build the nose mesh on its own entity (like the fedora — one mesh, no
+    /// children), seated in the SAME facial frame the eyes use: anchored on the
+    /// skull centroid, bridge dropped to eye level, pushed forward onto the face.
+    /// So the nose sits centred on the bridge between the eyes.
+    fn buildNose(self: *SceneRuntime, a: std.mem.Allocator, b: *Binding, ny: anytype) !void {
+        const pi = b.parent_idx orelse return;
+        const parent = &self.bindings[pi];
+        const pose = if (parent.pose) |*ps| ps else return;
+        const head_node = parent.head_joint;
+        const scale = if (self.world.get(core.Transform, parent.entity)) |t| t.scale.x else 1.0;
+
+        const bounds = core.measureJointBounds(if (parent.model) |*mdl| mdl else return, pose, head_node);
+        if (bounds.count == 0) return;
+        const head_radius_w = bounds.radius_xz * scale;
+        if (head_radius_w <= 0) return;
+
+        const base_x = (bounds.centroid.x - pose.global[head_node].m[12]) * scale;
+        const base_y = (bounds.centroid.y - pose.global[head_node].m[13]) * scale;
+        const base_z = (bounds.centroid.z - pose.global[head_node].m[14]) * scale;
+
+        const verts = try a.alloc(core.Vertex, core.noseVertexCount(ny.rings, ny.segments));
+        const indices = try a.alloc(u32, core.noseIndexCount(ny.rings, ny.segments));
+        const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const mesh = core.nose(
+            ny.length_fraction * head_radius_w,
+            ny.width_fraction * head_radius_w,
+            ny.projection_fraction * head_radius_w,
+            ny.rings,
+            ny.segments,
+            white,
+            verts,
+            indices,
+        );
+        self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
+        self.world.set(core.Material, b.entity, .{ .base_color = vec4(ny.color), .roughness = 0.5 });
+
+        // Seat the bridge at eye level (same drop as the eyes), on the face surface.
+        b.parent_offset = .{
+            base_x,
+            base_y - ny.bridge_drop_fraction * head_radius_w,
+            base_z + ny.forward_fraction * head_radius_w,
+        };
+    }
+
+    /// Spawn one face sub-part: a child entity carrying `mesh` + `material`,
+    /// parented (no joint) to the face entity at `offset`, with `scale` (lets
+    /// brows/lips be thin/wide spheres) and an optional `gaze` direction.
+    fn addFaceChild(
+        self: *SceneRuntime,
+        a: std.mem.Allocator,
+        all: []Binding,
+        cursor: *usize,
+        face_idx: usize,
+        mesh: core.MeshData,
+        material: core.Material,
+        offset: [3]f32,
+        scale: m.Vec3,
+        gaze: ?m.Vec3,
+    ) !void {
+        const sub = self.world.spawn();
+        self.world.set(core.Transform, sub, .{ .scale = scale });
+        self.world.set(core.MeshRef, sub, .{ .mesh = self.world.meshes.add(mesh) });
+        self.world.set(core.Material, sub, material);
+        if (gaze) |gd| self.world.set(core.Gaze, sub, .{ .target = gd, .dir = gd });
+        all[cursor.*] = .{
+            .name = try std.fmt.allocPrint(a, "{s}.part{d}", .{ self.bindings[face_idx].name, cursor.* }),
+            .entity = sub,
+            .parent_idx = face_idx,
+            .parent_offset = offset,
+        };
+        cursor.* += 1;
+    }
+
+    /// Build a whole procedural face on its entity: the oval head goes on the
+    /// face entity itself; the eyes, nose, eyebrows, lips and fedora become child
+    /// parts seated in the head-local frame (centre at origin, +Z forward, +Y up).
+    fn buildFace(self: *SceneRuntime, a: std.mem.Allocator, face_idx: usize, f: anytype, assets: []const Asset, all: []Binding, cursor: *usize) !void {
+        const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+        const ent = self.bindings[face_idx].entity;
+        const skin = core.Material{ .base_color = vec4(f.skin_color), .roughness = 0.6 };
+
+        // Resolve the sculpted head asset up front; if it's missing (e.g. the
+        // host hasn't provided it yet), fall back to the procedural oval head
+        // rather than failing the whole scene to a blank.
+        const head_bytes: ?[]const u8 = if (f.head_mesh) |s| resolve(assets, s) else null;
+        var R = f.head_radius;
+        const sculpted = head_bytes != null; // the mesh already has nose/brows/lips
+
+        // Placement in the head-local frame (+Y up, +Z forward). Defaults are the
+        // PROCEDURAL oval-head fractions; the sculpted branch overwrites them from
+        // real measurements of the mesh.
+        var eyeball_r = f.eye_size_fraction * R;
+        var eye_x = 0.5 * f.eye_spacing_fraction * R;
+        var eye_y = f.eye_level_fraction * R;
+        var eye_z = f.eye_forward_fraction * R;
+        var crown_y = f.head_height * 0.30;
+        const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
+
+        if (sculpted) {
+            var mesh = try core.loadGlbMesh(a, head_bytes.?); // static (unrigged) mesh
+            var lo = m.Vec3.init(1e9, 1e9, 1e9);
+            var hi = m.Vec3.init(-1e9, -1e9, -1e9);
+            for (mesh.vertices) |v| {
+                lo = m.Vec3.init(@min(lo.x, v.position.x), @min(lo.y, v.position.y), @min(lo.z, v.position.z));
+                hi = m.Vec3.init(@max(hi.x, v.position.x), @max(hi.y, v.position.y), @max(hi.z, v.position.z));
+            }
+            // A scan is a BUST — wide shoulders we must ignore. Measure the head
+            // from the upper, forward-facing region only: the face/cranium half-
+            // width, and the nose tip (most-forward upper vertex), from which the
+            // eye line sits just above.
+            var head_r_mesh: f32 = 1e-6;
+            var nose_y: f32 = 0;
+            var nose_z: f32 = -1e9;
+            for (mesh.vertices) |v| {
+                if (v.position.y > 0 and v.position.z > 0.25 * hi.z) {
+                    head_r_mesh = @max(head_r_mesh, @abs(v.position.x));
+                    if (v.position.z > nose_z) {
+                        nose_z = v.position.z;
+                        nose_y = v.position.y;
+                    }
+                }
+            }
+            const eye_y_mesh = nose_y + 0.40 * head_r_mesh;
+            var face_front_mesh: f32 = 0;
+            for (mesh.vertices) |v| {
+                if (@abs(v.position.y - eye_y_mesh) < 0.12 * (hi.y - lo.y) and @abs(v.position.x) < 0.5 * head_r_mesh) {
+                    face_front_mesh = @max(face_front_mesh, v.position.z);
+                }
+            }
+            // Scale so the measured head radius == headRadius, and centre on the
+            // eye line so the face sits at the origin (children place around it).
+            const s = f.head_radius / head_r_mesh;
+            for (@constCast(mesh.vertices)) |*v| {
+                v.position = m.Vec3.init(v.position.x * s, (v.position.y - eye_y_mesh) * s, v.position.z * s);
+            }
+
+            R = f.head_radius;
+            // Measure the eye SOCKET (mesh is scaled + centred on the eye line):
+            // the nose-bridge peak, then walk outward to find the socket's inner
+            // edge (where the surface leaves the bridge) and outer edge (where it
+            // drops to the temple). Centre + width + depth size and seat the eyes.
+            const band = 0.22 * R; // eye-line vertical window
+            var peak_z: f32 = 0;
+            for (mesh.vertices) |v| {
+                if (@abs(v.position.y) < band and @abs(v.position.x) < 0.12 * R) peak_z = @max(peak_z, v.position.z);
+            }
+            var inner_x: f32 = 0.30 * R; // fallbacks if the walk finds nothing
+            var outer_x: f32 = 0.85 * R;
+            {
+                const steps = 48;
+                var found_inner = false;
+                var k: i32 = 1;
+                while (k <= steps) : (k += 1) {
+                    const x = -1.3 * R * @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(steps));
+                    var zc: f32 = -1e9;
+                    for (mesh.vertices) |v| {
+                        if (@abs(v.position.y) < band and @abs(v.position.x - x) < 0.045 * R) zc = @max(zc, v.position.z);
+                    }
+                    if (zc < -1e8) continue;
+                    if (!found_inner) {
+                        if (zc < 0.92 * peak_z) {
+                            inner_x = -x;
+                            found_inner = true;
+                        }
+                    } else if (zc < 0.50 * peak_z) {
+                        outer_x = -x;
+                        break;
+                    }
+                }
+            }
+            eye_x = (inner_x + outer_x) * 0.5; // socket centre
+            eyeball_r = (outer_x - inner_x) * 0.30 * f.eye_size_fraction / 0.16; // fit the opening (size = fine-tune)
+            eye_y = f.eye_level_fraction * R;
+            // Depth at the socket centre, sink the ball so it sits IN the socket.
+            var depth_c: f32 = peak_z * 0.85;
+            for (mesh.vertices) |v| {
+                if (@abs(v.position.y - eye_y) < band and @abs(@abs(v.position.x) - eye_x) < 0.06 * R) depth_c = @max(depth_c, v.position.z);
+            }
+            eye_z = depth_c - eyeball_r * 1.0; // front ~ flush with the socket rim
+
+            // Carve the closed-lid eye region out of the head so the eyeballs show
+            // through OPEN sockets — the hole's rim occludes the eyeball's sides,
+            // so it reads as an eye in a socket instead of a sphere stuck on a lid.
+            if (f.eyes) {
+                const cl = m.Vec3.init(-eye_x, eye_y, depth_c);
+                const cr = m.Vec3.init(eye_x, eye_y, depth_c);
+                const cut_r = eyeball_r * 1.25; // hole frames the eye
+                var kept: std.ArrayList(u32) = .empty;
+                var ti: usize = 0;
+                while (ti + 2 < mesh.indices.len) : (ti += 3) {
+                    const p0 = mesh.vertices[mesh.indices[ti]].position;
+                    const p1 = mesh.vertices[mesh.indices[ti + 1]].position;
+                    const p2 = mesh.vertices[mesh.indices[ti + 2]].position;
+                    const cen = m.Vec3.init((p0.x + p1.x + p2.x) / 3.0, (p0.y + p1.y + p2.y) / 3.0, (p0.z + p1.z + p2.z) / 3.0);
+                    if (cen.sub(cl).length() < cut_r or cen.sub(cr).length() < cut_r) continue; // drop -> hole
+                    kept.appendSlice(a, &.{ mesh.indices[ti], mesh.indices[ti + 1], mesh.indices[ti + 2] }) catch {};
+                }
+                mesh.indices = kept.toOwnedSlice(a) catch mesh.indices;
+            }
+
+            self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            self.world.set(core.Material, ent, skin);
+
+            // Seat the hat brim a bit below the crown top so it sits ON the head.
+            crown_y = (hi.y - eye_y_mesh) * s - 0.42 * R;
+        } else {
+            const rings: u32 = f.segments;
+            const verts = try a.alloc(core.Vertex, core.headVertexCount(rings, f.segments));
+            const idx = try a.alloc(u32, core.headIndexCount(rings, f.segments));
+            const mesh = core.ovalHead(R, f.head_height, f.chin, rings, f.segments, white, verts, idx);
+            self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            self.world.set(core.Material, ent, skin);
+        }
+
+        // Eyes: the five parts per side, in the eye-local frame at each eye centre.
+        // Skipped when `eyes` is off (a sculpted head with its own eyes).
+        const spec = core.eye.Spec{
+            .radius = eyeball_r,
+            .pupil_scale = f.pupil_scale,
+            .sclera_color = vec4(f.sclera_color),
+            .iris_color = vec4(f.iris_color),
+            .segments = f.segments,
+        };
+        if (f.eyes) {
+            for ([_]f32{ -1, 1 }) |sx| {
+                for (core.eye.all_parts) |part| {
+                    const g = core.eye.partGeom(spec, part);
+                    const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
+                    const idx = try a.alloc(u32, core.eye.partIndexCount(g));
+                    const mesh = core.eye.buildPart(g, verts, idx);
+                    try self.addFaceChild(a, all, cursor, face_idx, mesh, g.material, .{ sx * eye_x, eye_y, eye_z }, m.Vec3.splat(1), if (g.gaze) gaze_dir else null);
+                }
+            }
+        }
+
+        // Nose / eyebrows / lips: only for the PROCEDURAL head — a sculpted head
+        // mesh already carries them, so we'd just double them up.
+        if (!sculpted) {
+            // Nose: bridge at eye level on the centreline, running down + forward.
+            {
+                const verts = try a.alloc(core.Vertex, core.noseVertexCount(10, f.segments));
+                const idx = try a.alloc(u32, core.noseIndexCount(10, f.segments));
+                const mesh = core.nose(f.nose_length_fraction * R, f.nose_width_fraction * R, f.nose_projection_fraction * R, 10, f.segments, white, verts, idx);
+                try self.addFaceChild(a, all, cursor, face_idx, mesh, skin, .{ 0, eye_y, eye_z }, m.Vec3.splat(1), null);
+            }
+
+            // Eyebrows: a thin, wide sphere (bar) just above each eye.
+            const brow_mat = core.Material{ .base_color = vec4(f.brow_color), .roughness = 0.7 };
+            for ([_]f32{ -1, 1 }) |sx| {
+                const verts = try a.alloc(core.Vertex, core.sphereVertexCount(8, 12));
+                const idx = try a.alloc(u32, core.sphereIndexCount(8, 12));
+                const mesh = core.uvSphere(eyeball_r, 8, 12, white, verts, idx);
+                try self.addFaceChild(a, all, cursor, face_idx, mesh, brow_mat, .{ sx * eye_x, eye_y + eyeball_r * 1.3, eye_z * 0.98 }, m.Vec3.init(1.7, 0.32, 0.5), null);
+            }
+
+            // Lips: two wide, flat spheres (upper + lower) below the nose.
+            const lip_mat = core.Material{ .base_color = vec4(f.lip_color), .roughness = 0.35 };
+            const lips_y = eye_y - (f.nose_length_fraction * R + 0.14 * R);
+            {
+                const up_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
+                const up_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
+                const upper = core.uvSphere(eyeball_r, 8, 14, white, up_v, up_i);
+                try self.addFaceChild(a, all, cursor, face_idx, upper, lip_mat, .{ 0, lips_y + 0.05 * R, eye_z * 0.95 }, m.Vec3.init(2.4, 0.5, 0.5), null);
+                const lo_v = try a.alloc(core.Vertex, core.sphereVertexCount(8, 14));
+                const lo_i = try a.alloc(u32, core.sphereIndexCount(8, 14));
+                const lower = core.uvSphere(eyeball_r, 8, 14, white, lo_v, lo_i);
+                try self.addFaceChild(a, all, cursor, face_idx, lower, lip_mat, .{ 0, lips_y - 0.04 * R, eye_z * 0.93 }, m.Vec3.init(2.6, 0.6, 0.5), null);
+            }
+        }
+
+        // Fedora instead of hair: sized to the head and seated at the measured
+        // crown (a head's hat brim is ~1.4× the head radius, not 1.7×).
+        if (f.fedora) {
+            const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(f.segments));
+            const idx = try a.alloc(u32, core.fedoraIndexCount(f.segments));
+            const mesh = core.fedora(R * 1.6, R * 1.12, R * 1.0, f.segments, white, verts, idx);
+            const hat = core.Material{ .base_color = vec4(f.fedora_color), .roughness = 0.5 };
+            try self.addFaceChild(a, all, cursor, face_idx, mesh, hat, .{ 0, crown_y, 0 }, m.Vec3.splat(1), null);
+        }
     }
 
     pub fn deinit(self: *SceneRuntime) void {
@@ -224,14 +644,19 @@ pub const SceneRuntime = struct {
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             .fedora => |fed| {
-                // Standalone fedora (no head to fit): build straight from the
-                // explicit dimensions. The worn case (fit_to_joint set) is sized
-                // from the head later in buildFedora.
+                // Standalone fedora (no head to fit): build the same snap-brim
+                // shape the worn hat uses (domed crown + drooping snap brim), just
+                // with uniform radii instead of a measured head contour. The worn
+                // case (fit_to_joint set) is sized from the head later in buildFedora.
                 if (fed.fit_to_joint != null) return;
                 const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
                 const verts = try a.alloc(core.Vertex, core.fedoraVertexCount(fed.segments));
                 const indices = try a.alloc(u32, core.fedoraIndexCount(fed.segments));
-                const mesh = core.fedora(fed.brim_radius, fed.crown_radius, fed.crown_height, fed.segments, color, verts, indices);
+                const radii = try a.alloc(f32, fed.segments);
+                defer a.free(radii);
+                for (radii) |*r| r.* = fed.crown_radius;
+                const brim_width = @max(fed.brim_radius - fed.crown_radius, 0.0);
+                const mesh = core.fedoraContour(radii, fed.crown_height, brim_width, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
             else => {}, // builtin handled in core.loadScene; gltf next.
@@ -293,11 +718,16 @@ pub const SceneRuntime = struct {
                     // Follow the joint's rotation *relative to its bind pose*, so a
                     // rigid child (the fedora) turns/nods with the head like the
                     // app's old hatModel — without inheriting the bind orientation.
-                    const delta = rotationBasis(pose.global[jn]).mul(parent.head_bind_inv);
-                    rot = eulerZYX(delta);
-                    // Rotate the seat offset by that delta too, so it shifts with
+                    const head_delta = rotationBasis(pose.global[jn]).mul(parent.head_bind_inv);
+                    // Gaze-driven parts (iris/pupil/cornea) swing within the socket:
+                    // compose their look rotation onto the head follow for orientation
+                    // only — the eye centre (offset) still tracks the head, not gaze.
+                    var orient = head_delta;
+                    if (self.world.get(core.Gaze, b.entity)) |gz| orient = head_delta.mul(rotZTo(gz.dir));
+                    rot = eulerZYX(orient);
+                    // Rotate the seat offset by the head delta too, so it shifts with
                     // the head's tilt (else the skull pokes through the crown).
-                    const off = delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
+                    const off = head_delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
                     target = .{
                         pt.position.x + jm[12] * pt.scale.x + off.x,
                         pt.position.y + jm[13] * pt.scale.y + off.y,
@@ -310,6 +740,11 @@ pub const SceneRuntime = struct {
                 target[0] += b.parent_offset[0];
                 target[1] += b.parent_offset[1];
                 target[2] += b.parent_offset[2];
+            }
+            // Standalone gaze (a face part with no head joint to compose with):
+            // orient it directly toward its eased look direction.
+            if (rot == null) {
+                if (self.world.get(core.Gaze, b.entity)) |gz| rot = eulerZYX(rotZTo(gz.dir));
             }
 
             if (b.body) |body| self.physics.moveTo(body, target, dt); // kinematic tracking
@@ -335,6 +770,16 @@ pub const SceneRuntime = struct {
             const body = b.body orelse continue;
             const p = self.physics.bodyPosition(body);
             if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(p[0], p[1], p[2]);
+        }
+
+        // 5. Bone-driven gaze: aim a rigged actor's `LeftEye`/`RightEye` bones
+        //    along its (eased, by the gaze system) Gaze direction, so the
+        //    bone-skinned eyeballs turn. The conformant-avatar path — a skill sets
+        //    the Gaze target (e.g. the heading to the ball), the eyes follow.
+        for (self.bindings) |*b| {
+            if (b.model) |*model| if (b.pose) |*pose| {
+                if (self.world.get(core.Gaze, b.entity)) |gz| aimEyeBones(model, pose, gz.dir);
+            };
         }
     }
 
@@ -400,6 +845,36 @@ fn rotationBasis(mat: m.Mat4) m.Mat4 {
         r.m[col * 4 + 2] = z * inv;
     }
     return r;
+}
+
+/// Rotate a model's `LeftEye`/`RightEye` bones to look along `dir` (x=yaw,
+/// y=pitch), about each eye's own centre — the bone-skinned eyeballs then turn.
+/// The rigged-avatar equivalent of the procedural `Gaze` system.
+fn aimEyeBones(model: *core.Model, pose: *core.Pose, dir: m.Vec3) void {
+    const yaw = std.math.clamp(dir.x, -1.0, 1.0) * 0.6;
+    const pitch = std.math.clamp(dir.y, -1.0, 1.0) * 0.5;
+    const rot = m.Mat4.rotationY(yaw).mul(m.Mat4.rotationX(pitch));
+    inline for (.{ "LeftEye", "RightEye" }) |name| {
+        if (model.skeleton.findNode(name)) |n| {
+            const g = pose.global[n];
+            const p = m.Vec3.init(g.m[12], g.m[13], g.m[14]);
+            pose.global[n] = m.Mat4.translation(p).mul(rot).mul(m.Mat4.translation(p.scale(-1))).mul(g);
+        }
+    }
+}
+
+/// The rotation that maps +Z (the gaze rest axis) onto `dir`. Used to swing the
+/// gaze-driven eye parts toward a look direction. Degenerate cases (already
+/// aligned, or pointing straight back) fall back cleanly.
+fn rotZTo(dir: m.Vec3) m.Mat4 {
+    const f = m.Vec3.init(0, 0, 1);
+    const d = dir.normalize();
+    const c = f.dot(d);
+    if (c > 0.99999) return m.Mat4.identity;
+    if (c < -0.99999) return m.Mat4.rotationY(std.math.pi);
+    const axis = f.cross(d).normalize();
+    const ang = std.math.acos(std.math.clamp(c, -1.0, 1.0));
+    return m.Quat.fromAxisAngle(axis, ang).toMat4();
 }
 
 /// Euler angles (radians, the Z-Y-X order `components.Transform.matrix` rebuilds)
@@ -704,6 +1179,211 @@ test "SceneRuntime sizes + seats a fedora from the head geometry" {
     // It rides the head: after a few ticks its Transform sits at head height.
     for (0..10) |_| try rt.update(1.0 / 60.0);
     try std.testing.expect(rt.world.get(core.Transform, fedora.entity).?.position.y > 1.0);
+}
+
+test "SceneRuntime expands a fitted eyes entity into its parts, sized from the head" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "e",
+        .entities = &.{
+            .{
+                .name = "dancer",
+                .transform = .{},
+                .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } },
+                .animation = .{},
+            },
+            .{
+                .name = "eyes",
+                .geometry = .{ .eyes = .{ .fit_to_joint = "head", .segments = 16 } },
+                .parent = .{ .entity = "dancer", .joint = "head" },
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    // Ten sub-entities (2 eyes × 5 parts), each named "eyes.<side>.<part>".
+    inline for (.{ "L", "R" }) |side| {
+        inline for (.{ "sclera", "iris", "cornea", "pupil", "tearline" }) |part| {
+            const b = rt.find("eyes." ++ side ++ "." ++ part) orelse return error.MissingPart;
+            // Every part drew a mesh and carries a material, parented to the head.
+            try std.testing.expect(rt.world.get(core.MeshRef, b.entity) != null);
+            try std.testing.expect(rt.world.get(core.Material, b.entity) != null);
+            try std.testing.expect(b.parent_idx != null and b.parent_joint != null);
+        }
+    }
+
+    // Only the iris/pupil/cornea gaze; the sclera/tear-line don't.
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.iris").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.pupil").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.cornea").?.entity) != null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.sclera").?.entity) == null);
+    try std.testing.expect(rt.world.get(core.Gaze, rt.find("eyes.L.tearline").?.entity) == null);
+
+    // The cornea is transparent (blended pass); the sclera is opaque.
+    try std.testing.expect(rt.world.get(core.Material, rt.find("eyes.L.cornea").?.entity).?.base_color.w < 1.0);
+    try std.testing.expectEqual(@as(f32, 1.0), rt.world.get(core.Material, rt.find("eyes.L.sclera").?.entity).?.base_color.w);
+
+    // Left and right sit on opposite sides of the skull centreline.
+    for (0..5) |_| try rt.update(1.0 / 60.0);
+    const lx = rt.world.get(core.Transform, rt.find("eyes.L.sclera").?.entity).?.position.x;
+    const rx = rt.world.get(core.Transform, rt.find("eyes.R.sclera").?.entity).?.position.x;
+    try std.testing.expect(lx < rx);
+    // They ride the head (roughly head height after a few ticks).
+    try std.testing.expect(rt.world.get(core.Transform, rt.find("eyes.L.sclera").?.entity).?.position.y > 1.0);
+}
+
+test "sculpted face is correctly proportioned: head ~ headRadius, eyes small + on the face" {
+    const head = @embedFile("head.glb");
+    const head_radius: f32 = 0.12;
+    const sc = core.scene.Scene{ .schema_version = 1, .name = "p", .entities = &.{
+        .{ .name = "face", .transform = .{ .position = .{ 0, 1, 0 } }, .geometry = .{ .face = .{ .head_mesh = "head.glb", .head_radius = head_radius } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "head.glb", .bytes = head }});
+    defer rt.deinit();
+    for (0..2) |_| try rt.update(1.0 / 60.0);
+
+    const face = rt.find("face").?;
+    var face_index: usize = 0;
+    for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
+        face_index = i;
+    };
+
+    // The head was measured (not the bust): its FACE region scales to ~headRadius.
+    const hm = rt.world.meshes.get(rt.world.get(core.MeshRef, face.entity).?.mesh);
+    var face_half_width: f32 = 0;
+    for (hm.vertices) |v| {
+        if (v.position.y > 0 and v.position.z > 0) face_half_width = @max(face_half_width, @abs(v.position.x));
+    }
+    try std.testing.expect(face_half_width > 0.08 and face_half_width < 0.18); // ≈ headRadius, NOT the ~0.27 shoulders
+
+    // Every gaze eyeball is SMALL (≤ ¼ headRadius — not the giant spheres bug) and
+    // sits ON the face: in front (+Z), near the eye line (|y| small), within width.
+    const face_pos = rt.world.get(core.Transform, face.entity).?.position;
+    var checked: usize = 0;
+    for (rt.bindings) |bnd| {
+        if (bnd.parent_idx != face_index) continue;
+        if (rt.world.get(core.Gaze, bnd.entity) == null) continue; // iris/cornea/pupil
+        const part = rt.world.meshes.get(rt.world.get(core.MeshRef, bnd.entity).?.mesh);
+        var rad: f32 = 0;
+        for (part.vertices) |v| rad = @max(rad, v.position.length());
+        try std.testing.expect(rad < 0.4 * head_radius); // socket-sized eye, not a beach ball
+        const p = rt.world.get(core.Transform, bnd.entity).?.position;
+        const rel = p.sub(face_pos);
+        try std.testing.expect(rel.z > 0); // on the front of the face
+        try std.testing.expect(@abs(rel.y) < head_radius); // near the eye line
+        try std.testing.expect(@abs(rel.x) < head_radius); // within the face width
+        checked += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 6), checked);
+}
+
+test "a face composite builds an oval head + its parts in one frame (no skeleton)" {
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "face",
+        .entities = &.{
+            .{ .name = "face", .transform = .{ .position = .{ 0, 1, 0 } }, .geometry = .{ .face = .{} } },
+            .{ .name = "camera", .camera = .{} },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{});
+    defer rt.deinit();
+
+    // The face entity carries the head mesh.
+    const face = rt.find("face").?;
+    try std.testing.expect(rt.world.get(core.MeshRef, face.entity) != null);
+    var face_index: usize = 0;
+    for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
+        face_index = i;
+    };
+    // It expanded into 16 child parts (10 eye parts + nose + 2 brows + 2 lips + fedora).
+    var children: usize = 0;
+    var gaze_parts: usize = 0;
+    var a_child: ?core.Entity = null;
+    for (rt.bindings) |bnd| {
+        if (bnd.parent_idx) |pi| if (pi == face_index) {
+            children += 1;
+            a_child = bnd.entity;
+            if (rt.world.get(core.Gaze, bnd.entity) != null) gaze_parts += 1;
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 16), children);
+    try std.testing.expectEqual(@as(usize, 6), gaze_parts); // iris+cornea+pupil per eye
+
+    // After a tick the parts sit near the face anchor (y≈1), riding it.
+    for (0..3) |_| try rt.update(1.0 / 60.0);
+    const cy = rt.world.get(core.Transform, a_child.?).?.position.y;
+    try std.testing.expect(cy > 0.5 and cy < 1.5); // anchored around the face at y=1
+}
+
+test "a face with a sculpted headMesh loads the head + eyes (no doubled nose/brows/lips)" {
+    const head = @embedFile("head.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "facemesh",
+        .entities = &.{
+            .{ .name = "face", .transform = .{ .position = .{ 0, 1, 0 } }, .geometry = .{ .face = .{ .head_mesh = "head.glb", .head_height = 0.32 } } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "head.glb", .bytes = head }});
+    defer rt.deinit();
+
+    // The face entity carries the sculpted head mesh (a real scan → many verts).
+    const face = rt.find("face").?;
+    const mref = rt.world.get(core.MeshRef, face.entity).?;
+    try std.testing.expect(rt.world.meshes.get(mref.mesh).vertices.len > 1000);
+    // (Proportions — head sized from the FACE not the bust, small eyes on the
+    // face — are asserted by the "correctly proportioned" test above.)
+
+    var face_index: usize = 0;
+    for (rt.bindings, 0..) |bnd, i| if (std.mem.eql(u8, bnd.name, "face")) {
+        face_index = i;
+    };
+    var children: usize = 0;
+    var gaze_parts: usize = 0;
+    for (rt.bindings) |bnd| {
+        if (bnd.parent_idx) |pi| if (pi == face_index) {
+            children += 1;
+            if (rt.world.get(core.Gaze, bnd.entity) != null) gaze_parts += 1;
+        };
+    }
+    // Sculpted head → 10 eye parts + fedora = 11 (NOT the 16 of the procedural face).
+    try std.testing.expectEqual(@as(usize, 11), children);
+    try std.testing.expectEqual(@as(usize, 6), gaze_parts);
+}
+
+test "gaze eases the eye toward a look target and swings the iris orientation" {
+    const glb = @embedFile("character.glb");
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "g",
+        .entities = &.{
+            .{ .name = "dancer", .transform = .{}, .geometry = .{ .gltf = .{ .source = "CesiumMan.glb", .height_meters = 1.75 } } },
+            .{ .name = "eyes", .geometry = .{ .eyes = .{ .fit_to_joint = "head", .segments = 12 } }, .parent = .{ .entity = "dancer", .joint = "head" } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "CesiumMan.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const iris = rt.find("eyes.L.iris").?.entity;
+    // Aim the gaze hard to one side; the system eases `dir` toward it (clamped).
+    rt.world.get(core.Gaze, iris).?.target = m.Vec3.init(1, 0, 0.2);
+    const before = rt.world.get(core.Transform, iris).?.rotation;
+    for (0..60) |_| try rt.update(1.0 / 60.0);
+    const after = rt.world.get(core.Transform, iris).?.rotation;
+    // The iris orientation changed (it swung toward the target), and the eased
+    // direction is no longer straight ahead.
+    try std.testing.expect(@abs(after.y - before.y) > 0.05);
+    const dir = rt.world.get(core.Gaze, iris).?.dir;
+    try std.testing.expect(dir.x > 0.1); // leaned toward +X
 }
 
 test "parity: the real keepie-uppie scene loads loadDancer's setup and runs deterministically" {

@@ -38,6 +38,9 @@ pub const Node = struct {
     scale: m.Vec3 = m.Vec3.splat(1),
     has_matrix: bool = false,
     matrix: m.Mat4 = m.Mat4.identity,
+    /// glTF node name (e.g. "LeftEye"), duped into the model's allocator. Empty
+    /// if unnamed. Lets callers find rig bones by name (eye bones, humanoid map).
+    name: []const u8 = "",
 };
 
 /// The skeleton: every node (for hierarchy), the skin's joint node indices, and
@@ -50,6 +53,15 @@ pub const Skeleton = struct {
     pub fn jointCount(self: Skeleton) usize {
         return self.joints.len;
     }
+
+    /// Node index of the first node named `name`, or null. For finding rig bones
+    /// by name (e.g. "LeftEye"/"RightEye" on a Ready-Player-Me-style avatar).
+    pub fn findNode(self: Skeleton, name: []const u8) ?u32 {
+        for (self.nodes, 0..) |n, i| {
+            if (std.mem.eql(u8, n.name, name)) return @intCast(i);
+        }
+        return null;
+    }
 };
 
 /// A loaded character: skinned mesh + skeleton + animation clips.
@@ -57,10 +69,15 @@ pub const Model = struct {
     mesh: assets.SkinnedMeshData,
     skeleton: Skeleton,
     clips: []Clip,
+    /// Base-colour atlas (the mesh's UVs index into it). Null when the source had
+    /// no texture; the render layer falls back to vertex colour.
+    base_color: ?assets.Texture = null,
 
     pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
         allocator.free(self.mesh.vertices);
         if (self.mesh.indices.len > 0) allocator.free(self.mesh.indices);
+        if (self.base_color) |*t| t.deinit(allocator);
+        for (self.skeleton.nodes) |n| if (n.name.len > 0) allocator.free(@constCast(n.name));
         allocator.free(self.skeleton.nodes);
         allocator.free(self.skeleton.joints);
         allocator.free(self.skeleton.inverse_bind);
@@ -159,6 +176,100 @@ pub fn measureJointBounds(model: *const Model, pose: *const Pose, joint_node: u3
         r2 = @max(r2, dx * dx + dz * dz);
     }
     return .{ .centroid = centroid, .radius_xz = @sqrt(r2), .top = top, .bottom = bottom, .count = count };
+}
+
+/// The head's silhouette at a hat's contact ring: the ring centre (X,Z axis),
+/// the seat height and the head top, in the posed world frame.
+pub const HeadContour = struct {
+    center: m.Vec3 = .{},
+    seat_y: f32 = 0,
+    top: f32 = 0,
+    ok: bool = false,
+};
+
+/// Measure the head's per-angle silhouette radius at a hat's contact ring, for a
+/// contour-fit accessory (`assets.fedoraContour`). Fills `radii_out[s]` with the
+/// max head radius in angular bin `s` (angle `s/len·2π` about the ring centre) in
+/// a band `seat_lift`·half-height above the head centroid. Empty bins are
+/// interpolated and the profile is lightly smoothed, so soft felt spans the ears
+/// and gaps instead of dipping into them. `radii_out.len` ≤ 64.
+pub fn measureHeadContour(model: *const Model, pose: *const Pose, head_node: u32, seat_lift: f32, band_frac: f32, radii_out: []f32) HeadContour {
+    var palette_idx: ?u32 = null;
+    for (model.skeleton.joints, 0..) |node, j| {
+        if (node == head_node) {
+            palette_idx = @intCast(j);
+            break;
+        }
+    }
+    const ji = palette_idx orelse return .{};
+
+    // Head extent (centroid + vertical span) to place the contact band.
+    var sum = m.Vec3{};
+    var top: f32 = -std.math.inf(f32);
+    var bottom: f32 = std.math.inf(f32);
+    var count: usize = 0;
+    for (model.mesh.vertices) |v| {
+        if (dominantJoint(v) != ji) continue;
+        const p = skinnedPosition(model, pose, v);
+        sum = sum.add(p);
+        top = @max(top, p.y);
+        bottom = @min(bottom, p.y);
+        count += 1;
+    }
+    if (count == 0) return .{};
+    const centroid = sum.scale(1.0 / @as(f32, @floatFromInt(count)));
+    // Seat the contact ring a fraction of the way from the head centroid up to
+    // the crown — the forehead/cranium, above the brows and ears, where a hat
+    // band actually rests (not down at the wide cheeks).
+    const seat_y = centroid.y + seat_lift * (top - centroid.y);
+    const band = band_frac * (top - bottom);
+
+    // Ring centre = mean (X,Z) of the head verts in the contact band.
+    var cx: f32 = 0;
+    var cz: f32 = 0;
+    var bc: usize = 0;
+    for (model.mesh.vertices) |v| {
+        if (dominantJoint(v) != ji) continue;
+        const p = skinnedPosition(model, pose, v);
+        if (@abs(p.y - seat_y) > band) continue;
+        cx += p.x;
+        cz += p.z;
+        bc += 1;
+    }
+    if (bc == 0) return .{};
+    cx /= @floatFromInt(bc);
+    cz /= @floatFromInt(bc);
+
+    // Max radius per angular bin around the centre.
+    const n = radii_out.len;
+    for (radii_out) |*r| r.* = 0;
+    const nf: f32 = @floatFromInt(n);
+    for (model.mesh.vertices) |v| {
+        if (dominantJoint(v) != ji) continue;
+        const p = skinnedPosition(model, pose, v);
+        if (@abs(p.y - seat_y) > band) continue;
+        const dx = p.x - cx;
+        const dz = p.z - cz;
+        var a = std.math.atan2(dz, dx);
+        if (a < 0) a += 2.0 * std.math.pi;
+        var b: usize = @intFromFloat(a / (2.0 * std.math.pi) * nf);
+        if (b >= n) b = n - 1;
+        radii_out[b] = @max(radii_out[b], @sqrt(dx * dx + dz * dz));
+    }
+    // Fill empty bins from circular neighbours.
+    for (0..n) |k| {
+        if (radii_out[k] > 0) continue;
+        const prev = radii_out[(k + n - 1) % n];
+        const next = radii_out[(k + 1) % n];
+        radii_out[k] = if (prev > 0 and next > 0) (prev + next) * 0.5 else @max(prev, next);
+    }
+    // Smooth (circular 3-tap, two passes) so the felt spans ears/dips.
+    var tmp: [64]f32 = undefined;
+    for (0..2) |_| {
+        for (0..n) |k| tmp[k] = (radii_out[(k + n - 1) % n] + 2 * radii_out[k] + radii_out[(k + 1) % n]) * 0.25;
+        @memcpy(radii_out[0..n], tmp[0..n]);
+    }
+    return .{ .center = m.Vec3.init(cx, seat_y, cz), .seat_y = seat_y, .top = top, .ok = true };
 }
 
 /// Total height (max−min skinned Y, in the posed model's Y-up world frame) of

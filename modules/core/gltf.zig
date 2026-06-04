@@ -13,6 +13,7 @@ const std = @import("std");
 const m = @import("math");
 const assets = @import("assets.zig");
 const anim = @import("anim.zig");
+const png = @import("png.zig");
 
 const glb_magic: u32 = 0x46546C67; // "glTF"
 const chunk_json: u32 = 0x4E4F534A; // "JSON"
@@ -148,9 +149,13 @@ fn extractSkinnedMesh(allocator: std.mem.Allocator, accessors: std.json.Array, b
     const nrm: ?View = if (attrs.get("NORMAL")) |v| accView(accessors, buffer_views, jint(v)) else null;
     const jnt = accView(accessors, buffer_views, jint(attrs.get("JOINTS_0").?));
     const wgt = accView(accessors, buffer_views, jint(attrs.get("WEIGHTS_0").?));
+    const tex: ?View = if (attrs.get("TEXCOORD_0")) |v| accView(accessors, buffer_views, jint(v)) else null;
     const ind = accView(accessors, buffer_views, jint(prim.get("indices").?));
 
-    const color = m.Vec4{ .x = 0.78, .y = 0.78, .z = 0.82, .w = 1 };
+    // When a base-colour texture is present the atlas supplies the surface
+    // colour, so start vertices white (× texture). Without UVs, keep the neutral
+    // grey that procedural/untextured skinned meshes render with.
+    const color = if (tex != null) m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 } else m.Vec4{ .x = 0.78, .y = 0.78, .z = 0.82, .w = 1 };
     const verts = try allocator.alloc(assets.SkinnedVertex, pos.count);
     errdefer allocator.free(verts);
     for (verts, 0..) |*v, i| {
@@ -161,10 +166,15 @@ fn extractSkinnedMesh(allocator: std.mem.Allocator, accessors: std.json.Array, b
             .color = color,
             .joints = .{ 0, 0, 0, 0 },
             .weights = .{ .x = 1, .y = 0, .z = 0, .w = 0 },
+            .uv = .{ 0, 0 },
         };
         if (nrm) |n| {
             const no = n.base + i * n.stride;
             v.normal = .{ .x = f32le(bin, no), .y = f32le(bin, no + 4), .z = f32le(bin, no + 8) };
+        }
+        if (tex) |t| {
+            const to = t.base + i * t.stride;
+            v.uv = .{ f32le(bin, to), f32le(bin, to + 4) };
         }
         // joint indices (u8 or u16) -> float
         const jo = jnt.base + i * jnt.stride;
@@ -217,6 +227,9 @@ pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
         .get("primitives").?.array.items[0].object;
     const mesh = try extractSkinnedMesh(allocator, accessors, buffer_views, bin, prim);
 
+    // --- base-colour atlas (optional): material -> baseColorTexture -> image ---
+    const base_color = extractBaseColor(allocator, root, buffer_views, bin, prim) catch null;
+
     // --- nodes + parent links ---
     const nodes_json = root.get("nodes").?.array;
     const nodes = try allocator.alloc(anim.Node, nodes_json.items.len);
@@ -231,6 +244,9 @@ pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
             if (nobj.get("rotation")) |r| node.rotation = .{ .x = jfloat(r.array.items[0]), .y = jfloat(r.array.items[1]), .z = jfloat(r.array.items[2]), .w = jfloat(r.array.items[3]) };
             if (nobj.get("scale")) |s| node.scale = .{ .x = jfloat(s.array.items[0]), .y = jfloat(s.array.items[1]), .z = jfloat(s.array.items[2]) };
         }
+        if (nobj.get("name")) |nm| if (nm == .string) {
+            node.name = try allocator.dupe(u8, nm.string);
+        };
         nodes[i] = node;
     }
     for (nodes_json.items, 0..) |nv, i| {
@@ -284,5 +300,26 @@ pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
         .mesh = mesh,
         .skeleton = .{ .nodes = nodes, .joints = joints, .inverse_bind = inverse_bind },
         .clips = clips,
+        .base_color = base_color,
     };
+}
+
+/// Decode the primitive's PBR base-colour texture from a glb's binary chunk, if
+/// it has one: `material.pbrMetallicRoughness.baseColorTexture` -> texture ->
+/// image -> bufferView -> PNG bytes. Returns null when any link is missing or
+/// the image isn't an embedded PNG (the only format the loader decodes).
+fn extractBaseColor(allocator: std.mem.Allocator, root: std.json.ObjectMap, buffer_views: std.json.Array, bin: []const u8, prim: std.json.ObjectMap) !?assets.Texture {
+    const mat_idx = jint(prim.get("material") orelse return null);
+    const materials = (root.get("materials") orelse return null).array;
+    const pbr = (materials.items[mat_idx].object.get("pbrMetallicRoughness") orelse return null).object;
+    const bct = (pbr.get("baseColorTexture") orelse return null).object;
+    const tex_idx = jint(bct.get("index").?);
+    const textures = (root.get("textures") orelse return null).array;
+    const img_idx = jint(textures.items[tex_idx].object.get("source") orelse return null);
+    const image = (root.get("images") orelse return null).array.items[img_idx].object;
+    const bv_idx = jint(image.get("bufferView") orelse return null); // glb: embedded, not a URI
+    const bv = buffer_views.items[bv_idx].object;
+    const off = jintOr(bv, "byteOffset", 0);
+    const len: usize = @intCast(bv.get("byteLength").?.integer);
+    return try png.decode(allocator, bin[off .. off + len]);
 }

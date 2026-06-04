@@ -58,11 +58,15 @@ const max_ticks_per_frame: u32 = 8;
 
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
-const character_glb = @embedFile("character.glb");
-// On web the scene + skill are *bundled* assets the host hands over at runtime
-// (and edits over the WebSocket) — not compiled in. Native embeds them so the
-// desktop app runs standalone.
 const is_web = builtin.os.tag == .emscripten;
+// Game assets belong to the game qube, not the engine (manifest.ts) — the goal
+// is to fetch them at runtime via `quine_provide_asset`. That externalization
+// regressed the web render (the runtime fetch wasn't landing before scene load),
+// so meshes are embedded again for now while that channel is verified with a
+// real browser snapshot. The channel + registry stay wired (provide overrides).
+const character_glb = @embedFile("character.glb");
+const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
+const rpm_glb = @embedFile("rpm.glb"); // Ready Player Me sample avatar (eye bones + blendshapes)
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -119,6 +123,13 @@ const App = struct {
     /// just the latest scene, so the transport has to be lossless and ordered.
     var msg_queue: std.ArrayListUnmanaged([]u8) = .empty;
 
+    /// Game asset bytes (meshes/textures) keyed by the name a scene references
+    /// (`gltf.source` / `face.headMesh`). The engine carries NO game content:
+    /// native seeds this from the bundled files at startup; web fills it at boot
+    /// via `quine_provide_asset` (the host fetches the qube's `game.assets[]` and
+    /// hands them over). The scene loader resolves names against this.
+    var assets: std.ArrayListUnmanaged(scene_runtime.Asset) = .empty;
+
     /// The engine's world tick: one per fixed simulation step (60 Hz). The shared
     /// clock a multiplayer sim is keyed on — messages carry the tick they belong
     /// to so a late/reordered one can be dropped instead of clobbering newer state.
@@ -144,6 +155,31 @@ export fn quine_enqueue(msg: [*:0]const u8) void {
     App.ws_msgs +%= 1;
 }
 
+/// Receive a named game asset (mesh/texture bytes the host fetched from the
+/// qube's `game.assets[]`) and register it for the scene loader — so the engine
+/// wasm ships no game content. Copies into engine-owned memory (the JS view is
+/// transient). Called from JS BEFORE the scene loads, e.g. in emscripten preRun:
+///   const p = Module._malloc(len); Module.HEAPU8.set(bytes, p);
+///   Module.ccall("quine_provide_asset", null, ["string","number","number"], [name, p, len]);
+///   Module._free(p);
+export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, len: usize) void {
+    const a = std.heap.c_allocator;
+    const name = a.dupe(u8, std.mem.span(name_ptr)) catch return;
+    const bytes = a.dupe(u8, data_ptr[0..len]) catch {
+        a.free(name);
+        return;
+    };
+    // Replace an existing entry with the same name, else append.
+    for (App.assets.items) |*entry| {
+        if (std.mem.eql(u8, entry.name, name)) {
+            entry.bytes = bytes;
+            a.free(name);
+            return;
+        }
+    }
+    App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
+}
+
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
 fn fedoraRed() f32 {
@@ -154,15 +190,33 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
+    // Seed the asset registry from the embedded game meshes. `QUINE_HEAD_FILE=
+    // <path>` instead provides head.glb through the *external* registry path
+    // (read a file at runtime, register it) — so the Linux engine can verify the
+    // externalized-asset flow end-to-end (everything but the browser's JS fetch),
+    // not just the embedded path.
+    App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
+    App.assets.append(std.heap.c_allocator, .{ .name = "rpm.glb", .bytes = rpm_glb }) catch {};
+    if (std.c.getenv("QUINE_HEAD_FILE")) |p| {
+        if (std.c.fopen(p, "rb")) |fp| {
+            const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch unreachable;
+            const n = std.c.fread(buf.ptr, 1, buf.len, fp);
+            _ = std.c.fclose(fp);
+            App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = buf[0..n] }) catch {};
+        }
+    } else {
+        App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = head_glb }) catch {};
+    }
     if (thumb_cfg) |t| {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
         App.renderer.preview = true; // studio backdrop + staging lights
-        // Dimples: spherical mapping for the material ball, surface/triplanar for
-        // the golf-ball fedora (opt-in via QUINE_THUMB_DIMPLE). When the material
-        // carries its own surface finish, let that drive it (don't override).
-        const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
-        App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+        if (t.scene == null) {
+            // Material-thumbnail dimples: spherical for the ball, triplanar for the
+            // golf-ball fedora (opt-in). A scene capture renders the scene as-is.
+            const has_surface = !std.mem.eql(u8, std.mem.span(t.surface), "plain");
+            App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
+        }
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
@@ -178,6 +232,25 @@ export fn init() void {
 /// from the scene's camera controller). On failure we leave an empty stage.
 fn loadScene() void {
     if (thumb_cfg) |t| {
+        if (t.scene) |path| {
+            // Headless single-frame capture of an arbitrary scene file (libc IO,
+            // matching captureThumb). Falls back to the material sphere on error.
+            if (std.c.fopen(path, "rb")) |fp| {
+                const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch {
+                    _ = std.c.fclose(fp);
+                    loadSceneFrom(thumbSceneJson(t));
+                    return;
+                };
+                const n = std.c.fread(buf.ptr, 1, buf.len, fp); // whole file (< buf)
+                _ = std.c.fclose(fp);
+                if (n > 0) {
+                    loadSceneFrom(buf[0..n]);
+                    return;
+                }
+            }
+            loadSceneFrom(thumbSceneJson(t));
+            return;
+        }
         loadSceneFrom(thumbSceneJson(t)); // a sphere with the requested material
         return;
     }
@@ -233,11 +306,14 @@ fn buildStage(json: []const u8) !void {
     defer arena.deinit();
     const scene_data = try core.parseScene(arena.allocator(), json);
 
-    try App.stage.init(alloc, scene_data, &.{.{ .name = "CesiumMan.glb", .bytes = character_glb }});
+    try App.stage.init(alloc, scene_data, App.assets.items);
 
     // Optional: a material-preview / asset scene has no skinned actor.
     App.dancer = App.stage.find("dancer");
-    if (App.dancer) |d| if (d.model) |*model| App.renderer.uploadSkinned(model.mesh);
+    if (App.dancer) |d| if (d.model) |*model| {
+        App.renderer.uploadSkinned(model.mesh);
+        App.renderer.uploadSkinnedTexture(model.base_color); // base-colour atlas (eyes, skin)
+    };
     for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
     App.camera = findCamera(&App.stage.world);
@@ -332,6 +408,23 @@ fn dispatchMessage(raw: []const u8) void {
             if (parseRgba(x)) |e| mat.emissive = .{ .x = e.x, .y = e.y, .z = e.z };
         }
         if (std.mem.eql(u8, nv.string, "fedora")) App.fedora_r = mat.base_color.x;
+    } else if (std.mem.eql(u8, tv.string, "gaze")) {
+        // Live, in-place eye direction: update one entity's Gaze target without
+        // rebuilding the world — the gaze system eases toward it and the eye
+        // bones follow each tick. This is the per-frame channel an animator (or a
+        // "look at the target" skill) drives, so eyes can move smoothly with no
+        // scene reload / mesh re-upload. Shape:
+        //   {type:"gaze", entity:"dancer", dir:[x,y,z]}  (head-local, +Z ahead)
+        const nv = v.object.get("entity") orelse return;
+        if (nv != .string) return;
+        const b = App.stage.find(nv.string) orelse return;
+        const d = parseRgba(v.object.get("dir") orelse return) orelse return;
+        const dir = m.Vec3{ .x = d.x, .y = d.y, .z = d.z };
+        if (App.stage.world.get(core.Gaze, b.entity)) |g| {
+            g.target = dir; // ease toward the new look point
+        } else {
+            App.stage.world.set(core.Gaze, b.entity, .{ .target = dir, .dir = dir });
+        }
     }
 }
 
@@ -465,7 +558,7 @@ export fn frame() void {
     var skinned: ?render.SkinnedScene = null;
     if (App.dancer) |d| if (d.model) |*model| if (d.pose) |*pose| {
         const jc = model.skeleton.jointCount();
-        pose.fillPalette(&model.skeleton, App.palette[0..jc]);
+        pose.fillPalette(&model.skeleton, App.palette[0..jc]); // eye-bone gaze applied in scene_runtime.update
         const tf = App.stage.world.get(core.Transform, d.entity).?.*;
         App.instance[0] = .{ .model = tf.matrix(), .bucket = 0 };
         skinned = .{ .instances = &App.instance, .palettes = &App.palette };
@@ -592,7 +685,7 @@ extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 // under Xvfb for a virtual display — so the material catalogue thumbnails are
 // generated server-side, no browser. (Uses libc via std.c to avoid std.Io.)
 const ThumbGeo = enum { sphere, fedora };
-const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain" };
+const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain", scene: ?[*:0]const u8 = null };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
 
@@ -627,6 +720,10 @@ fn readThumbEnv() void {
         },
         .dimple = std.c.getenv("QUINE_THUMB_DIMPLE") != null,
         .surface = std.c.getenv("QUINE_THUMB_SURFACE") orelse "plain",
+        // QUINE_THUMB_SCENE=<path>: render that scene file to the output instead
+        // of the material sphere — a headless single-frame capture of any scene
+        // (e.g. the procedural face), for offscreen review on Linux under Xvfb.
+        .scene = std.c.getenv("QUINE_THUMB_SCENE"),
     };
 }
 
@@ -645,12 +742,12 @@ fn thumbSceneJson(t: ThumbCfg) []const u8 {
             \\] }}
         , .{mat}) catch "",
         // Fedora: wider than tall, so frame it from a bit further out and lower the
-        // orbit target onto the crown; a slightly raised pitch shows the dent.
+        // orbit target onto the crown; a slightly raised pitch shows the snap brim.
         .fedora => std.fmt.allocPrint(a,
             \\{{ "schemaVersion":1, "name":"thumb", "entities":[
-            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.72,"brimRadius":1.15,"segments":96}}, {s} }},
+            \\ {{ "name":"hat", "geometry":{{"kind":"fedora","crownRadius":0.62,"crownHeight":0.5,"brimRadius":1.25,"segments":96}}, {s} }},
             \\ {{ "name":"camera", "transform":{{"position":[1.6,1.1,2.6]}},
-            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.35,0],"distance":2.9,"yaw":0.6,"pitch":0.34}}}} }}
+            \\    "camera":{{"controller":{{"kind":"orbit","target":[0,0.12,0],"distance":2.7,"yaw":0.6,"pitch":0.30}}}} }}
             \\] }}
         , .{mat}) catch "",
     };

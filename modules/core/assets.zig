@@ -27,11 +27,28 @@ pub const SkinnedVertex = extern struct {
     color: m.Vec4,
     joints: [4]f32,
     weights: m.Vec4,
+    /// Texture coordinate (UV) into a base-colour atlas. Defaults to (0,0) so
+    /// procedural skinned meshes that carry no UVs keep their vertex colour.
+    uv: [2]f32 = .{ 0, 0 },
 };
 
 pub const SkinnedMeshData = struct {
     vertices: []const SkinnedVertex,
     indices: []const u32 = &.{},
+};
+
+/// A decoded RGBA8 image (e.g. a glTF base-colour atlas). `pixels` is
+/// `width * height * 4` bytes, top row first, allocator-owned. CPU-side only —
+/// the render layer uploads it to a GPU texture.
+pub const Texture = struct {
+    width: u32,
+    height: u32,
+    pixels: []u8,
+
+    pub fn deinit(self: *Texture, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+        self.* = undefined;
+    }
 };
 
 /// Opaque handle to a mesh registered in a `MeshRegistry`. Render keys its GPU
@@ -255,6 +272,24 @@ pub fn fedora(
     verts: []Vertex,
     indices: []u32,
 ) MeshData {
+    return fedoraOval(brim_radius, crown_radius, crown_height, 1.0, segments, color, verts, indices);
+}
+
+/// As `fedora`, but the cross-section is an ellipse: `depth_scale` stretches the
+/// Z (front-to-back) radius relative to the X (side-to-side) radius. A head is
+/// deeper than it is wide, so an oval crown (depth_scale ~1.3) hugs it — tight at
+/// the temples while still clearing the back of the skull, where a circle wide
+/// enough to clear the back would bulge at the sides.
+pub fn fedoraOval(
+    brim_radius: f32,
+    crown_radius: f32,
+    crown_height: f32,
+    depth_scale: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
     const seg_f = @as(f32, @floatFromInt(segments));
     const ring = segments + 1;
     var vi: usize = 0;
@@ -272,12 +307,16 @@ pub fn fedora(
         var s: u32 = 0;
         while (s <= segments) : (s += 1) {
             const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
-            verts[vi] = .{ .position = crownPoint(@cos(theta), @sin(theta), p, crown_radius, crown_height, dome), .normal = .{}, .color = color };
+            var cp = crownPoint(@cos(theta), @sin(theta), p, crown_radius, crown_height, dome);
+            cp.z *= depth_scale; // oval cross-section: deeper front-to-back than wide
+            verts[vi] = .{ .position = cp, .normal = .{}, .color = color };
             vi += 1;
         }
     }
     const apex: u32 = @intCast(vi);
-    verts[vi] = .{ .position = crownPoint(1.0, 0.0, crownProfile(1.0, crown_radius, crown_height), crown_radius, crown_height, 1.0), .normal = .{}, .color = color };
+    var apex_p = crownPoint(1.0, 0.0, crownProfile(1.0, crown_radius, crown_height), crown_radius, crown_height, 1.0);
+    apex_p.z *= depth_scale;
+    verts[vi] = .{ .position = apex_p, .normal = .{}, .color = color };
     vi += 1;
 
     i = 0;
@@ -311,7 +350,7 @@ pub fn fedora(
     s = 0;
     while (s <= segments) : (s += 1) {
         const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
-        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, 0, @sin(theta) * crown_radius), .normal = .{}, .color = color };
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * crown_radius, 0, @sin(theta) * crown_radius * depth_scale), .normal = .{}, .color = color };
         vi += 1;
     }
     const brim_outer: u32 = @intCast(vi);
@@ -321,7 +360,7 @@ pub fn fedora(
     while (s <= segments) : (s += 1) {
         const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
         const cx = @cos(theta);
-        verts[vi] = .{ .position = m.Vec3.init(cx * brim_radius, -snap * cx - droop, @sin(theta) * brim_radius), .normal = .{}, .color = color };
+        verts[vi] = .{ .position = m.Vec3.init(cx * brim_radius, -snap * cx - droop, @sin(theta) * brim_radius * depth_scale), .normal = .{}, .color = color };
         vi += 1;
     }
     s = 0;
@@ -337,6 +376,391 @@ pub fn fedora(
         ii += 6;
     }
 
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+/// Build a fedora whose band conforms to a measured head contour: `radii[s]` is
+/// the head's silhouette radius at segment `s` (angle `s/len·2π`) around the
+/// contact ring. The crown rises from that exact contour and blends to a round
+/// dome at the top; the brim extends `brim_width` outward from the contour. This
+/// is the "soft felt adapts to the head" fit — it sits snug on any head shape
+/// (round, oval, or irregular), not just an ellipse. `segments = radii.len`;
+/// buffers are sized by `fedoraVertexCount`/`fedoraIndexCount(segments)`.
+pub fn fedoraContour(
+    radii: []const f32,
+    crown_height: f32,
+    brim_width: f32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const segments: u32 = @intCast(radii.len);
+    const seg_f = @as(f32, @floatFromInt(segments));
+    const ring = segments + 1;
+    var mean: f32 = 0;
+    for (radii) |r| mean += r;
+    mean /= seg_f;
+
+    var vi: usize = 0;
+    var ii: usize = 0;
+    const crown_base: u32 = @intCast(vi);
+    var i: u32 = 0;
+    while (i < FEDORA_RINGS) : (i += 1) {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(FEDORA_RINGS - 1)) * 0.94;
+        const p = crownProfile(t, 1.0, crown_height); // normalised radius (0..1) + height
+        const dome = smoothstep(0.5, 1.0, t); // blend the contour toward a round top
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const base = radii[s % segments];
+            const r = (base + (mean - base) * dome) * p.r;
+            const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+            verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * r, p.y, @sin(theta) * r), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+    const apex: u32 = @intCast(vi);
+    verts[vi] = .{ .position = m.Vec3.init(0, crown_height, 0), .normal = .{}, .color = color };
+    vi += 1;
+
+    i = 0;
+    while (i < FEDORA_RINGS - 1) : (i += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = crown_base + i * ring + s;
+            const b = a + ring;
+            indices[ii + 0] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = b;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b + 1;
+            indices[ii + 5] = b;
+            ii += 6;
+        }
+    }
+    const top_ring = crown_base + (FEDORA_RINGS - 1) * ring;
+    var s: u32 = 0;
+    while (s < segments) : (s += 1) {
+        indices[ii + 0] = top_ring + s;
+        indices[ii + 1] = top_ring + s + 1;
+        indices[ii + 2] = apex;
+        ii += 3;
+    }
+
+    // brim: inner ring on the contour at y=0, outer ring brim_width beyond it,
+    // with a snap/droop so it reads as a snap-brim hat rather than a flat disc.
+    const brim_inner: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const base = radii[s % segments];
+        const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+        verts[vi] = .{ .position = m.Vec3.init(@cos(theta) * base, 0, @sin(theta) * base), .normal = .{}, .color = color };
+        vi += 1;
+    }
+    const brim_outer: u32 = @intCast(vi);
+    s = 0;
+    while (s <= segments) : (s += 1) {
+        const base = radii[s % segments];
+        const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+        const cx = @cos(theta);
+        const out_r = base + brim_width;
+        verts[vi] = .{ .position = m.Vec3.init(cx * out_r, -brim_width * 0.45 * cx - brim_width * 0.08, @sin(theta) * out_r), .normal = .{}, .color = color };
+        vi += 1;
+    }
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const in0 = brim_inner + s;
+        const out0 = brim_outer + s;
+        indices[ii + 0] = in0;
+        indices[ii + 1] = out0;
+        indices[ii + 2] = in0 + 1;
+        indices[ii + 3] = in0 + 1;
+        indices[ii + 4] = out0;
+        indices[ii + 5] = out0 + 1;
+        ii += 6;
+    }
+
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+// -----------------------------------------------------------------------------
+// Eye primitives — the building blocks the eye assembly composes. All
+// allocator-free with closed-form normals, oriented around +Z so they stack
+// along a gaze axis: a spherical cap (iris bulge / cornea), a flat disk
+// (pupil), and a flat ring/annulus (the wet tear-line rim).
+// -----------------------------------------------------------------------------
+
+pub fn capVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn capIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// A spherical cap (dome) of sphere `radius`, swept from the +Z pole out to
+/// polar angle `arc` (radians): the apex sits at +Z·radius, the rim is the
+/// circle at θ=arc. Normals are the outward sphere directions (closed-form).
+/// `rings` latitude bands by `segments` longitude slices; buffers must hold at
+/// least cap{Vertex,Index}Count entries. Returns a `MeshData` of the prefixes.
+pub fn sphericalCap(
+    radius: f32,
+    arc: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const theta = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)) * arc;
+        const ring_r = @sin(theta);
+        const z = @cos(theta);
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+            const n = m.Vec3.init(ring_r * @cos(phi), ring_r * @sin(phi), z);
+            verts[vi] = .{ .position = n.scale(radius), .normal = n, .color = color };
+            vi += 1;
+        }
+    }
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = r * stride + s; // this ring
+            const b = a + stride; // next ring (further from the pole)
+            indices[ii + 0] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = b;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b + 1;
+            indices[ii + 5] = b;
+            ii += 6;
+        }
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+pub fn diskVertexCount(segments: u32) usize {
+    return segments + 2; // centre + (segments+1) rim (seam vertex duplicated)
+}
+pub fn diskIndexCount(segments: u32) usize {
+    return segments * 3;
+}
+
+/// A flat disk of `radius` in the z=0 plane facing +Z (constant normal): a
+/// triangle fan from a centre vertex. Used for the pupil. Buffers must hold at
+/// least disk{Vertex,Index}Count entries.
+pub fn disk(
+    radius: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const nrm = m.Vec3.init(0, 0, 1);
+    verts[0] = .{ .position = .{}, .normal = nrm, .color = color };
+    var s: u32 = 0;
+    while (s <= segments) : (s += 1) {
+        const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        verts[1 + s] = .{ .position = m.Vec3.init(@cos(phi) * radius, @sin(phi) * radius, 0), .normal = nrm, .color = color };
+    }
+    var ii: usize = 0;
+    s = 0;
+    while (s < segments) : (s += 1) {
+        indices[ii + 0] = 0;
+        indices[ii + 1] = 1 + s;
+        indices[ii + 2] = 2 + s;
+        ii += 3;
+    }
+    return .{ .vertices = verts[0 .. segments + 2], .indices = indices[0..ii] };
+}
+
+pub fn ringVertexCount(segments: u32) usize {
+    return 2 * (segments + 1);
+}
+pub fn ringIndexCount(segments: u32) usize {
+    return segments * 6;
+}
+
+/// A flat annulus between `inner` and `outer` radius in the z=0 plane, facing
+/// +Z (constant normal). Used for the wet tear-line rim around the eye. Inner
+/// and outer vertices are interleaved per slice. Buffers must hold at least
+/// ring{Vertex,Index}Count entries.
+pub fn annulus(
+    inner: f32,
+    outer: f32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    const nrm = m.Vec3.init(0, 0, 1);
+    var vi: usize = 0;
+    var s: u32 = 0;
+    while (s <= segments) : (s += 1) {
+        const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+        const c = @cos(phi);
+        const sn = @sin(phi);
+        verts[vi] = .{ .position = m.Vec3.init(c * inner, sn * inner, 0), .normal = nrm, .color = color };
+        vi += 1;
+        verts[vi] = .{ .position = m.Vec3.init(c * outer, sn * outer, 0), .normal = nrm, .color = color };
+        vi += 1;
+    }
+    var ii: usize = 0;
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const in_a = s * 2; // inner, this slice
+        const out_a = s * 2 + 1; // outer, this slice
+        const in_b = (s + 1) * 2; // inner, next slice
+        const out_b = (s + 1) * 2 + 1; // outer, next slice
+        indices[ii + 0] = in_a;
+        indices[ii + 1] = out_a;
+        indices[ii + 2] = in_b;
+        indices[ii + 3] = in_b;
+        indices[ii + 4] = out_a;
+        indices[ii + 5] = out_b;
+        ii += 6;
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+// -----------------------------------------------------------------------------
+// Nose — a stylised lofted ridge built in its own local space: the bridge at the
+// origin, running DOWN -Y to the base, bulging +Z (forward). Front-half arcs
+// (`segments` across the face) stacked over `rings` vertical stations; smooth
+// normals so it shades as a rounded form. Like the eye parts, +Z is the face
+// normal so it composes with the same facial frame.
+// -----------------------------------------------------------------------------
+
+pub fn noseVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn noseIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// Generate a nose of `length` (bridge→base, down -Y), `base_width` (half-width
+/// at the nostrils) and `projection` (how far the tip bulges +Z). The protrusion
+/// grows from the bridge to a peak near the tip; the width grows toward the
+/// base. Buffers must hold nose{Vertex,Index}Count entries.
+pub fn nose(
+    length: f32,
+    base_width: f32,
+    projection: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const t = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)); // 0 bridge → 1 base
+        const y = -t * length;
+        const proj = projection * (0.2 + 0.8 * @sin(t * std.math.pi * 0.85)); // bulge, peaks near the tip
+        const half_w = base_width * (0.25 + 0.75 * t); // narrow at the bridge, wide at the nostrils
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const a = -std.math.pi * 0.5 + @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * std.math.pi; // front half −90..+90
+            const x = half_w * @sin(a);
+            const z = proj * @cos(a); // most forward on the centreline
+            verts[vi] = .{ .position = m.Vec3.init(x, y, z), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const av = r * stride + s;
+            const bv = av + stride;
+            indices[ii + 0] = av;
+            indices[ii + 1] = av + 1;
+            indices[ii + 2] = bv;
+            indices[ii + 3] = av + 1;
+            indices[ii + 4] = bv + 1;
+            indices[ii + 5] = bv;
+            ii += 6;
+        }
+    }
+
+    smoothNormals(verts[0..vi], indices[0..ii]);
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+// -----------------------------------------------------------------------------
+// Oval head — an egg/ellipsoid built around +Y up, +Z forward (the face). Taller
+// than wide, with the lower half tapered inward toward a smaller chin, so it
+// reads as a head rather than a plain sphere. The face features (eyes/nose/brows/
+// lips) anchor to this in the same +Z-forward frame.
+// -----------------------------------------------------------------------------
+
+pub fn headVertexCount(rings: u32, segments: u32) usize {
+    return (rings + 1) * (segments + 1);
+}
+pub fn headIndexCount(rings: u32, segments: u32) usize {
+    return rings * segments * 6;
+}
+
+/// Generate an oval head of horizontal `radius` and full `height` (Y). `chin`
+/// (0..1) tapers the lower half inward toward the jaw — 0 is a plain ellipsoid,
+/// ~0.4 gives a clear chin. Buffers must hold head{Vertex,Index}Count entries.
+pub fn ovalHead(
+    radius: f32,
+    height: f32,
+    chin: f32,
+    rings: u32,
+    segments: u32,
+    color: m.Vec4,
+    verts: []Vertex,
+    indices: []u32,
+) MeshData {
+    var vi: usize = 0;
+    var r: u32 = 0;
+    while (r <= rings) : (r += 1) {
+        const theta = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings)) * std.math.pi; // 0 top → pi bottom
+        const yu = @cos(theta); // +1 top, −1 bottom
+        const ring_r = @sin(theta);
+        // Taper the lower half toward the chin: 0 at the equator, 1 at the very
+        // bottom, eased — so the jaw narrows and the crown stays full.
+        const lower = std.math.clamp(-yu, 0.0, 1.0);
+        const taper = 1.0 - chin * lower * lower;
+        const y = yu * height * 0.5;
+        const hr = radius * ring_r * taper;
+        var s: u32 = 0;
+        while (s <= segments) : (s += 1) {
+            const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
+            verts[vi] = .{ .position = m.Vec3.init(hr * @cos(phi), y, hr * @sin(phi)), .normal = .{}, .color = color };
+            vi += 1;
+        }
+    }
+    var ii: usize = 0;
+    const stride = segments + 1;
+    r = 0;
+    while (r < rings) : (r += 1) {
+        var s: u32 = 0;
+        while (s < segments) : (s += 1) {
+            const a = r * stride + s;
+            const b = a + stride;
+            indices[ii + 0] = a;
+            indices[ii + 1] = b;
+            indices[ii + 2] = a + 1;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b;
+            indices[ii + 5] = b + 1;
+            ii += 6;
+        }
+    }
     smoothNormals(verts[0..vi], indices[0..ii]);
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
@@ -366,4 +790,95 @@ test "MeshRegistry.setColor recolours every vertex in place and bumps the revisi
 
     reg.setColor(h, 0.0, 0.0, 1.0, 1.0);
     try std.testing.expectEqual(@as(u32, 2), reg.rev(h)); // each edit bumps again
+}
+
+test "sphericalCap fills the predicted buffer sizes with unit normals and apex at +Z" {
+    const rings: u32 = 6;
+    const segments: u32 = 12;
+    var verts: [capVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [capIndexCount(rings, segments)]u32 = undefined;
+    const r: f32 = 0.5;
+    const mesh = sphericalCap(r, std.math.pi * 0.35, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(capVertexCount(rings, segments), mesh.vertices.len);
+    try std.testing.expectEqual(capIndexCount(rings, segments), mesh.indices.len);
+    // Apex (ring 0) sits on the +Z pole at radius distance.
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.x, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.y, 1e-5);
+    try std.testing.expectApproxEqAbs(r, mesh.vertices[0].position.z, 1e-5);
+    for (mesh.vertices) |v| try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-5);
+}
+
+test "disk is a +Z-facing fan sized to diskCount, rim at radius" {
+    const segments: u32 = 16;
+    var verts: [diskVertexCount(segments)]Vertex = undefined;
+    var idx: [diskIndexCount(segments)]u32 = undefined;
+    const mesh = disk(0.3, segments, .{ .x = 0, .y = 0, .z = 0, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(diskVertexCount(segments), mesh.vertices.len);
+    try std.testing.expectEqual(diskIndexCount(segments), mesh.indices.len);
+    // Centre at origin, every rim vertex at radius 0.3 in z=0, all normals +Z.
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mesh.vertices[0].position.length(), 1e-6);
+    for (mesh.vertices[1..]) |v| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.3), @sqrt(v.position.x * v.position.x + v.position.y * v.position.y), 1e-5);
+        try std.testing.expectApproxEqAbs(@as(f32, 0), v.position.z, 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.z, 1e-6);
+    }
+}
+
+test "ring fills ringCount with inner/outer radii in z=0" {
+    const segments: u32 = 20;
+    var verts: [ringVertexCount(segments)]Vertex = undefined;
+    var idx: [ringIndexCount(segments)]u32 = undefined;
+    const mesh = annulus(0.4, 0.5, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(ringVertexCount(segments), mesh.vertices.len);
+    try std.testing.expectEqual(ringIndexCount(segments), mesh.indices.len);
+    // Interleaved: even verts on the inner radius, odd on the outer.
+    var k: usize = 0;
+    while (k < mesh.vertices.len) : (k += 2) {
+        const inr = @sqrt(mesh.vertices[k].position.x * mesh.vertices[k].position.x + mesh.vertices[k].position.y * mesh.vertices[k].position.y);
+        const outr = @sqrt(mesh.vertices[k + 1].position.x * mesh.vertices[k + 1].position.x + mesh.vertices[k + 1].position.y * mesh.vertices[k + 1].position.y);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.4), inr, 1e-5);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.5), outr, 1e-5);
+    }
+}
+
+test "nose fills noseCount, runs bridge→base down -Y and bulges +Z, with unit normals" {
+    const rings: u32 = 8;
+    const segments: u32 = 10;
+    var verts: [noseVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [noseIndexCount(rings, segments)]u32 = undefined;
+    const mesh = nose(0.3, 0.12, 0.16, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(noseVertexCount(rings, segments), mesh.vertices.len);
+    try std.testing.expectEqual(noseIndexCount(rings, segments), mesh.indices.len);
+    var min_y: f32 = 0;
+    var max_z: f32 = 0;
+    for (mesh.vertices) |v| {
+        if (v.position.y < min_y) min_y = v.position.y;
+        if (v.position.z > max_z) max_z = v.position.z;
+        try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-4);
+    }
+    try std.testing.expect(min_y < -0.25); // runs down toward the base
+    try std.testing.expect(max_z > 0.1); // bulges forward
+}
+
+test "ovalHead: taller than wide, chin narrower than the crown" {
+    const rings: u32 = 16;
+    const segments: u32 = 16;
+    var verts: [headVertexCount(rings, segments)]Vertex = undefined;
+    var idx: [headIndexCount(rings, segments)]u32 = undefined;
+    const mesh = ovalHead(0.12, 0.32, 0.4, rings, segments, .{ .x = 1, .y = 1, .z = 1, .w = 1 }, &verts, &idx);
+    try std.testing.expectEqual(headVertexCount(rings, segments), mesh.vertices.len);
+    var max_y: f32 = -1e9;
+    var min_y: f32 = 1e9;
+    var crown_r: f32 = 0; // horizontal radius in the upper third
+    var chin_r: f32 = 0; // horizontal radius near the bottom
+    for (mesh.vertices) |v| {
+        if (v.position.y > max_y) max_y = v.position.y;
+        if (v.position.y < min_y) min_y = v.position.y;
+        const hr = @sqrt(v.position.x * v.position.x + v.position.z * v.position.z);
+        if (v.position.y > 0.06 and hr > crown_r) crown_r = hr;
+        if (v.position.y < -0.10 and hr > chin_r) chin_r = hr;
+    }
+    try std.testing.expectApproxEqAbs(@as(f32, 0.32), max_y - min_y, 1e-4); // full height
+    try std.testing.expect(0.32 > 2 * 0.12); // taller than wide
+    try std.testing.expect(chin_r < crown_r); // chin tapered in
 }

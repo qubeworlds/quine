@@ -101,6 +101,7 @@ pub fn build(b: *Build) !void {
     });
     // The character mesh is also importable from core so its tests can embed it.
     mod_core.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_core.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
 
     // --- scene_runtime: loads core.SceneData into a live World + physics. Sits
     // above the core->render boundary (imports core + the physics sibling), so
@@ -118,6 +119,7 @@ pub fn build(b: *Build) !void {
     // The character mesh + the real bridge scene, so the scene-runtime tests can
     // resolve a glTF asset and run the actual keepie-uppie scene end-to-end.
     mod_scene_runtime.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_scene_runtime.addAnonymousImport("head.glb", .{ .root_source_file = b.path("assets/head.glb") });
     mod_scene_runtime.addAnonymousImport("keepie-uppie.scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
 
     // --- script: QuickJS interpreter binding (the host side of behaviour
@@ -239,6 +241,8 @@ pub fn build(b: *Build) !void {
     // Embed the character mesh, the normalized scene, and the behaviour skill so
     // they ship inside the binary (no filesystem on web).
     mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+    mod_app.addAnonymousImport("head.glb", .{ .root_source_file = b.path("assets/head.glb") });
+    mod_app.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
     mod_app.addAnonymousImport("scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
     mod_app.addAnonymousImport("skill.js", .{ .root_source_file = b.path("modules/script/keepie-uppie.skill.js") });
     // Link the QuickJS interpreter into the app (native + web) so behaviour
@@ -312,14 +316,17 @@ pub fn build(b: *Build) !void {
             // generous stack, or Jolt traps at init (silent under our wasm panic).
             //
             // `quine_enqueue` is the inbound-message entry point the editor calls
-            // (Module.ccall) to push WebSocket frames into the engine's queue, so
-            // it must survive dead-stripping/closure; `ccall` exposes the marshal
-            // helper. `_main` stays the program entry.
+            // (Module.ccall) to push WebSocket frames into the engine's queue;
+            // `quine_provide_asset` is how the host hands the qube's game assets
+            // (meshes) to the engine at boot (so the wasm ships no game content) —
+            // the loader fetches each, `_malloc`/`HEAPU8` stage the bytes, and
+            // `addRunDependency`/`removeRunDependency` hold `_main` until they're
+            // delivered. `ccall` exposes the marshal helper. `_main` is the entry.
             .extra_args = &.{
                 "-sALLOW_MEMORY_GROWTH=1",
                 "-sSTACK_SIZE=8388608",
-                "-sEXPORTED_RUNTIME_METHODS=ccall",
-                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue",
+                "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
+                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_malloc,_free",
             },
         });
         // `zig build` emits the web bundle into zig-out/web.

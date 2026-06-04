@@ -39,14 +39,25 @@ pub const MeshRegistry = assets.MeshRegistry;
 pub const max_meshes = assets.max_meshes;
 pub const SkinnedVertex = assets.SkinnedVertex;
 pub const SkinnedMeshData = assets.SkinnedMeshData;
+pub const Texture = assets.Texture;
 
 /// Procedural geometry helpers (allocator-free; fill caller-owned buffers).
 pub const uvSphere = assets.uvSphere;
 pub const sphereVertexCount = assets.sphereVertexCount;
 pub const sphereIndexCount = assets.sphereIndexCount;
 pub const fedora = assets.fedora;
+pub const fedoraOval = assets.fedoraOval;
+pub const fedoraContour = assets.fedoraContour;
+pub const measureHeadContour = anim.measureHeadContour;
+pub const HeadContour = anim.HeadContour;
 pub const fedoraVertexCount = assets.fedoraVertexCount;
 pub const fedoraIndexCount = assets.fedoraIndexCount;
+pub const nose = assets.nose;
+pub const noseVertexCount = assets.noseVertexCount;
+pub const noseIndexCount = assets.noseIndexCount;
+pub const ovalHead = assets.ovalHead;
+pub const headVertexCount = assets.headVertexCount;
+pub const headIndexCount = assets.headIndexCount;
 
 pub const Transform = components.Transform;
 pub const MeshRef = components.MeshRef;
@@ -55,6 +66,16 @@ pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;
+pub const Gaze = components.Gaze;
+
+/// Eye anatomy as engine knowledge: one `eye.Spec` expands into the five parts
+/// (sclera/iris/cornea/pupil/tear-line) as primitives + materials + flags. The
+/// scene runtime uses it to expand a `kind:"eyes"` entity, sized from the head.
+pub const eye = @import("eye.zig");
+
+/// Signed-distance fields + surface-nets mesher — the continuous-surface path
+/// (a face as one blended skin rather than assembled primitives).
+pub const sdf = @import("sdf.zig");
 
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
@@ -66,6 +87,9 @@ pub const TickGate = @import("tick.zig").TickGate;
 test {
     // Pull in the sibling files' unit tests so `zig build test` runs them.
     _ = @import("tick.zig");
+    _ = @import("eye.zig");
+    _ = @import("sdf.zig");
+    _ = @import("png.zig");
 }
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
@@ -102,7 +126,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze }, max_entities);
 
 // =============================================================================
 // World
@@ -187,6 +211,7 @@ pub const World = struct {
         self.time += dt;
         systems.spin(self, dt);
         systems.squash(self, dt);
+        systems.gaze(self, dt);
     }
 };
 
@@ -235,6 +260,7 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
             world.set(Squash, ent, .{ .rest_scale = rest, .value = sq.value, .recovery = sq.recovery });
         }
         if (e.camera) |c| world.set(Camera, ent, .{ .fov_y = c.fov_y, .near = c.near, .far = c.far });
+        if (e.gaze) |g| world.set(Gaze, ent, .{ .target = v3(g), .dir = v3(g) });
 
         // Builtin geometry references static mesh data, so it needs no allocator
         // and can be wired here. glTF/procedural meshes own buffers -> app-side.
@@ -354,6 +380,54 @@ test "loads CesiumMan skeleton + clip and the sampler moves joints" {
         for (a.m, b.m) |x, y| diff += @abs(x - y);
     }
     try std.testing.expect(diff > 0.01);
+}
+
+test "RPM avatar exposes named eye bones — eye positions straight from the rig" {
+    const glb = @embedFile("rpm.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // The rig names its eye bones — no socket-measuring or carving needed.
+    const le = model.skeleton.findNode("LeftEye") orelse return error.NoLeftEye;
+    const re = model.skeleton.findNode("RightEye") orelse return error.NoRightEye;
+
+    var pose = try anim.Pose.init(alloc, model.skeleton.nodes.len);
+    defer pose.deinit(alloc);
+    pose.sample(&model.skeleton, null, 0); // bind pose
+
+    const lp = pose.global[le].m;
+    const rp = pose.global[re].m;
+    std.debug.print("\nRPM eye bones (bind, world): LeftEye=({d:.3},{d:.3},{d:.3}) RightEye=({d:.3},{d:.3},{d:.3})\n", .{ lp[12], lp[13], lp[14], rp[12], rp[13], rp[14] });
+
+    // Two distinct eyes, symmetric about the centreline (~same height), set apart.
+    try std.testing.expect(@abs(lp[12] - rp[12]) > 0.02); // apart in X
+    try std.testing.expectApproxEqAbs(lp[13], rp[13], 0.02); // same height
+    try std.testing.expect(@abs(lp[12] + rp[12]) < 0.03); // symmetric about x=0
+    try std.testing.expect(lp[13] > 0.3); // up at head height (half-body avatar; origin near the chest)
+}
+
+test "RPM avatar decodes its base-colour atlas and carries per-vertex UVs" {
+    const glb = @embedFile("rpm.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // The eyes/skin live in the diffuse atlas; the loader must decode it so the
+    // render layer can sample it. RPM ships a 1024² 8-bit RGBA PNG.
+    const tex = model.base_color orelse return error.NoBaseColor;
+    try std.testing.expectEqual(@as(u32, 1024), tex.width);
+    try std.testing.expectEqual(@as(u32, 1024), tex.height);
+    try std.testing.expectEqual(tex.width * tex.height * 4, @as(u32, @intCast(tex.pixels.len)));
+
+    // UVs index into that atlas — they must span a real range, not all (0,0).
+    var max_u: f32 = 0;
+    var max_v: f32 = 0;
+    for (model.mesh.vertices) |vtx| {
+        max_u = @max(max_u, vtx.uv[0]);
+        max_v = @max(max_v, vtx.uv[1]);
+    }
+    try std.testing.expect(max_u > 0.1 and max_v > 0.1);
 }
 
 test "measureJointBounds finds a head-sized region on CesiumMan" {

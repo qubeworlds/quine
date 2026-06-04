@@ -77,6 +77,25 @@ pub const Squash = struct {
     recovery: f32 = 7.0,
 };
 
+/// Steers a gaze-driven eye part (the iris/pupil/cornea group) to look along
+/// `dir`, expressed in the eye's rest frame where +Z is straight ahead (the
+/// head's forward). A skill writes `target` each tick (e.g. the direction to the
+/// ball); the `gaze` system eases `dir` toward it, clamped to a cone of
+/// `max_angle` radians so the eye can't roll back into the skull. `scene_runtime`
+/// composes `dir` onto the head-joint follow each tick, so the parts swing across
+/// the eyeball front while still nodding with the head. The sclera and tear-line
+/// don't carry this component — only the parts that move.
+pub const Gaze = struct {
+    /// Desired look direction in the eye's rest frame (+Z = ahead).
+    target: m.Vec3 = .{ .x = 0, .y = 0, .z = 1 },
+    /// Current (eased, cone-clamped) look direction the runtime reads.
+    dir: m.Vec3 = .{ .x = 0, .y = 0, .z = 1 },
+    /// Half-angle of the reachable cone around +Z (radians).
+    max_angle: f32 = 0.6, // ~34°
+    /// Approach rate toward `target` per second (higher = snappier).
+    ease: f32 = 12.0,
+};
+
 /// A perspective camera. Combined with the entity's `Transform` (eye position
 /// and orientation) to produce the view and projection matrices during
 /// extraction. The aspect ratio is supplied at extract time by the viewport.

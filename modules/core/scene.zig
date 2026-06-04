@@ -40,11 +40,98 @@ pub const Geometry = union(enum) {
         crown_radius: f32 = 0.45,
         crown_height: f32 = 0.5,
         brim_radius: f32 = 0.75,
+        /// Z (front-to-back) radius as a multiple of the X radius. 1.0 = round;
+        /// >1 = an oval crown that hugs a head (deeper than it is wide).
+        depth_scale: f32 = 1.0,
         segments: u32 = 24,
         crown_fit: f32 = 1.05,
         brim_flare: f32 = 1.35,
         seat_drop_fraction: f32 = 0.15,
         top_clearance: f32 = 0.05,
+    },
+    /// A pair of stylised eyes, sized from a head joint and expanded by
+    /// `scene_runtime` into the five parts per eye (sclera/iris/cornea/pupil/
+    /// tear-line). The anatomy lives in `core.eye`; these are the authoring
+    /// knobs (the slider playground tunes exactly these).
+    eyes: struct {
+        /// Head joint to size + seat the eyes against (the worn case). Omit and
+        /// the eyes size off `size_meters` for a standalone preview.
+        fit_to_joint: ?[]const u8 = null,
+        /// Eyeball radius as a fraction of the head's radius (used when fitted).
+        size_fraction: f32 = 0.17,
+        /// Eyeball radius in metres for a standalone (unfitted) preview.
+        size_meters: f32 = 0.12,
+        /// Interpupillary spacing as a fraction of head width; null = 1.0 (the
+        /// eyes sit at ±radius from the skull centreline).
+        spacing_fraction: f32 = 1.0,
+        /// Eye centre placement relative to the head joint, as fractions of the
+        /// head radius: how far forward onto the face, and how far down.
+        forward_fraction: f32 = 0.9,
+        drop_fraction: f32 = 0.3,
+        /// Rest look direction in the head-local frame (+Z ahead).
+        gaze: Vec3 = .{ 0, 0, 1 },
+        pupil_scale: f32 = 0.5,
+        sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
+        iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
+        segments: u32 = 24,
+    },
+    /// A stylised nose, fitted to a head joint like the eyes and seated in the
+    /// same facial frame (centred on the bridge between the eyes). Built by
+    /// `core.nose`; placed by `scene_runtime` so it shares the eyes' anchor.
+    nose: struct {
+        fit_to_joint: ?[]const u8 = null,
+        /// Bridge (top) height: fraction of head radius below the skull centroid
+        /// — match the eyes' `drop_fraction` so the bridge sits at eye level.
+        bridge_drop_fraction: f32 = 0.3,
+        /// Vertical length (bridge→base) as a fraction of head radius.
+        length_fraction: f32 = 0.5,
+        /// Half-width at the nostrils as a fraction of head radius.
+        width_fraction: f32 = 0.28,
+        /// Forward protrusion of the tip beyond the face, as a fraction of head radius.
+        projection_fraction: f32 = 0.45,
+        /// Face-surface depth (matches the eyes' `forward_fraction`).
+        forward_fraction: f32 = 0.9,
+        color: Rgba = .{ 0.85, 0.7, 0.62, 1 }, // skin-ish
+        segments: u32 = 16,
+        rings: u32 = 10,
+    },
+    /// A whole procedural face: the engine builds an oval head and seats the
+    /// eyes, nose, eyebrows, lips and a fedora on it in one shared facial frame
+    /// (so everything lines up), expanding into individually-riggable sub-
+    /// entities. Standalone — no skeleton needed; the face entity's transform
+    /// places/orients it (+Z forward). All sizes are fractions of `head_radius`.
+    face: struct {
+        /// When set, use this glTF asset as the (sculpted) head base instead of
+        /// the procedural oval head — the eyes seat in its sockets, the fedora on
+        /// its crown, and the procedural nose/brows/lips are dropped (the mesh has
+        /// them). Scaled to `head_height` and centred.
+        head_mesh: ?[]const u8 = null,
+        head_radius: f32 = 0.12,
+        head_height: f32 = 0.32,
+        chin: f32 = 0.4,
+        skin_color: Rgba = .{ 0.86, 0.70, 0.62, 1 },
+        // eyes — set false for a sculpted head that already has its own eyes
+        eyes: bool = true,
+        eye_size_fraction: f32 = 0.17,
+        eye_spacing_fraction: f32 = 1.0,
+        eye_level_fraction: f32 = 0.18, // above head centre
+        eye_forward_fraction: f32 = 0.80,
+        pupil_scale: f32 = 0.5,
+        gaze: Vec3 = .{ 0, 0, 1 },
+        sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
+        iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
+        // nose
+        nose_length_fraction: f32 = 0.5,
+        nose_width_fraction: f32 = 0.26,
+        nose_projection_fraction: f32 = 0.45,
+        // brows
+        brow_color: Rgba = .{ 0.30, 0.20, 0.12, 1 },
+        // lips
+        lip_color: Rgba = .{ 0.72, 0.32, 0.30, 1 },
+        // a fedora instead of hair (green by default)
+        fedora: bool = true,
+        fedora_color: Rgba = .{ 0.12, 0.45, 0.20, 1 },
+        segments: u32 = 24,
     },
 };
 
@@ -112,6 +199,9 @@ pub const Entity = struct {
     spin: ?Spin = null,
     squash: ?Squash = null,
     camera: ?Camera = null,
+    /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
+    /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
+    gaze: ?Vec3 = null,
 };
 
 pub const Param = struct { name: []const u8, value: f32 };
@@ -202,6 +292,7 @@ fn parseEntity(v: Value) !Entity {
     }
     if (o.get("squash")) |x| e.squash = try parseSquash(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
+    if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
 }
 
@@ -236,11 +327,64 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("crownRadius")) |x| g.fedora.crown_radius = try asF32(x);
         if (o.get("crownHeight")) |x| g.fedora.crown_height = try asF32(x);
         if (o.get("brimRadius")) |x| g.fedora.brim_radius = try asF32(x);
+        if (o.get("depthScale")) |x| g.fedora.depth_scale = try asF32(x);
         if (o.get("segments")) |x| g.fedora.segments = try asU32(x);
         if (o.get("crownFit")) |x| g.fedora.crown_fit = try asF32(x);
         if (o.get("brimFlare")) |x| g.fedora.brim_flare = try asF32(x);
         if (o.get("seatDropFraction")) |x| g.fedora.seat_drop_fraction = try asF32(x);
         if (o.get("topClearance")) |x| g.fedora.top_clearance = try asF32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "eyes")) {
+        var g = Geometry{ .eyes = .{} };
+        if (o.get("fitToJoint")) |x| g.eyes.fit_to_joint = try asStr(x);
+        if (o.get("sizeFraction")) |x| g.eyes.size_fraction = try asF32(x);
+        if (o.get("sizeMeters")) |x| g.eyes.size_meters = try asF32(x);
+        if (o.get("spacingFraction")) |x| g.eyes.spacing_fraction = try asF32(x);
+        if (o.get("forwardFraction")) |x| g.eyes.forward_fraction = try asF32(x);
+        if (o.get("dropFraction")) |x| g.eyes.drop_fraction = try asF32(x);
+        if (o.get("gaze")) |x| g.eyes.gaze = try asVec3(x);
+        if (o.get("pupilScale")) |x| g.eyes.pupil_scale = try asF32(x);
+        if (o.get("scleraColor")) |x| g.eyes.sclera_color = try asRgba(x);
+        if (o.get("irisColor")) |x| g.eyes.iris_color = try asRgba(x);
+        if (o.get("segments")) |x| g.eyes.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "nose")) {
+        var g = Geometry{ .nose = .{} };
+        if (o.get("fitToJoint")) |x| g.nose.fit_to_joint = try asStr(x);
+        if (o.get("bridgeDropFraction")) |x| g.nose.bridge_drop_fraction = try asF32(x);
+        if (o.get("lengthFraction")) |x| g.nose.length_fraction = try asF32(x);
+        if (o.get("widthFraction")) |x| g.nose.width_fraction = try asF32(x);
+        if (o.get("projectionFraction")) |x| g.nose.projection_fraction = try asF32(x);
+        if (o.get("forwardFraction")) |x| g.nose.forward_fraction = try asF32(x);
+        if (o.get("color")) |x| g.nose.color = try asRgba(x);
+        if (o.get("segments")) |x| g.nose.segments = try asU32(x);
+        if (o.get("rings")) |x| g.nose.rings = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "face")) {
+        var g = Geometry{ .face = .{} };
+        const f = &g.face;
+        if (o.get("headMesh")) |x| f.head_mesh = try asStr(x);
+        if (o.get("eyes")) |x| f.eyes = try asBool(x);
+        if (o.get("headRadius")) |x| f.head_radius = try asF32(x);
+        if (o.get("headHeight")) |x| f.head_height = try asF32(x);
+        if (o.get("chin")) |x| f.chin = try asF32(x);
+        if (o.get("skinColor")) |x| f.skin_color = try asRgba(x);
+        if (o.get("eyeSizeFraction")) |x| f.eye_size_fraction = try asF32(x);
+        if (o.get("eyeSpacingFraction")) |x| f.eye_spacing_fraction = try asF32(x);
+        if (o.get("eyeLevelFraction")) |x| f.eye_level_fraction = try asF32(x);
+        if (o.get("eyeForwardFraction")) |x| f.eye_forward_fraction = try asF32(x);
+        if (o.get("pupilScale")) |x| f.pupil_scale = try asF32(x);
+        if (o.get("gaze")) |x| f.gaze = try asVec3(x);
+        if (o.get("scleraColor")) |x| f.sclera_color = try asRgba(x);
+        if (o.get("irisColor")) |x| f.iris_color = try asRgba(x);
+        if (o.get("noseLengthFraction")) |x| f.nose_length_fraction = try asF32(x);
+        if (o.get("noseWidthFraction")) |x| f.nose_width_fraction = try asF32(x);
+        if (o.get("noseProjectionFraction")) |x| f.nose_projection_fraction = try asF32(x);
+        if (o.get("browColor")) |x| f.brow_color = try asRgba(x);
+        if (o.get("lipColor")) |x| f.lip_color = try asRgba(x);
+        if (o.get("fedora")) |x| f.fedora = try asBool(x);
+        if (o.get("fedoraColor")) |x| f.fedora_color = try asRgba(x);
+        if (o.get("segments")) |x| f.segments = try asU32(x);
         return g;
     }
     return error.InvalidScene;
