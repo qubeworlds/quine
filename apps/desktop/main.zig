@@ -455,6 +455,13 @@ fn dispatchMessage(raw: []const u8) void {
         } else {
             App.stage.world.set(core.Gaze, b.entity, .{ .target = dir, .dir = dir });
         }
+    } else if (std.mem.eql(u8, tv.string, "drill_time")) {
+        // Timeline → engine: the keyframe editor's playhead drives the SDF drill.
+        // Setting this switches the drill demo from free-running to externally
+        // driven (scrubbable); the carve follows `t` seconds exactly.
+        if (v.object.get("t")) |x| if (numF32(x)) |f| {
+            drill_time_override = f;
+        };
     }
 }
 
@@ -529,15 +536,21 @@ export fn frame() void {
     // they fall (their render transforms follow the Jolt bodies). Guard the SDF
     // scene — a scene push (room WebSocket) can rebuild the world without one.
     if (drill_stream) |*st| if (App.stage.world.sdf_scene) |*sc| {
-        // Loop the live demo: once the drill has finished and debris settled,
-        // clear the rubble and run it again. (Not in thumbnail capture mode.)
-        if (thumb_cfg == null and App.stage.world.time > 6.0) {
-            st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
-            App.stage.world.time = 0;
-            sc.advance(0);
+        if (drill_time_override) |t| {
+            // Timeline-bound: the carve follows the editor playhead (scrubbable).
+            // Clear any free-run rubble once, then just advance the SDF to `t`.
+            if (st.pieces.items.len > 0) st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
+            sc.advance(t);
+        } else {
+            // Free-running: loop once the drill is through + rubble settled.
+            if (thumb_cfg == null and App.stage.world.time > 6.0) {
+                st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
+                App.stage.world.time = 0;
+                sc.advance(0);
+            }
+            _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
+            st.sync(&App.stage.world, &App.stage.physics);
         }
-        _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
-        st.sync(&App.stage.world, &App.stage.physics);
     };
 
     const w = sapp.widthf();
@@ -736,6 +749,11 @@ var thumb_frame: u32 = 0;
 /// Live debris streamer for the SDF drill demo: spawns chunks as the drill
 /// clears cells and tracks them as they fall. Driven from `frame()`.
 var drill_stream: ?scene_runtime.debris.Stream = null;
+
+/// When set (via a `drill_time` host message), the keyframe editor's playhead
+/// drives the drill: the carve follows this time exactly (scrubbable), and the
+/// free-running loop + debris streaming are suspended.
+var drill_time_override: ?f64 = null;
 
 /// A static ground whose top is the y=0 grid plane, so the wall stands on the
 /// grid and debris come to rest on it (the reference grid is the visible floor).
