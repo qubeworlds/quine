@@ -30,6 +30,8 @@ layout(binding=0) uniform rm_params {
     vec4 cam_right; // xyz right,  w = aspect
     vec4 cam_up;    // xyz up,     w = node_count
     vec4 cam_fwd;   // xyz forward,w = time
+    vec4 scene_min; // xyz scene AABB min (empty-space skip)
+    vec4 scene_max; // xyz scene AABB max
     vec4 nodes[MAX_NODES * 3];
 };
 
@@ -92,8 +94,26 @@ void main() {
         + ndc.x * tan_half * aspect * cam_right.xyz
         + ndc.y * tan_half * cam_up.xyz);
 
-    float t = 0.0;
-    const float tmax = 100.0;
+    // Background: the same vertical gradient as the preview backdrop.
+    vec3 bg = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095),
+                  clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0));
+
+    // Empty-space skip: clip the ray to the scene AABB so we only march where the
+    // geometry can be (all SDF nodes live inside these bounds). A ray that misses
+    // the box draws background immediately.
+    vec3 inv = 1.0 / rd;
+    vec3 ta = (scene_min.xyz - ro) * inv;
+    vec3 tb = (scene_max.xyz - ro) * inv;
+    vec3 tlo = min(ta, tb);
+    vec3 thi = max(ta, tb);
+    float t_near = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
+    float t_far = min(min(thi.x, thi.y), thi.z);
+    if (t_far < t_near) {
+        frag_color = vec4(bg, 1.0);
+        return;
+    }
+
+    float t = t_near;
     bool hit = false;
     vec3 p = ro;
     for (int i = 0; i < 160; i++) {
@@ -101,12 +121,8 @@ void main() {
         float d = mapScene(p).x;
         if (d < 0.0008) { hit = true; break; }
         t += d;
-        if (t > tmax) break;
+        if (t > t_far) break;
     }
-
-    // Background: the same vertical gradient as the preview backdrop.
-    vec3 bg = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095),
-                  clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0));
 
     if (!hit) {
         frag_color = vec4(bg, 1.0);

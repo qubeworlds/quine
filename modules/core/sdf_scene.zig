@@ -80,11 +80,29 @@ pub const SdfScene = struct {
     }
 
     /// Signed distance + surface colour at `p`. This is the CPU reference the GPU
-    /// raymarch shader mirrors and the mesher samples.
+    /// raymarch shader mirrors and the mesher samples. Uses per-node AABB culling
+    /// (the leaf test of the acceleration structure): a node whose padded AABB is
+    /// farther from `p` than the field accumulated so far cannot change the result,
+    /// so it is skipped. Exact for every op (see `evalImpl`).
     pub fn eval(self: *const SdfScene, p: Vec3) Hit {
+        return self.evalImpl(p, true);
+    }
+
+    /// `eval` with the AABB cull toggleable — `use_aabb=false` is the brute-force
+    /// reference the tests compare against to prove the cull is sound.
+    pub fn evalImpl(self: *const SdfScene, p: Vec3, use_aabb: bool) Hit {
         var d: f32 = 1e9;
         var col = Vec3{ .x = 0.80, .y = 0.80, .z = 0.85 };
         for (self.nodes[0..self.len]) |n| {
+            // AABB cull (the acceleration-structure leaf test): an *additive* node
+            // whose k-padded AABB is farther from p than max(d, 0) cannot change the
+            // result — being strictly outside the padded box means di > that bound,
+            // so a union can't lower d and a smooth-union is past its blend band (the
+            // k pad makes h saturate). The max(·,0) is essential: a point *inside* a
+            // node's box (distToAabb = 0) must never be skipped, even when d < 0.
+            // This is exact. Subtract is not culled this way (its predicate flips
+            // sign inside the solid); the carves are few, so they're always folded.
+            if (use_aabb and n.op != .subtract and distToAabb(p, nodeAabb(n)) > @max(d, 0.0)) continue;
             const di = primDist(n, p);
             switch (n.op) {
                 .union_op => if (di < d) {
@@ -154,6 +172,14 @@ pub fn nodeAabb(n: Node) Aabb {
     return .{ .min = n.center.sub(pad), .max = n.center.add(pad) };
 }
 
+/// Distance from a point to an AABB (0 inside). The node-cull lower bound.
+pub fn distToAabb(p: Vec3, a: Aabb) f32 {
+    const dx = @max(@max(a.min.x - p.x, p.x - a.max.x), 0.0);
+    const dy = @max(@max(a.min.y - p.y, p.y - a.max.y), 0.0);
+    const dz = @max(@max(a.min.z - p.z, p.z - a.max.z), 0.0);
+    return @sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 fn primDist(n: Node, p: Vec3) f32 {
     const q = p.sub(n.center);
     return switch (n.prim) {
@@ -210,6 +236,35 @@ pub fn demo() SdfScene {
     var s = SdfScene{};
     s.add(.{ .prim = .box, .op = .union_op, .center = .{ .y = 0 }, .half = .{ .x = 1.5, .y = 1.0, .z = 0.25 }, .color = .{ .x = 0.55, .y = 0.57, .z = 0.62 } });
     s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .x = 0.6, .y = 0.4, .z = 0.2 }, .radius = 0.55, .k = 0.35, .color = .{ .x = 0.85, .y = 0.45, .z = 0.30 } });
+    return s;
+}
+
+/// The drill→wall validation scene as SDF/CSG geometry (the geometry counterpart
+/// to the editor's `createDrillWallDocument`): a wall slab the drill has bored a
+/// hole through, with the bit still seated in the carved pocket. Built bottom-up
+/// in the node order the field is folded:
+///   1) wall slab (box, union)
+///   2) bore + chamfer carved out of the wall (spheres, smooth-subtract) — this
+///      is exactly the actor-mutation a drill applies, authored statically here
+///   3) drill shaft (round_box, union) and conical-ish bit (spheres, union)
+/// +Z faces the camera; the drill comes in along +Z toward the wall at z≈0.
+pub fn drillWall() SdfScene {
+    var s = SdfScene{};
+    const steel = Vec3{ .x = 0.62, .y = 0.64, .z = 0.70 };
+    const wall_col = Vec3{ .x = 0.52, .y = 0.40, .z = 0.34 }; // terracotta-ish brick
+
+    // 1) Wall slab.
+    s.add(.{ .prim = .box, .op = .union_op, .center = .{}, .half = .{ .x = 1.6, .y = 1.0, .z = 0.22 }, .color = wall_col });
+    // 2) Bore through the slab + a chamfered mouth where the bit widened it.
+    s.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = 0.0 }, .radius = 0.34, .k = 0.06 });
+    s.add(.{ .prim = .sphere, .op = .subtract, .center = .{ .z = 0.22 }, .radius = 0.30, .k = 0.10 }); // funnel on the near face
+
+    // 3) Drill bit: a chain of spheres tapering to a point (a cone stand-in) sunk
+    // into the bore, plus the shaft behind it.
+    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = -0.05 }, .radius = 0.27, .k = 0.05, .color = steel });
+    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = 0.18 }, .radius = 0.20, .k = 0.06, .color = steel });
+    s.add(.{ .prim = .sphere, .op = .smooth_union, .center = .{ .z = 0.40 }, .radius = 0.13, .k = 0.05, .color = steel });
+    s.add(.{ .prim = .round_box, .op = .smooth_union, .center = .{ .z = 1.05 }, .half = .{ .x = 0.12, .y = 0.12, .z = 0.62 }, .radius = 0.05, .k = 0.04, .color = .{ .x = 0.85, .y = 0.45, .z = 0.20 } });
     return s;
 }
 
@@ -281,4 +336,44 @@ test "normal points outward on a sphere" {
     s.add(.{ .prim = .sphere, .op = .union_op, .center = .{}, .radius = 1.0 });
     const n = s.normal(.{ .x = 1.0 });
     try testing.expect(n.x > 0.9); // +X face normal points +X
+}
+
+test "AABB cull is exact: eval matches the brute-force fold everywhere" {
+    const s = drillWall();
+    // Sweep a grid spanning the scene (and well outside it) and require the
+    // accelerated eval to byte-match the un-culled reference at every sample.
+    var i: i32 = -20;
+    while (i <= 20) : (i += 1) {
+        var j: i32 = -14;
+        while (j <= 14) : (j += 1) {
+            var kk: i32 = -20;
+            while (kk <= 20) : (kk += 1) {
+                const p = Vec3{
+                    .x = @as(f32, @floatFromInt(i)) * 0.12,
+                    .y = @as(f32, @floatFromInt(j)) * 0.12,
+                    .z = @as(f32, @floatFromInt(kk)) * 0.12,
+                };
+                const culled = s.evalImpl(p, true);
+                const brute = s.evalImpl(p, false);
+                try testing.expectApproxEqAbs(brute.dist, culled.dist, 1e-5);
+                try testing.expectApproxEqAbs(brute.color.x, culled.color.x, 1e-5);
+            }
+        }
+    }
+}
+
+test "drill scene: solid wall, bored gap around the bit, solid shaft, open air" {
+    const s = drillWall();
+    // Wall plane, off-axis (away from the bore): inside solid wall.
+    try testing.expect(s.dist(.{ .x = 1.0, .y = 0.0, .z = 0.0 }) < 0.0);
+    // The bore removed material: a ring point that would be solid wall without the
+    // carve (just outside the seated bit, inside the bored radius) is no longer
+    // deep solid — the subtract pushed the distance up toward/î past the surface.
+    const bored = s.dist(.{ .x = 0.32, .y = 0.0, .z = 0.0 });
+    const solid = s.dist(.{ .x = 1.0, .y = 0.0, .z = 0.0 });
+    try testing.expect(bored > solid); // carved region is less-deep than intact wall
+    // The shaft well behind the wall is solid drill.
+    try testing.expect(s.dist(.{ .z = 1.05 }) < 0.0);
+    // Open air above the wall is empty.
+    try testing.expect(s.dist(.{ .y = 2.0 }) > 0.0);
 }

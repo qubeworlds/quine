@@ -585,6 +585,11 @@ pub const Renderer = struct {
         p.cam_up = .{ up[0], up[1], up[2], @floatFromInt(sdf.len) };
         p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], 0 };
 
+        // Scene AABB for the shader's empty-space skip (ray-box clip).
+        const bb = sdf.bounds();
+        p.scene_min = .{ bb.min.x, bb.min.y, bb.min.z, 0 };
+        p.scene_max = .{ bb.max.x, bb.max.y, bb.max.z, 0 };
+
         for (sdf.nodes[0..sdf.len], 0..) |n, i| {
             const prim_op: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op));
             p.nodes[i * 3 + 0] = .{ n.center.x, n.center.y, n.center.z, prim_op };

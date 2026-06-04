@@ -234,8 +234,8 @@ export fn init() void {
 /// origin, with no drawable mesh (so nothing occludes the fullscreen SDF pass).
 const sdf_thumb_json =
     \\{ "schemaVersion":1, "name":"sdf", "entities":[
-    \\ { "name":"camera", "transform":{"position":[3,2,5]},
-    \\   "camera":{"controller":{"kind":"orbit","target":[0,0.1,0],"distance":5,"yaw":0.7,"pitch":0.32}} }
+    \\ { "name":"camera", "transform":{"position":[3,2,6]},
+    \\   "camera":{"controller":{"kind":"orbit","target":[0,0,0.4],"distance":6,"yaw":0.7,"pitch":0.28}} }
     \\] }
 ;
 
@@ -245,7 +245,7 @@ fn loadScene() void {
         // (camera-only scene + world.sdf_scene), bypassing the material sphere.
         if (std.c.getenv("QUINE_THUMB_SDF") != null) {
             loadSceneFrom(sdf_thumb_json);
-            App.stage.world.sdf_scene = core.sdfDemo();
+            App.stage.world.sdf_scene = core.sdfDrillWall();
             return;
         }
         if (t.scene) |path| {

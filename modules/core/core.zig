@@ -81,9 +81,11 @@ pub const sdf = @import("sdf.zig");
 /// array of CSG nodes the render layer raymarches and the mesher polygonises.
 pub const SdfScene = @import("sdf_scene.zig").SdfScene;
 pub const SdfNode = @import("sdf_scene.zig").Node;
-/// A small built-in SDF scene (a wall with a sphere fused on) for the raymarch
-/// path before scene-JSON plumbing lands.
+/// Built-in SDF scenes for the raymarch path before scene-JSON plumbing lands:
+/// `sdfDemo` (a wall with a sphere fused on) and `sdfDrillWall` (the drill→wall
+/// validation scene as CSG geometry).
 pub const sdfDemo = @import("sdf_scene.zig").demo;
+pub const sdfDrillWall = @import("sdf_scene.zig").drillWall;
 
 pub const RenderQueue = render_queue.RenderQueue;
 pub const DrawItem = render_queue.DrawItem;
