@@ -300,6 +300,9 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
                         world.set(MeshRef, ent, .{ .mesh = world.meshes.add(assets.triangle_mesh) });
                     }
                 },
+                // An SDF/CSG scene is pure data — store it on the world for the
+                // render layer to raymarch (no allocator, no GPU).
+                .sdf => |s| world.sdf_scene = s,
                 else => {},
             }
         }

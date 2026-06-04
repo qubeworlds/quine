@@ -109,6 +109,11 @@ pub const SceneRuntime = struct {
                 };
                 bnd.body = try self.physics.createBody(spec);
             }
+            // SDF/CSG geometry: pure data — store it on the world for the render
+            // layer to raymarch (and the destructible-wall debris to read).
+            if (e.geometry) |g| if (g == .sdf) {
+                self.world.sdf_scene = g.sdf;
+            };
             // glTF geometry: resolve the source bytes, load the skinned model
             // (into the arena, freed with the runtime), scale it, and set up the
             // scratch pose + head joint for animation and parenting.

@@ -16,6 +16,7 @@
 //! in the same allocator.
 
 const std = @import("std");
+const sdf_scene = @import("sdf_scene.zig");
 
 pub const Vec3 = [3]f32;
 pub const Rgba = [4]f32;
@@ -133,6 +134,10 @@ pub const Geometry = union(enum) {
         fedora_color: Rgba = .{ 0.12, 0.45, 0.20, 1 },
         segments: u32 = 24,
     },
+    /// An SDF/CSG scene — a list of primitives combined by union / smooth-union /
+    /// subtract, raymarched by the render layer. Parsed straight into a fixed
+    /// `core.SdfScene` value (no allocator).
+    sdf: sdf_scene.SdfScene,
 };
 
 /// PBR material (metallic-roughness). `color` is the base colour (albedo);
@@ -386,7 +391,48 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("fedoraColor")) |x| f.fedora_color = try asRgba(x);
         if (o.get("segments")) |x| f.segments = try asU32(x);
         return g;
+    } else if (std.mem.eql(u8, kind, "sdf")) {
+        var sc = sdf_scene.SdfScene{};
+        const nodes = o.get("nodes") orelse return error.InvalidScene;
+        if (nodes != .array) return error.InvalidScene;
+        for (nodes.array.items) |nv| {
+            if (nv != .object) return error.InvalidScene;
+            const no = nv.object;
+            var node = sdf_scene.Node{};
+            if (no.get("prim")) |x| node.prim = try parsePrim(try asStr(x));
+            if (no.get("op")) |x| node.op = try parseOp(try asStr(x));
+            if (no.get("center")) |x| {
+                const c = try asVec3(x);
+                node.center = .{ .x = c[0], .y = c[1], .z = c[2] };
+            }
+            if (no.get("half")) |x| {
+                const h = try asVec3(x);
+                node.half = .{ .x = h[0], .y = h[1], .z = h[2] };
+            }
+            if (no.get("radius")) |x| node.radius = try asF32(x);
+            if (no.get("k")) |x| node.k = try asF32(x);
+            if (no.get("color")) |x| {
+                const c = try asVec3(x);
+                node.color = .{ .x = c[0], .y = c[1], .z = c[2] };
+            }
+            sc.add(node);
+        }
+        return .{ .sdf = sc };
     }
+    return error.InvalidScene;
+}
+
+fn parsePrim(s: []const u8) !sdf_scene.Prim {
+    if (std.mem.eql(u8, s, "sphere")) return .sphere;
+    if (std.mem.eql(u8, s, "box")) return .box;
+    if (std.mem.eql(u8, s, "round_box")) return .round_box;
+    return error.InvalidScene;
+}
+
+fn parseOp(s: []const u8) !sdf_scene.Op {
+    if (std.mem.eql(u8, s, "union")) return .union_op;
+    if (std.mem.eql(u8, s, "smooth_union")) return .smooth_union;
+    if (std.mem.eql(u8, s, "subtract")) return .subtract;
     return error.InvalidScene;
 }
 
@@ -591,4 +637,25 @@ test "material parses PBR factors, defaulting the ones the scene omits" {
     try testing.expectEqual(@as(f32, 0.0), b.metallic);
     try testing.expectEqual(@as(f32, 0.5), b.roughness);
     try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
+}
+
+test "parses an sdf/csg geometry into a core SdfScene" {
+    const json =
+        \\{ "schemaVersion":1, "name":"t", "entities":[
+        \\  { "name":"wall", "geometry":{ "kind":"sdf", "nodes":[
+        \\    {"prim":"box","op":"union","center":[0,1,0],"half":[1.6,1,0.22],"color":[0.5,0.4,0.34]},
+        \\    {"prim":"sphere","op":"subtract","center":[0,1,0],"radius":0.4,"k":0.05}
+        \\  ]}}
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    const g = s.entities[0].geometry.?;
+    try testing.expect(g == .sdf);
+    try testing.expectEqual(@as(usize, 2), g.sdf.len);
+    // The box is solid wall; the subtracted sphere carved a hole at its centre.
+    try testing.expect(g.sdf.dist(.{ .x = 1.0, .y = 1.0, .z = 0 }) < 0); // solid
+    try testing.expect(g.sdf.dist(.{ .x = 0, .y = 1.0, .z = 0 }) > 0); // carved
 }

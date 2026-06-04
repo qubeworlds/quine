@@ -1,0 +1,11 @@
+{ "schemaVersion": 1, "name": "sdf-wall",
+  "entities": [
+    { "name": "wall",
+      "geometry": { "kind": "sdf", "nodes": [
+        { "prim": "box",    "op": "union",        "center": [0, 1, 0],    "half": [1.6, 1.0, 0.22], "color": [0.52, 0.40, 0.34] },
+        { "prim": "sphere", "op": "smooth_union", "center": [0.8, 1.5, 0.18], "radius": 0.5, "k": 0.3, "color": [0.85, 0.45, 0.30] },
+        { "prim": "sphere", "op": "subtract",     "center": [-0.5, 0.7, 0.0], "radius": 0.45, "k": 0.08 }
+      ] } },
+    { "name": "camera", "transform": { "position": [3, 2, 6] },
+      "camera": { "controller": { "kind": "orbit", "target": [0, 1, 0], "distance": 6, "yaw": 0.6, "pitch": 0.1 } } }
+  ] }
