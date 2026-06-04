@@ -900,7 +900,11 @@ pub fn main() void {
         .event_cb = event,
         .width = if (tn) tsz else 640,
         .height = if (tn) tsz else 480,
-        .fullscreen = !tn,
+        // On web the canvas size/placement is controlled by CSS (the editor's
+        // full-screen stage, or the keyframe editor's preview pane). Requesting
+        // sokol "fullscreen" there makes the canvas cover the whole page and
+        // swallow the surrounding UI's input, so only go fullscreen natively.
+        .fullscreen = !tn and !is_web,
         .high_dpi = !tn,
         .icon = .{ .sokol_default = true },
         .window_title = "quine",

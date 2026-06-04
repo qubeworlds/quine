@@ -385,6 +385,30 @@ test "jolt: a sphere falls under gravity and rests on the ground" {
     try std.testing.expectApproxEqAbs(radius, end_y, 0.05); // resting on the floor
 }
 
+test "jolt: bodies can be removed mid-simulation without crashing (demo loop)" {
+    var w: World = undefined;
+    try w.init(std.heap.c_allocator);
+    defer w.deinit();
+    _ = try w.addGround(50, 1);
+
+    // Spawn a batch of small dynamic boxes, step so they're active/contacting,
+    // then remove them all and keep stepping — the destructible-wall loop path.
+    var ids: [32]BodyId = undefined;
+    for (&ids, 0..) |*id, i| {
+        const fi: f32 = @floatFromInt(i);
+        id.* = try w.createBody(.{
+            .motion = .dynamic,
+            .shape = .{ .box = .{ .half_extents = .{ 0.08, 0.08, 0.08 } } },
+            .position = .{ fi * 0.2 - 3.0, 1.0, 0 },
+            .mass = 0.2,
+        });
+    }
+    w.optimize();
+    for (0..60) |_| try w.step(1.0 / 60.0);
+    for (ids) |id| w.removeBody(id);
+    for (0..60) |_| try w.step(1.0 / 60.0); // must not crash after removal
+}
+
 test "jolt: a convex-hull debris chunk falls and settles on the ground" {
     var w: World = undefined;
     try w.init(std.heap.c_allocator);

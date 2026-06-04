@@ -19,16 +19,16 @@ const m = @import("math");
 const Vec3 = m.Vec3;
 
 pub const Options = struct {
-    /// Mass per debris chunk (kg).
-    mass: f32 = 0.3,
+    /// Mass per small rubble chunk (kg).
+    mass: f32 = 0.08,
     /// Outward throw speed applied at spawn (m/s).
-    throw_speed: f32 = 1.5,
-    restitution: f32 = 0.15,
-    friction: f32 = 0.7,
-    /// Minimum removed-sample points needed to form a (non-degenerate) hull.
-    min_points: usize = 8,
-    /// Safety cap on bodies spawned in one call.
-    max_bodies: usize = 256,
+    throw_speed: f32 = 1.8,
+    restitution: f32 = 0.2,
+    friction: f32 = 0.8,
+    /// Minimum removed-sample points in a cell before it shatters into rubble.
+    min_points: usize = 6,
+    /// Safety cap on total live debris bodies.
+    max_bodies: usize = 220,
     /// Contact tag for all debris (so contacts can be queried if needed).
     tag: u64 = 0,
 };
@@ -312,6 +312,9 @@ pub const Stream = struct {
     shattered: []bool,
     pieces: std.ArrayList(Piece) = .empty,
     opts: Options = .{},
+    /// Shared mesh handle for the (uniform-size) rubble cubes, so every chunk
+    /// reuses one GPU buffer. Created lazily on first spawn.
+    cube_mesh: ?core.MeshHandle = null,
 
     /// Grid spans the wall (scene node 0), padded a little. `voxel` sets both the
     /// sampling resolution and the cell size (= (brick_dim-1)*voxel).
@@ -375,10 +378,9 @@ pub const Stream = struct {
                         .y = self.origin.y + @as(f32, @floatFromInt(cy)) * self.cell_size,
                         .z = self.origin.z + @as(f32, @floatFromInt(cz)) * self.cell_size,
                     };
+                    // Collect this cell's removed-material voxels (real filled
+                    // volume — not a bounding box).
                     pts.clearRetainingCapacity();
-                    var sum = Vec3{};
-                    var lo = Vec3.splat(std.math.inf(f32));
-                    var hi = Vec3.splat(-std.math.inf(f32));
                     var k: u32 = 0;
                     while (k < d) : (k += 1) {
                         var j: u32 = 0;
@@ -390,49 +392,54 @@ pub const Stream = struct {
                                     .y = cell_origin.y + @as(f32, @floatFromInt(j)) * self.voxel,
                                     .z = cell_origin.z + @as(f32, @floatFromInt(k)) * self.voxel,
                                 };
-                                if (wall.dist(p) < 0.0 and scene.dist(p) > 0.0) {
+                                if (wall.dist(p) < 0.0 and scene.dist(p) > 0.0)
                                     try pts.append(mesh_alloc, .{ p.x, p.y, p.z });
-                                    sum = sum.add(p);
-                                    lo = .{ .x = @min(lo.x, p.x), .y = @min(lo.y, p.y), .z = @min(lo.z, p.z) };
-                                    hi = .{ .x = @max(hi.x, p.x), .y = @max(hi.y, p.y), .z = @max(hi.z, p.z) };
-                                }
                             }
                         }
                     }
                     if (pts.items.len < self.opts.min_points) continue; // not cleared yet
-
-                    const n: f32 = @floatFromInt(pts.items.len);
-                    const centroid = sum.scale(1.0 / n);
-                    const half = Vec3{
-                        .x = @max((hi.x - lo.x) * 0.5, self.voxel),
-                        .y = @max((hi.y - lo.y) * 0.5, self.voxel),
-                        .z = @max((hi.z - lo.z) * 0.5, self.voxel),
-                    };
-                    // Box shape sized to the chunk extent — matches the rendered
-                    // box and avoids any convex-hull edge cases on the wasm build.
-                    const id = physics.createBody(.{
-                        .motion = .dynamic,
-                        .shape = .{ .box = .{ .half_extents = .{ half.x, half.y, half.z } } },
-                        .position = .{ centroid.x, centroid.y, centroid.z },
-                        .mass = self.opts.mass,
-                        .restitution = self.opts.restitution,
-                        .friction = self.opts.friction,
-                        .tag = self.opts.tag,
-                    }) catch {
-                        self.shattered[ci] = true;
-                        continue;
-                    };
-                    const out = centroid.sub(wall_center);
-                    physics.setBodyVelocity(id, .{ out.x * 0.8, 0.6 * self.opts.throw_speed, self.opts.throw_speed });
-
-                    const mesh = try cubeMesh(mesh_alloc, half, col);
-                    const ent = world.spawn();
-                    world.set(core.Transform, ent, .{ .position = centroid });
-                    world.set(core.MeshRef, ent, .{ .mesh = world.meshes.add(mesh) });
-                    world.set(core.Material, ent, .{ .base_color = col });
-                    try self.pieces.append(mesh_alloc, .{ .entity = ent, .body = id });
                     self.shattered[ci] = true;
-                    spawned += 1;
+
+                    // One shared small-cube mesh for all rubble (one GPU buffer).
+                    const chunk_half = self.voxel * 0.85;
+                    if (self.cube_mesh == null) {
+                        const cm = try cubeMesh(mesh_alloc, Vec3.splat(chunk_half), col);
+                        self.cube_mesh = world.meshes.add(cm);
+                    }
+
+                    // Shatter the cell into many small chunks (a downsample of the
+                    // removed voxels), each its own falling body — real rubble.
+                    const per_cell: usize = 14;
+                    const stepn = @max(@as(usize, 1), pts.items.len / per_cell);
+                    var idx: usize = 0;
+                    while (idx < pts.items.len) : (idx += stepn) {
+                        if (self.pieces.items.len >= self.opts.max_bodies) break;
+                        const pv = pts.items[idx];
+                        const c = Vec3{ .x = pv[0], .y = pv[1], .z = pv[2] };
+                        const id = physics.createBody(.{
+                            .motion = .dynamic,
+                            .shape = .{ .box = .{ .half_extents = .{ chunk_half, chunk_half, chunk_half } } },
+                            .position = .{ c.x, c.y, c.z },
+                            .mass = self.opts.mass,
+                            .restitution = self.opts.restitution,
+                            .friction = self.opts.friction,
+                            .tag = self.opts.tag,
+                        }) catch continue;
+                        // Throw outward from the bore axis with a little per-chunk spread.
+                        const out = c.sub(wall_center);
+                        const jx: f32 = @floatFromInt(@as(i32, @intCast(idx % 5)) - 2);
+                        physics.setBodyVelocity(id, .{
+                            out.x * 0.9 + jx * 0.25,
+                            0.4 * self.opts.throw_speed,
+                            self.opts.throw_speed + out.z * 0.4,
+                        });
+                        const ent = world.spawn();
+                        world.set(core.Transform, ent, .{ .position = c });
+                        world.set(core.MeshRef, ent, .{ .mesh = self.cube_mesh.? });
+                        world.set(core.Material, ent, .{ .base_color = col });
+                        try self.pieces.append(mesh_alloc, .{ .entity = ent, .body = id });
+                    }
+                    spawned += 1; // one *cell* shattered this iteration
                 }
             }
         }
