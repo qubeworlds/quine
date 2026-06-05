@@ -463,6 +463,15 @@ fn dispatchMessage(raw: []const u8) void {
         } else {
             App.stage.world.set(core.Gaze, b.entity, .{ .target = dir, .dir = dir });
         }
+    } else if (std.mem.eql(u8, tv.string, "timeline")) {
+        // Live keyframe edit: the editor pushes its current timeline so the
+        // preview animates unsaved edits without a scene reload. Parse it into the
+        // dispatch arena, then hand it to the runtime (which deep-copies it).
+        if (v.object.get("timeline")) |tlv| {
+            if (core.scene.parseTimeline(arena.allocator(), tlv)) |tl| {
+                App.stage.setTimeline(tl) catch {};
+            } else |_| {}
+        }
     } else if (std.mem.eql(u8, tv.string, "drill_time")) {
         // Timeline → engine: the keyframe editor's playhead drives the SDF drill.
         // Setting this switches the drill demo from free-running to externally

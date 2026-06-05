@@ -272,7 +272,7 @@ fn parseHandle(v: Value) !kf.Handle {
     return h;
 }
 
-fn parseTimeline(arena: std.mem.Allocator, v: Value) !kf.Timeline {
+pub fn parseTimeline(arena: std.mem.Allocator, v: Value) !kf.Timeline {
     if (v != .object) return error.InvalidScene;
     const o = v.object;
     var tl = kf.Timeline{};

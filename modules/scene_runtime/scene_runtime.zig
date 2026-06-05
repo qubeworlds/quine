@@ -78,8 +78,11 @@ pub const SceneRuntime = struct {
     /// Opaque skill state the hooks recover (e.g. the bound JS context).
     skill_ctx: ?*anyopaque = null,
     /// Authored keyframe animation, played back each tick onto component / SDF
-    /// fields. Deep-copied into `arena` at init (scene_data needn't outlive init).
+    /// fields. Deep-copied at init (scene_data needn't outlive init).
     timeline: ?core.Timeline = null,
+    /// Dedicated arena for a *live* timeline (the editor pushing edits): reset on
+    /// each `setTimeline` so repeated pushes don't grow memory. Null until first.
+    tl_arena: ?std.heap.ArenaAllocator = null,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -646,6 +649,7 @@ pub const SceneRuntime = struct {
 
     pub fn deinit(self: *SceneRuntime) void {
         self.physics.deinit();
+        if (self.tl_arena) |*a| a.deinit();
         self.arena.deinit();
     }
 
@@ -859,6 +863,15 @@ pub const SceneRuntime = struct {
     fn setVec3(ptr: *m.Vec3, field: []const u8, name: []const u8, v: f32) bool {
         if (!std.mem.startsWith(u8, field, name)) return false;
         return setVec3Lane(ptr, field[name.len..], v);
+    }
+
+    /// Replace the playing timeline (the keyframe editor pushing live edits).
+    /// Deep-copies into a dedicated, reset-on-each-call arena. Playback time is
+    /// kept, so the preview keeps looping from where it is.
+    pub fn setTimeline(self: *SceneRuntime, tl: core.Timeline) !void {
+        if (self.tl_arena == null) self.tl_arena = std.heap.ArenaAllocator.init(self.arena.child_allocator);
+        _ = self.tl_arena.?.reset(.retain_capacity);
+        self.timeline = try dupeTimeline(self.tl_arena.?.allocator(), tl);
     }
 
     fn applyTimeline(self: *SceneRuntime, tl: core.Timeline, frame: f32) void {
