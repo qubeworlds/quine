@@ -27,6 +27,10 @@ const mesh_cache = @import("mesh_cache.zig");
 /// Ready-Player-Me half-body avatar uses 38, so 32 was too small.
 pub const max_joints = 64;
 
+/// Number of static base-colour atlas slots a frame can reference (per-entity
+/// textures, indexed by `MeshRef.texture`). Slot 0 is a permanent 1×1 white.
+pub const max_static_tex = 8;
+
 /// One skinned instance: where to place it and which palette (phase) to use.
 pub const SkinnedInstance = struct {
     model: m.Mat4,
@@ -149,14 +153,14 @@ pub const Renderer = struct {
     skinned_tex_img: sg.Image = .{},
     skinned_tex_view: sg.View = .{},
     skinned_smp: sg.Sampler = .{},
-    /// Base-colour atlas for static meshes (the procedural head's canonical
-    /// unwrap, etc.). Defaults to a 1×1 white so untextured static geometry is
-    /// unchanged. `white_view` is a permanent 1×1 white bound by the grid/gizmo/
-    /// transparent draws, which never carry an atlas.
-    static_tex_img: sg.Image = .{},
-    static_tex_view: sg.View = .{},
+    /// Per-entity base-colour atlas slots for static meshes (indexed by
+    /// `MeshRef.texture` / `DrawItem.texture`). Slot 0 is a permanent 1×1 white,
+    /// so untextured static geometry — and the grid/gizmo/transparent draws,
+    /// which bind `white_view` directly — is unchanged.
     white_img: sg.Image = .{},
     white_view: sg.View = .{},
+    static_imgs: [max_static_tex]sg.Image = [_]sg.Image{.{}} ** max_static_tex,
+    static_views: [max_static_tex]sg.View = [_]sg.View{.{}} ** max_static_tex,
     pass_action: sg.PassAction = .{},
     cache: mesh_cache.MeshCache = .{},
     /// Draw the world-space reference grid. Off for clean material thumbnails.
@@ -301,7 +305,7 @@ pub const Renderer = struct {
         white_data.mip_levels[0] = sg.asRange(&white_px);
         self.white_img = sg.makeImage(.{ .width = 1, .height = 1, .pixel_format = .RGBA8, .data = white_data, .label = "white-1x1" });
         self.white_view = sg.makeView(.{ .texture = .{ .image = self.white_img } });
-        self.uploadStaticTexture(null); // static atlas defaults to its own white
+        for (&self.static_views) |*v| v.* = self.white_view; // every slot starts white
 
         // Preview backdrop: a vertex-less fullscreen triangle (the bg shader
         // builds positions from gl_VertexIndex), depth-test off so it fills the
@@ -387,35 +391,25 @@ pub const Renderer = struct {
         self.skinned_tex_view = sg.makeView(.{ .texture = .{ .image = self.skinned_tex_img } });
     }
 
-    /// Upload a base-colour atlas for static meshes (e.g. the procedural head's
-    /// canonical unwrap), or a 1×1 white fallback when `tex` is null. Mirrors
-    /// `uploadSkinnedTexture` for the non-skinned pipeline.
-    pub fn uploadStaticTexture(self: *Renderer, tex: ?core.Texture) void {
-        sg.destroyView(self.static_tex_view); // no-op on the initial invalid handle
-        sg.destroyImage(self.static_tex_img);
-        if (tex) |t| {
-            var data = sg.ImageData{};
-            data.mip_levels[0] = sg.asRange(t.pixels);
-            self.static_tex_img = sg.makeImage(.{
-                .width = @intCast(t.width),
-                .height = @intCast(t.height),
-                .pixel_format = .RGBA8,
-                .data = data,
-                .label = "static-base-color",
-            });
-        } else {
-            const white = [_]u8{ 255, 255, 255, 255 };
-            var data = sg.ImageData{};
-            data.mip_levels[0] = sg.asRange(&white);
-            self.static_tex_img = sg.makeImage(.{
-                .width = 1,
-                .height = 1,
-                .pixel_format = .RGBA8,
-                .data = data,
-                .label = "static-white-fallback",
-            });
+    /// Upload a base-colour atlas into static texture slot `id` (1..max_static_tex-1;
+    /// slot 0 is the permanent white). Entities point at a slot via `MeshRef.texture`.
+    /// Mirrors `uploadSkinnedTexture` for the non-skinned, per-entity pipeline.
+    pub fn uploadStaticTexture(self: *Renderer, id: u32, tex: core.Texture) void {
+        if (id == 0 or id >= max_static_tex) return; // slot 0 stays white
+        if (self.static_imgs[id].id != 0) { // replace a previous upload
+            sg.destroyView(self.static_views[id]);
+            sg.destroyImage(self.static_imgs[id]);
         }
-        self.static_tex_view = sg.makeView(.{ .texture = .{ .image = self.static_tex_img } });
+        var data = sg.ImageData{};
+        data.mip_levels[0] = sg.asRange(tex.pixels);
+        self.static_imgs[id] = sg.makeImage(.{
+            .width = @intCast(tex.width),
+            .height = @intCast(tex.height),
+            .pixel_format = .RGBA8,
+            .data = data,
+            .label = "static-base-color",
+        });
+        self.static_views[id] = sg.makeView(.{ .texture = .{ .image = self.static_imgs[id] } });
     }
 
     /// Draw one frame from `queue`, resolving mesh handles against `meshes`.
@@ -476,7 +470,7 @@ pub const Renderer = struct {
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = gm.vbuf;
             if (gm.indexed) bind.index_buffer = gm.ibuf;
-            bind.views[shd.VIEW_tex] = self.static_tex_view;
+            bind.views[shd.VIEW_tex] = self.static_views[@min(item.texture, max_static_tex - 1)];
             bind.samplers[shd.SMP_smp] = self.skinned_smp;
             sg.applyBindings(bind);
 

@@ -32,6 +32,8 @@ pub const DrawItem = struct {
     mesh: assets.MeshHandle,
     model: m.Mat4,
     material: Material = .{},
+    /// Static texture-slot id (from `MeshRef.texture`); 0 = white/untextured.
+    texture: u32 = 0,
 };
 
 /// Upper bound on draw items per frame — one per entity, matching the ECS
@@ -96,10 +98,12 @@ pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
     var it = cur.query(&.{ Transform, MeshRef });
     while (it.next()) |e| {
         const t = interpolated(prev, e, cur.get(Transform, e).?.*, alpha);
+        const mr = cur.get(MeshRef, e).?;
         out.items[out.len] = .{
-            .mesh = cur.get(MeshRef, e).?.mesh,
+            .mesh = mr.mesh,
             .model = t.matrix(),
             .material = if (cur.get(Material, e)) |mp| mp.* else .{},
+            .texture = mr.texture,
         };
         out.len += 1;
     }

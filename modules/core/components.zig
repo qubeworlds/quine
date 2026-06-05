@@ -36,6 +36,11 @@ pub const Transform = struct {
 /// the render queue and resolves it against the world's `MeshRegistry`.
 pub const MeshRef = struct {
     mesh: assets.MeshHandle,
+    /// Index into the render layer's static texture-slot table for this mesh's
+    /// base-colour atlas. 0 = none (a 1×1 white, i.e. vertex/material colour
+    /// only). Just an integer id here — the GPU view lives in the render layer,
+    /// keeping `core` GPU-free.
+    texture: u32 = 0,
 };
 
 /// PBR material (metallic-roughness) the renderer reads per draw — base colour

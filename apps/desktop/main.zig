@@ -232,20 +232,29 @@ export fn init() void {
         App.renderer.preview = false;
         App.renderer.draw_grid = false;
     }
-    // QUINE_FACE_TEX=<path.png> binds a base-colour atlas onto the static meshes
-    // (the procedural head's canonical unwrap). Decoded with the engine's PNG
-    // reader and uploaded; static geometry stays white-fallback without it.
+    // QUINE_FACE_TEX=<path.png> binds a base-colour atlas to one entity's static
+    // mesh (default the "face"/head; override with QUINE_FACE_TEX_ENTITY) via the
+    // per-entity texture slots — so the head wears the atlas while its features
+    // stay untextured. Decoded with the engine's PNG reader.
+    var face_tex_entity: ?[*:0]const u8 = null;
     if (std.c.getenv("QUINE_FACE_TEX")) |p| {
         if (std.c.fopen(p, "rb")) |fp| {
             const buf = std.heap.c_allocator.alloc(u8, 32 * 1024 * 1024) catch unreachable;
             const n = std.c.fread(buf.ptr, 1, buf.len, fp);
             _ = std.c.fclose(fp);
             if (core.png.decode(std.heap.c_allocator, buf[0..n])) |tex| {
-                App.renderer.uploadStaticTexture(tex);
+                App.renderer.uploadStaticTexture(1, tex); // slot 1
+                face_tex_entity = std.c.getenv("QUINE_FACE_TEX_ENTITY") orelse "face";
             } else |_| {}
         }
     }
     loadScene();
+    // Point the chosen entity's mesh at slot 1 (entities exist after loadScene).
+    if (face_tex_entity) |name| {
+        if (App.stage.find(std.mem.span(name))) |b| {
+            if (App.stage.world.get(core.MeshRef, b.entity)) |mr| mr.texture = 1;
+        }
+    }
     if (builtin.os.tag == .emscripten) {
         // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
         App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===true)?1:0") != 0;
