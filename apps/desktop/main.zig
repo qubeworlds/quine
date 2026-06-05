@@ -190,6 +190,10 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
+    // QUINE_CAMERA_FREE=1 seeds free-look mode (the camera ignores its timeline
+    // tracks) — the editor's camera toggle flips it live, and headless captures
+    // can opt out of camera animation without authoring a separate scene.
+    if (std.c.getenv("QUINE_CAMERA_FREE") != null) user_camera = true;
     // Seed the asset registry from the embedded game meshes. `QUINE_HEAD_FILE=
     // <path>` instead provides head.glb through the *external* registry path
     // (read a file at runtime, register it) — so the Linux engine can verify the
