@@ -354,6 +354,11 @@ fn findCamera(world: *core.World) ?core.Entity {
 /// current (looping) frame. The camera is an always-available keyframe part; its
 /// tracks feed the app's orbit controller (distance/yaw/pitch/target), which then
 /// writes the camera Transform via `orbit.apply`.
+/// Camera control mode (set by the editor's camera toggle via `camera_free`):
+/// false = the camera follows the keyed timeline; true = the user orbits freely
+/// and the camera timeline is ignored.
+var user_camera: bool = false;
+
 fn applyCameraTimeline() void {
     const tl = App.stage.timeline orelse return;
     const cur_frame = App.stage.timelineFrame() orelse return; // shared frame source (scrub or free-run)
@@ -477,6 +482,13 @@ fn dispatchMessage(raw: []const u8) void {
         if (v.object.get("t")) |x| if (numF32(x)) |f| {
             App.stage.scrub_time = f;
         };
+    } else if (std.mem.eql(u8, tv.string, "camera_free")) {
+        // Camera toggle: when on, the user orbits freely (the camera timeline is
+        // ignored so the drag persists); when off, the camera follows the keys.
+        if (v.object.get("on")) |x| switch (x) {
+            .bool => |b| user_camera = b,
+            else => {},
+        };
     }
 }
 
@@ -589,7 +601,7 @@ export fn frame() void {
     // camera.controller.* tracks (unless the user is actively orbiting), then
     // write it into the camera Transform. The orbit cam is app/editor input, so
     // animating it here is just another input source — core stays untouched.
-    if (App.drag_mode != .orbit) applyCameraTimeline();
+    if (!user_camera and App.drag_mode != .orbit) applyCameraTimeline();
     if (App.camera) |cam| App.orbit_cam.apply(&App.stage.world, cam);
 
     var gizmo_info: ?render.GizmoInfo = null;
