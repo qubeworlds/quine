@@ -86,11 +86,26 @@ pub const DrillAnim = struct {
     base_y: f32 = 1.0,
 };
 
+/// Debris parameters — pure data (mirrors @world/shared `debris`). When set on a
+/// scene, material the CSG carve removes from the solid (node 0) becomes falling
+/// Jolt bodies. The engine holds only the mechanism (scene_runtime + debris.zig);
+/// every value here comes from the scene, and the chunk colour from the carved
+/// node — nothing scene-specific is baked into code.
+pub const Debris = struct {
+    voxel: f32 = 0.08,
+    mass: f32 = 0.08,
+    throw_speed: f32 = 1.8,
+    spread: f32 = 0.25,
+    max_chunks: u32 = 220,
+};
+
 pub const SdfScene = struct {
     nodes: [max_nodes]Node = undefined,
     len: usize = 0,
     /// Optional drill animation driven by `advance(time)`.
     drill: ?DrillAnim = null,
+    /// When set, the carve sheds Jolt debris (params are data; see `Debris`).
+    debris: ?Debris = null,
     /// Region changed by the last `advance()` — the carved channel AABB. The unit
     /// the sparse-brick cache will re-rasterize incrementally (step 2). Null when
     /// nothing was carved this step.

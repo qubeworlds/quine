@@ -27,6 +27,8 @@ pub const Options = struct {
     friction: f32 = 0.8,
     /// Minimum removed-sample points in a cell before it shatters into rubble.
     min_points: usize = 6,
+    /// Random sideways jitter added per chunk (m/s), so rubble fans out.
+    spread: f32 = 0.25,
     /// Safety cap on total live debris bodies.
     max_bodies: usize = 220,
     /// Contact tag for all debris (so contacts can be queried if needed).
@@ -364,7 +366,9 @@ pub const Stream = struct {
         var wall = core.SdfScene{};
         wall.add(scene.nodes[0]);
         const wall_center = scene.nodes[0].center;
-        const col = m.Vec4{ .x = 0.52, .y = 0.40, .z = 0.34, .w = 1 };
+        // Debris colour is the carved solid's own colour (data), not a constant.
+        const wc = scene.nodes[0].color;
+        const col = m.Vec4{ .x = wc.x, .y = wc.y, .z = wc.z, .w = 1 };
         const d = core.sdf_cache.brick_dim;
 
         var pts: std.ArrayList([3]f32) = .empty;
@@ -437,7 +441,7 @@ pub const Stream = struct {
                         const out = c.sub(wall_center);
                         const jx: f32 = @floatFromInt(@as(i32, @intCast(idx % 5)) - 2);
                         physics.setBodyVelocity(id, .{
-                            out.x * 0.9 + jx * 0.25,
+                            out.x * 0.9 + jx * self.opts.spread,
                             0.4 * self.opts.throw_speed,
                             self.opts.throw_speed + out.z * 0.4,
                         });

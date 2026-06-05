@@ -474,6 +474,17 @@ fn parseGeometry(v: Value) !Geometry {
             }
             sc.add(node);
         }
+        if (o.get("debris")) |dv| {
+            if (dv != .object) return error.InvalidScene;
+            const dobj = dv.object;
+            var dbr = sdf_scene.Debris{};
+            if (dobj.get("voxel")) |x| dbr.voxel = try asF32(x);
+            if (dobj.get("mass")) |x| dbr.mass = try asF32(x);
+            if (dobj.get("throwSpeed")) |x| dbr.throw_speed = try asF32(x);
+            if (dobj.get("spread")) |x| dbr.spread = try asF32(x);
+            if (dobj.get("maxChunks")) |x| dbr.max_chunks = try asU32(x);
+            sc.debris = dbr;
+        }
         return .{ .sdf = sc };
     }
     return error.InvalidScene;

@@ -87,6 +87,13 @@ pub const SceneRuntime = struct {
     /// this time instead of free-running — so scrubbing/play in the editor drives
     /// the preview frame-for-frame. Null = free-run off the sim clock.
     scrub_time: ?f32 = null,
+    /// Generic debris streamer, present when the scene's SDF opts in (`debris`
+    /// spec). Turns material the keyframed carve removes from the solid into Jolt
+    /// bodies. Behavior only — all tuning + the chunk colour come from the scene.
+    debris_stream: ?debris.Stream = null,
+    /// Last frame debris was advanced to (to detect a loop wrap / scrub-back and
+    /// clear the rubble so the solid reforms).
+    debris_frame: f32 = -1,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -228,6 +235,17 @@ pub const SceneRuntime = struct {
             if (g.nose.fit_to_joint == null) continue;
             try self.buildNose(a, &self.bindings[i], g.nose);
         }
+
+        // Debris (data opt-in): stand up the generic streamer for the SDF solid.
+        // All tuning comes from the scene's `debris` spec — none baked here.
+        if (self.world.sdf_scene) |*sc| if (sc.debris) |dbr| {
+            self.debris_stream = debris.Stream.init(a, sc, dbr.voxel, .{
+                .mass = dbr.mass,
+                .throw_speed = dbr.throw_speed,
+                .spread = dbr.spread,
+                .max_bodies = dbr.max_chunks,
+            }) catch null;
+        };
 
         self.physics.optimize();
     }
@@ -722,6 +740,17 @@ pub const SceneRuntime = struct {
         //    each track's value onto its target field. Done first so animated
         //    transforms/SDF feed parenting, physics, and render.
         if (self.timelineFrame()) |frame| self.applyTimeline(self.timeline.?, frame);
+
+        // 0.5 Debris: as the keyframed carve clears cells of the SDF solid, shed
+        //     them as Jolt bodies (generic; the scene's `debris` spec opted in).
+        //     A loop wrap / scrub-back reforms the solid, so clear the rubble.
+        if (self.debris_stream) |*st| if (self.world.sdf_scene) |*sc| {
+            const frame = self.timelineFrame() orelse 0;
+            if (frame + 0.001 < self.debris_frame) st.reset(self.arena.allocator(), &self.world, &self.physics);
+            self.debris_frame = frame;
+            _ = st.update(self.arena.allocator(), &self.world, &self.physics, sc, 6) catch 0;
+            st.sync(&self.world, &self.physics);
+        };
 
         // 1. Sample each model's animation into its pose.
         for (self.bindings) |*b| {
