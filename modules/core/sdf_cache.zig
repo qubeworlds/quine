@@ -212,8 +212,9 @@ pub fn build(alloc: std.mem.Allocator, scene: *const SdfScene, voxel: f32) !Cach
 const testing = std.testing;
 
 test "cache is sparse and trilinear-samples the field near the surface" {
-    var scene = sdf_scene.drillWall();
-    scene.advance(1.6); // a representative mid-drill state
+    // A sphere leaves the grid corners empty, so the cache is genuinely sparse.
+    var scene = sdf_scene.SdfScene{};
+    scene.add(.{ .prim = .sphere, .op = .union_op, .center = .{ .y = 1 }, .radius = 1.0 });
     const voxel: f32 = 0.08;
 
     var cache = try build(testing.allocator, &scene, voxel);
@@ -223,12 +224,12 @@ test "cache is sparse and trilinear-samples the field near the surface" {
     try testing.expect(cache.brickCount() > 0);
     try testing.expect(cache.brickCount() < cache.denseCellCount());
 
-    // Near the wall surface, the cached sample matches the analytic field to
-    // roughly the voxel size (trilinear reconstruction error).
+    // Near the surface, the cached sample matches the analytic field to roughly
+    // the voxel size (trilinear reconstruction error).
     const probes = [_]Vec3{
-        .{ .x = 0.5, .y = 0.0, .z = 0.22 }, // front face of the wall
-        .{ .x = -0.8, .y = 0.4, .z = -0.22 }, // back face, off to the side
-        .{ .x = 1.2, .y = -0.5, .z = 0.0 }, // inside the slab near the side
+        .{ .x = 1.0, .y = 1.0, .z = 0.0 }, // +X surface
+        .{ .x = 0.0, .y = 2.0, .z = 0.0 }, // top
+        .{ .x = 0.0, .y = 1.0, .z = 1.0 }, // +Z surface
     };
     for (probes) |p| {
         const cached = cache.sample(&scene, p);
@@ -238,8 +239,7 @@ test "cache is sparse and trilinear-samples the field near the surface" {
 }
 
 test "cache build is deterministic" {
-    var scene = sdf_scene.drillWall();
-    scene.advance(2.0);
+    var scene = sdf_scene.carvedWall();
     var a = try build(testing.allocator, &scene, 0.1);
     defer a.deinit(testing.allocator);
     var b = try build(testing.allocator, &scene, 0.1);
@@ -254,8 +254,7 @@ test "cache build is deterministic" {
 }
 
 test "empty cells fall back to a sign-correct distance" {
-    var scene = sdf_scene.drillWall();
-    scene.advance(1.0);
+    var scene = sdf_scene.carvedWall();
     var cache = try build(testing.allocator, &scene, 0.1);
     defer cache.deinit(testing.allocator);
 

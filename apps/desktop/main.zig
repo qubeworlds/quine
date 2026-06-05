@@ -230,33 +230,8 @@ export fn init() void {
 /// Load the scene from data into a SceneRuntime, attach the JS skill, and set up
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
-/// Camera-only scene for the SDF raymarch thumbnail: an orbit camera framing the
-/// origin, with no drawable mesh (so nothing occludes the fullscreen SDF pass).
-const sdf_thumb_json =
-    \\{ "schemaVersion":1, "name":"sdf", "entities":[
-    \\ { "name":"camera", "transform":{"position":[3,2,6]},
-    \\   "camera":{"controller":{"kind":"orbit","target":[0,0.7,0.3],"distance":7,"yaw":0.7,"pitch":0.12}} }
-    \\] }
-;
-
 fn loadScene() void {
     if (thumb_cfg) |t| {
-        // QUINE_THUMB_SDF=1: render the built-in SDF/CSG demo via the raymarcher
-        // (camera-only scene + world.sdf_scene), bypassing the material sphere.
-        if (std.c.getenv("QUINE_THUMB_SDF") != null) {
-            loadSceneFrom(sdf_thumb_json);
-            App.stage.world.sdf_scene = core.sdfDrillWall();
-            const debris_on = std.c.getenv("QUINE_THUMB_DEBRIS") != null;
-            // QUINE_THUMB_T=<seconds>: render the drill animation at a chosen time
-            // (seed the world clock so tick's advance keeps it there). With debris
-            // on, default to a time where the bore is well established.
-            var tsec: f64 = if (debris_on) 2.5 else 0;
-            if (std.c.getenv("QUINE_THUMB_T")) |tv| tsec = std.fmt.parseFloat(f64, std.mem.span(tv)) catch tsec;
-            App.stage.world.time = tsec;
-            App.stage.world.sdf_scene.?.advance(tsec);
-            if (debris_on) setupDebrisThumb();
-            return;
-        }
         if (t.scene) |path| {
             // Headless single-frame capture of an arbitrary scene file (libc IO,
             // matching captureThumb). Falls back to the material sphere on error.
@@ -285,11 +260,6 @@ fn loadScene() void {
             return;
         }
         loadSceneFrom(thumbSceneJson(t)); // a sphere with the requested material
-        return;
-    }
-    // Live destructible-wall drill demo (opt-in), before the normal scene path.
-    if (drillDemoRequested()) {
-        setupLiveDrill();
         return;
     }
     if (is_web) {
@@ -506,13 +476,6 @@ fn dispatchMessage(raw: []const u8) void {
         if (v.object.get("t")) |x| if (numF32(x)) |f| {
             App.stage.scrub_time = f;
         };
-    } else if (std.mem.eql(u8, tv.string, "drill_time")) {
-        // Timeline → engine: the keyframe editor's playhead drives the SDF drill.
-        // Setting this switches the drill demo from free-running to externally
-        // driven (scrubbable); the carve follows `t` seconds exactly.
-        if (v.object.get("t")) |x| if (numF32(x)) |f| {
-            drill_time_override = f;
-        };
     }
 }
 
@@ -583,30 +546,6 @@ export fn frame() void {
         App.accumulator -= fixed_dt;
         ticks += 1;
     }
-    // Live SDF drill demo: stream debris as cells clear, and track the chunks as
-    // they fall (their render transforms follow the Jolt bodies). Guard the SDF
-    // scene — a scene push (room WebSocket) can rebuild the world without one.
-    if (drill_stream) |*st| if (App.stage.world.sdf_scene) |*sc| {
-        if (drill_time_override) |t| {
-            // Timeline-bound: the carve follows the editor playhead. Scrubbing
-            // back clears the rubble (physics can't run in reverse); going forward
-            // streams debris that fall via the normal forward physics steps.
-            if (t + 0.0001 < last_drill_t) st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
-            last_drill_t = t;
-            sc.advance(t);
-            _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
-            st.sync(&App.stage.world, &App.stage.physics);
-        } else {
-            // Free-running: loop once the drill is through + rubble settled.
-            if (thumb_cfg == null and App.stage.world.time > 6.0) {
-                st.reset(std.heap.c_allocator, &App.stage.world, &App.stage.physics);
-                App.stage.world.time = 0;
-                sc.advance(0);
-            }
-            _ = st.update(std.heap.c_allocator, &App.stage.world, &App.stage.physics, sc, 2) catch {};
-            st.sync(&App.stage.world, &App.stage.physics);
-        }
-    };
 
     const w = sapp.widthf();
     const h = sapp.heightf();
@@ -805,72 +744,6 @@ const ThumbGeo = enum { sphere, fedora };
 const ThumbCfg = struct { out: [*:0]const u8, color: m.Vec4, metallic: f32, roughness: f32, emissive: m.Vec3, geo: ThumbGeo = .sphere, dimple: bool = false, surface: [*:0]const u8 = "plain", scene: ?[*:0]const u8 = null };
 var thumb_cfg: ?ThumbCfg = null;
 var thumb_frame: u32 = 0;
-
-/// Live debris streamer for the SDF drill demo: spawns chunks as the drill
-/// clears cells and tracks them as they fall. Driven from `frame()`.
-var drill_stream: ?scene_runtime.debris.Stream = null;
-
-/// When set (via a `drill_time` host message), the keyframe editor's playhead
-/// drives the drill: the carve follows this time exactly. Debris stream + fall as
-/// the time advances forward; scrubbing back clears the rubble and re-drills.
-var drill_time_override: ?f64 = null;
-var last_drill_t: f64 = -1;
-
-/// A static ground whose top is the y=0 grid plane, so the wall stands on the
-/// grid and debris come to rest on it (the reference grid is the visible floor).
-fn addDrillFloor() void {
-    _ = App.stage.physics.createBody(.{
-        .motion = .static,
-        .shape = .{ .box = .{ .half_extents = .{ 16, 0.5, 16 } } },
-        .position = .{ 0, -0.5, 0 }, // top at y = 0
-        .friction = 0.8,
-    }) catch {};
-}
-
-/// Live drill demo (the running app, native `QUINE_SDF_DEMO=drill` or web
-/// `window.QUINE_SDF_DEMO="drill"`): the camera-only stage gets the drill SDF
-/// scene + a floor + a debris stream. From `t=0` the drill bores in real time;
-/// `frame()` advances it, streams debris as cells clear, and steps physics.
-fn setupLiveDrill() void {
-    loadSceneFrom(sdf_thumb_json);
-    App.stage.world.sdf_scene = core.sdfDrillWall();
-    App.stage.world.time = 0;
-    addDrillFloor();
-    drill_stream = scene_runtime.debris.Stream.init(std.heap.c_allocator, &App.stage.world.sdf_scene.?, 0.08, .{}) catch null;
-    App.renderer.preview = false;
-}
-
-/// Thumbnail variant: fast-forward the same live path (drill + streaming debris +
-/// physics) so the captured frame shows the wall bored through and the rubble
-/// already settled on the floor.
-fn setupDebrisThumb() void {
-    const a = std.heap.c_allocator;
-    App.renderer.draw_grid = true; // the grid is the floor the wall stands on
-    App.renderer.preview = false;
-    addDrillFloor();
-    App.stage.world.time = 0;
-    App.stage.world.sdf_scene.?.advance(0);
-    var stream = scene_runtime.debris.Stream.init(a, &App.stage.world.sdf_scene.?, 0.08, .{}) catch return;
-    var s: usize = 0;
-    while (s < 300) : (s += 1) {
-        App.stage.world.time += fixed_dt;
-        App.stage.world.sdf_scene.?.advance(App.stage.world.time);
-        _ = stream.update(a, &App.stage.world, &App.stage.physics, &App.stage.world.sdf_scene.?, 3) catch {};
-        App.stage.physics.step(@floatCast(fixed_dt)) catch {};
-    }
-    stream.sync(&App.stage.world, &App.stage.physics);
-    drill_stream = stream;
-}
-
-/// Whether the live drill demo was requested (native env / web window flag).
-fn drillDemoRequested() bool {
-    if (is_web) {
-        const v = std.mem.span(emscripten_run_script_string("(window.QUINE_SDF_DEMO||'')"));
-        return std.mem.eql(u8, v, "drill");
-    }
-    const v = std.c.getenv("QUINE_SDF_DEMO") orelse return false;
-    return std.mem.eql(u8, std.mem.span(v), "drill");
-}
 
 extern fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, fmt: c_uint, typ: c_uint, pixels: ?*anyopaque) void;
 extern fn glFinish() void;

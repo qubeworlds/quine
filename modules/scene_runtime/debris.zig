@@ -495,8 +495,7 @@ test "drill debris: cleared wall material spawns convex chunks that fall and set
     });
 
     // Drill partway through, then cache + extract debris.
-    var scene = core.sdfDrillWall();
-    scene.advance(1.6);
+    var scene = core.carvedWall();
     var cache = try core.sdf_cache.build(alloc, &scene, 0.08);
     defer cache.deinit(alloc);
 
@@ -533,8 +532,7 @@ test "renderable debris: chunks get mesh entities whose transforms track physics
     });
 
     var world = core.World{};
-    var scene = core.sdfDrillWall();
-    scene.advance(1.6);
+    var scene = core.carvedWall();
     var cache = try core.sdf_cache.build(alloc, &scene, 0.08);
     defer cache.deinit(alloc);
 
@@ -565,27 +563,26 @@ test "live stream: debris appear over time as the drill bores, then settle on th
     });
 
     var world = core.World{};
-    world.sdf_scene = core.sdfDrillWall();
+    world.sdf_scene = core.carvedWall();
 
     var stream = try Stream.init(alloc, &world.sdf_scene.?, 0.08, .{});
     defer stream.deinit(alloc);
 
-    // Before the drill enters, nothing has been cleared → no debris.
-    world.tick(0.0);
-    _ = try stream.update(alloc, &world, &physics, &world.sdf_scene.?, 8);
-    try std.testing.expectEqual(@as(usize, 0), stream.pieces.items.len);
-
-    // Run the sim: the drill bores (world.tick advances the SDF), the stream
-    // spawns chunks as cells clear, physics drops them.
+    // The stream sheds cleared cells a few at a time (capped per update), so
+    // rubble appears progressively rather than all at once.
     const dt: f32 = 1.0 / 60.0;
+    var prev: usize = 0;
+    var grew = false;
     for (0..300) |_| {
-        world.tick(dt);
         _ = try stream.update(alloc, &world, &physics, &world.sdf_scene.?, 2);
+        if (stream.pieces.items.len > prev) grew = true;
+        prev = stream.pieces.items.len;
         try physics.step(dt);
     }
     stream.sync(&world, &physics);
 
-    try std.testing.expect(stream.pieces.items.len > 0); // debris appeared during play
+    try std.testing.expect(grew); // debris accumulated over successive updates
+    try std.testing.expect(stream.pieces.items.len > 0);
     // Everything that spawned has fallen out of the wall toward the floor.
     for (stream.pieces.items) |pc| {
         try std.testing.expect(world.get(core.Transform, pc.entity).?.position.y < -1.0);

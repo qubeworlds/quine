@@ -88,11 +88,10 @@ pub const SdfNode = sdf_scene.Node;
 pub const keyframe = @import("keyframe.zig");
 pub const Timeline = keyframe.Timeline;
 
-/// Built-in SDF scenes for the raymarch path before scene-JSON plumbing lands:
-/// `sdfDemo` (a wall with a sphere fused on) and `sdfDrillWall` (the drill→wall
-/// validation scene as CSG geometry).
-pub const sdfDemo = @import("sdf_scene.zig").demo;
-pub const sdfDrillWall = @import("sdf_scene.zig").drillWall;
+/// Test/example SDF fixture (data only): a wall with a bore carved partway —
+/// used by the debris/cache/mesher tests. Real scenes come from JSON; the engine
+/// has no built-in scene content.
+pub const carvedWall = @import("sdf_scene.zig").carvedWall;
 
 /// Sparse 8³ distance-brick cache over an SdfScene — empty-space skipping for the
 /// raymarcher and the per-brick unit of change for destructible debris + meshing.
@@ -247,7 +246,6 @@ pub const World = struct {
         systems.spin(self, dt);
         systems.squash(self, dt);
         systems.gaze(self, dt);
-        if (self.sdf_scene) |*s| s.advance(self.time);
     }
 };
 

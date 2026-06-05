@@ -527,8 +527,7 @@ test "marching cubes meshes a sphere into a closed manifold near its surface" {
 }
 
 test "meshBrick polygonises a cached brick and is deterministic" {
-    var scene = sdf_scene.drillWall();
-    scene.advance(1.6);
+    var scene = sdf_scene.carvedWall();
     var cache = try sdf_cache.build(testing.allocator, &scene, 0.08);
     defer cache.deinit(testing.allocator);
 
