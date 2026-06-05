@@ -149,6 +149,14 @@ pub const Renderer = struct {
     skinned_tex_img: sg.Image = .{},
     skinned_tex_view: sg.View = .{},
     skinned_smp: sg.Sampler = .{},
+    /// Base-colour atlas for static meshes (the procedural head's canonical
+    /// unwrap, etc.). Defaults to a 1×1 white so untextured static geometry is
+    /// unchanged. `white_view` is a permanent 1×1 white bound by the grid/gizmo/
+    /// transparent draws, which never carry an atlas.
+    static_tex_img: sg.Image = .{},
+    static_tex_view: sg.View = .{},
+    white_img: sg.Image = .{},
+    white_view: sg.View = .{},
     pass_action: sg.PassAction = .{},
     cache: mesh_cache.MeshCache = .{},
     /// Draw the world-space reference grid. Off for clean material thumbnails.
@@ -195,6 +203,7 @@ pub const Renderer = struct {
         layout.attrs[shd.ATTR_triangle_position].format = .FLOAT3;
         layout.attrs[shd.ATTR_triangle_normal].format = .FLOAT3;
         layout.attrs[shd.ATTR_triangle_color0].format = .FLOAT4;
+        layout.attrs[shd.ATTR_triangle_texcoord0].format = .FLOAT2;
 
         self.pip = sg.makePipeline(.{
             .shader = shader,
@@ -285,6 +294,15 @@ pub const Renderer = struct {
         });
         self.uploadSkinnedTexture(null); // creates the white fallback image + view
 
+        // Permanent 1×1 white for the static draws that never carry an atlas
+        // (grid, gizmo, transparent parts), plus the default static atlas.
+        const white_px = [_]u8{ 255, 255, 255, 255 };
+        var white_data = sg.ImageData{};
+        white_data.mip_levels[0] = sg.asRange(&white_px);
+        self.white_img = sg.makeImage(.{ .width = 1, .height = 1, .pixel_format = .RGBA8, .data = white_data, .label = "white-1x1" });
+        self.white_view = sg.makeView(.{ .texture = .{ .image = self.white_img } });
+        self.uploadStaticTexture(null); // static atlas defaults to its own white
+
         // Preview backdrop: a vertex-less fullscreen triangle (the bg shader
         // builds positions from gl_VertexIndex), depth-test off so it fills the
         // frame behind the body. Only drawn when `preview` is set.
@@ -369,6 +387,37 @@ pub const Renderer = struct {
         self.skinned_tex_view = sg.makeView(.{ .texture = .{ .image = self.skinned_tex_img } });
     }
 
+    /// Upload a base-colour atlas for static meshes (e.g. the procedural head's
+    /// canonical unwrap), or a 1×1 white fallback when `tex` is null. Mirrors
+    /// `uploadSkinnedTexture` for the non-skinned pipeline.
+    pub fn uploadStaticTexture(self: *Renderer, tex: ?core.Texture) void {
+        sg.destroyView(self.static_tex_view); // no-op on the initial invalid handle
+        sg.destroyImage(self.static_tex_img);
+        if (tex) |t| {
+            var data = sg.ImageData{};
+            data.mip_levels[0] = sg.asRange(t.pixels);
+            self.static_tex_img = sg.makeImage(.{
+                .width = @intCast(t.width),
+                .height = @intCast(t.height),
+                .pixel_format = .RGBA8,
+                .data = data,
+                .label = "static-base-color",
+            });
+        } else {
+            const white = [_]u8{ 255, 255, 255, 255 };
+            var data = sg.ImageData{};
+            data.mip_levels[0] = sg.asRange(&white);
+            self.static_tex_img = sg.makeImage(.{
+                .width = 1,
+                .height = 1,
+                .pixel_format = .RGBA8,
+                .data = data,
+                .label = "static-white-fallback",
+            });
+        }
+        self.static_tex_view = sg.makeView(.{ .texture = .{ .image = self.static_tex_img } });
+    }
+
     /// Draw one frame from `queue`, resolving mesh handles against `meshes`.
     /// Reads only core state; does not modify the simulation.
     ///
@@ -409,6 +458,8 @@ pub const Renderer = struct {
             sg.applyPipeline(self.grid_pip);
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = self.grid_vbuf;
+            bind.views[shd.VIEW_tex] = self.white_view;
+            bind.samplers[shd.SMP_smp] = self.skinned_smp;
             sg.applyBindings(bind);
             const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
@@ -425,6 +476,8 @@ pub const Renderer = struct {
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = gm.vbuf;
             if (gm.indexed) bind.index_buffer = gm.ibuf;
+            bind.views[shd.VIEW_tex] = self.static_tex_view;
+            bind.samplers[shd.SMP_smp] = self.skinned_smp;
             sg.applyBindings(bind);
 
             const params = shd.VsParams{
@@ -436,6 +489,7 @@ pub const Renderer = struct {
             var fsp = materialParams(item.material);
             if (self.preview) fsp.pbr[2] = 1; // staging lights (fill/rim/softboxes)
             if (self.preview_dimples != 0) fsp.pbr[3] = @floatFromInt(self.preview_dimples); // dimple mode
+            if (probe) fsp.emissive[3] = @floatFromInt(self.debug_mode); // G-buffer channel
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {
@@ -449,7 +503,8 @@ pub const Renderer = struct {
 
         // Transparent pass: after all opaque geometry (incl. the skinned body),
         // so glassy parts like the cornea composite over what's behind them.
-        self.drawTransparent(queue, meshes, view_proj, eye4);
+        // Skipped in a G-buffer probe — the map should be the opaque surface only.
+        if (!probe) self.drawTransparent(queue, meshes, view_proj, eye4);
 
         if (!probe) {
             if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
@@ -500,6 +555,8 @@ pub const Renderer = struct {
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = gm.vbuf;
             if (gm.indexed) bind.index_buffer = gm.ibuf;
+            bind.views[shd.VIEW_tex] = self.white_view; // transparent parts carry no atlas
+            bind.samplers[shd.SMP_smp] = self.skinned_smp;
             sg.applyBindings(bind);
 
             const params = shd.VsParams{
@@ -576,6 +633,8 @@ pub const Renderer = struct {
         sg.applyPipeline(self.gizmo_pip);
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.gizmo_vbuf;
+        bind.views[shd.VIEW_tex] = self.white_view;
+        bind.samplers[shd.SMP_smp] = self.skinned_smp;
         sg.applyBindings(bind);
         const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));

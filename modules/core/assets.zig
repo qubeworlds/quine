@@ -9,12 +9,16 @@
 const std = @import("std");
 const m = @import("math");
 
-/// A single mesh vertex: position, normal, and RGBA color. `extern` for a
-/// stable, C-compatible layout the render layer can upload without repacking.
+/// A single mesh vertex: position, normal, RGBA color, and a texture
+/// coordinate. `extern` for a stable, C-compatible layout the render layer can
+/// upload without repacking. `uv` defaults to (0,0) so the many procedural mesh
+/// builders that predate texturing keep compiling unchanged — only meshes that
+/// author a UV unwrap (e.g. the head) and bind a texture use it.
 pub const Vertex = extern struct {
     position: m.Vec3,
     normal: m.Vec3,
     color: m.Vec4,
+    uv: [2]f32 = .{ 0, 0 },
 };
 
 /// A skinned mesh vertex: adds up to four joint influences. Joint indices are

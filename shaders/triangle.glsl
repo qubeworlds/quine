@@ -15,11 +15,14 @@ layout(binding=0) uniform vs_params {
 in vec3 position;
 in vec3 normal;
 in vec4 color0;
+in vec2 texcoord0;
 
 out vec3 world_normal;
 out vec3 view_dir;
 out vec3 frag_local_pos;
 out vec4 color;
+out vec2 uv;
+out vec3 world_pos;
 
 void main() {
     vec4 wp = model * vec4(position, 1.0);
@@ -29,6 +32,8 @@ void main() {
     frag_local_pos = position; // object space — surface finishes tile here so they
                                // stick to the body as it moves/animates
     color = color0;
+    uv = texcoord0;       // UV unwrap (0 for untextured procedural meshes)
+    world_pos = wp.xyz;   // for the G-buffer position probe
 }
 @end
 
@@ -37,16 +42,20 @@ void main() {
 // tints the vertex colour (white vertices => the material drives the colour);
 // `pbr` carries metallic/roughness; `emissive` adds light. Grid/gizmo bind a
 // white default.
+layout(binding=0) uniform texture2D tex;
+layout(binding=0) uniform sampler smp;
 layout(binding=1) uniform fs_params {
     vec4 base_color;   // albedo rgba
     vec4 pbr;          // x = metallic, y = roughness, z = preview staging, w = dimples
-    vec4 emissive;     // rgb emissive (a reserved)
+    vec4 emissive;     // rgb emissive; .w = G-buffer probe (0 lit, 1 uv, 2 pos, 3 normal)
 };
 
 in vec3 world_normal;
 in vec3 view_dir;
 in vec3 frag_local_pos;
 in vec4 color;
+in vec2 uv;
+in vec3 world_pos;
 out vec4 frag_color;
 
 const float PI = 3.14159265359;
@@ -161,6 +170,14 @@ vec3 dimpleSurfaceNormal(vec3 n, vec3 p) {
 }
 
 void main() {
+    // G-buffer probe (emissive.w): output the UV / world position / world normal
+    // instead of shading, so offscreen tooling can read this map back. Matches
+    // the skinned shader's channels.
+    int probe = int(emissive.w + 0.5);
+    if (probe == 1) { frag_color = vec4(uv, 0.0, 1.0); return; }
+    if (probe == 2) { frag_color = vec4(world_pos * 0.5 + 0.5, 1.0); return; }
+    if (probe == 3) { frag_color = vec4(normalize(world_normal) * 0.5 + 0.5, 1.0); return; }
+
     vec3 n = normalize(world_normal);
     bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
     // Surface finish (pbr.w): 1 = spherical dimples (the material ball),
@@ -181,7 +198,10 @@ void main() {
     float n_o_h = max(dot(n, h), 0.0);
     float v_o_h = max(dot(v, h), 0.0);
 
-    vec3 albedo = color.rgb * base_color.rgb;
+    // Base colour = vertex colour x material x texture atlas. Untextured meshes
+    // bind a 1x1 white texture, so they fall back to vertex x material unchanged.
+    vec4 tex_s = texture(sampler2D(tex, smp), uv);
+    vec3 albedo = color.rgb * base_color.rgb * tex_s.rgb;
     if (surf == 3) albedo *= basketballSeam(frag_local_pos); // black seams
     float metallic = clamp(pbr.x, 0.0, 1.0);
     float rough = clamp(pbr.y, 0.045, 1.0);
@@ -225,7 +245,7 @@ void main() {
         col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
     }
 
-    frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a);
+    frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a * tex_s.a);
 }
 @end
 
