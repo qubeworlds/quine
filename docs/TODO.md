@@ -257,3 +257,11 @@ the follow camera and the bounce sound.
       ground/obstacles and has an actor path-find across it — exercising
       pathfinding as a data-driven scene behaviour (like the destructible-SDF
       debris: engine = mechanism, the scene supplies the geometry + agent).
+
+## 6. Meshlets composition example
+
+- [ ] **Build a Meshlets composition example.** A scene assembled from meshlets
+      (small mesh clusters) composed into a larger object — exercising the
+      meshlet pipeline as data-driven composition (engine = the meshlet
+      assembly/render mechanism; the scene supplies the clusters + how they
+      compose), the same engine-vs-data split as the SDF/debris work.
