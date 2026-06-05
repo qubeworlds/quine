@@ -82,6 +82,12 @@ pub const sdf = @import("sdf.zig");
 pub const sdf_scene = @import("sdf_scene.zig");
 pub const SdfScene = sdf_scene.SdfScene;
 pub const SdfNode = sdf_scene.Node;
+
+/// Keyframe animation: the authored timeline (tracks of bezier/linear/hold
+/// curves) the runtime plays back each tick onto component / SDF-node fields.
+pub const keyframe = @import("keyframe.zig");
+pub const Timeline = keyframe.Timeline;
+
 /// Built-in SDF scenes for the raymarch path before scene-JSON plumbing lands:
 /// `sdfDemo` (a wall with a sphere fused on) and `sdfDrillWall` (the drill→wall
 /// validation scene as CSG geometry).
@@ -111,6 +117,7 @@ test {
     _ = @import("eye.zig");
     _ = @import("sdf.zig");
     _ = @import("sdf_scene.zig");
+    _ = @import("keyframe.zig");
     _ = @import("sdf_cache.zig");
     _ = @import("marching_cubes.zig");
     _ = @import("png.zig");

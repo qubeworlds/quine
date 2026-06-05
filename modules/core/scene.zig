@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const sdf_scene = @import("sdf_scene.zig");
+const kf = @import("keyframe.zig");
 
 pub const Vec3 = [3]f32;
 pub const Rgba = [4]f32;
@@ -218,6 +219,9 @@ pub const Scene = struct {
     script: ?Script = null,
     gravity: Vec3 = .{ 0, -9.81, 0 },
     entities: []const Entity,
+    /// Authored keyframe animation: fps, length, and the tracks the engine plays
+    /// back each tick. Null for a static scene.
+    timeline: ?kf.Timeline = null,
 };
 
 // =============================================================================
@@ -243,6 +247,7 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
     };
     if (o.get("gravity")) |g| scene.gravity = try asVec3(g);
     if (o.get("script")) |s| scene.script = try parseScript(arena, s);
+    if (o.get("timeline")) |t| scene.timeline = try parseTimeline(arena, t);
 
     const ents_v = o.get("entities") orelse return error.InvalidScene;
     if (ents_v != .array) return error.InvalidScene;
@@ -250,6 +255,58 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
     for (ents_v.array.items, 0..) |ev, i| ents[i] = try parseEntity(ev);
     scene.entities = ents;
     return scene;
+}
+
+fn parseInterp(s: []const u8) kf.Interp {
+    if (std.mem.eql(u8, s, "linear")) return .linear;
+    if (std.mem.eql(u8, s, "hold")) return .hold;
+    return .bezier;
+}
+
+fn parseHandle(v: Value) !kf.Handle {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var h = kf.Handle{};
+    if (o.get("dx")) |x| h.dx = try asF32(x);
+    if (o.get("dy")) |x| h.dy = try asF32(x);
+    return h;
+}
+
+fn parseTimeline(arena: std.mem.Allocator, v: Value) !kf.Timeline {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var tl = kf.Timeline{};
+    if (o.get("fps")) |x| tl.fps = try asF32(x);
+    if (o.get("durationFrames")) |x| tl.duration_frames = try asU32(x);
+    const tv = o.get("tracks") orelse return tl;
+    if (tv != .array) return error.InvalidScene;
+    const tracks = try arena.alloc(kf.Track, tv.array.items.len);
+    for (tv.array.items, 0..) |trv, i| {
+        if (trv != .object) return error.InvalidScene;
+        const to = trv.object;
+        const kvs = to.get("keyframes") orelse return error.InvalidScene;
+        if (kvs != .array) return error.InvalidScene;
+        const keys = try arena.alloc(kf.Keyframe, kvs.array.items.len);
+        for (kvs.array.items, 0..) |kvv, j| {
+            if (kvv != .object) return error.InvalidScene;
+            const ko = kvv.object;
+            var key = kf.Keyframe{
+                .frame = try asF32(ko.get("frame") orelse return error.InvalidScene),
+                .value = try asF32(ko.get("value") orelse return error.InvalidScene),
+            };
+            if (ko.get("in")) |h| key.in = try parseHandle(h);
+            if (ko.get("out")) |h| key.out = try parseHandle(h);
+            if (ko.get("interp")) |x| key.interp = parseInterp(try asStr(x));
+            keys[j] = key;
+        }
+        tracks[i] = .{
+            .target = try asStr(to.get("target") orelse return error.InvalidScene),
+            .path = try asStr(to.get("path") orelse return error.InvalidScene),
+            .keyframes = keys,
+        };
+    }
+    tl.tracks = tracks;
+    return tl;
 }
 
 fn parseScript(arena: std.mem.Allocator, v: Value) !Script {

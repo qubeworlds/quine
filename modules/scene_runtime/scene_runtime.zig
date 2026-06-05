@@ -77,6 +77,9 @@ pub const SceneRuntime = struct {
     post_step: ?*const fn (*SceneRuntime, f32) void = null,
     /// Opaque skill state the hooks recover (e.g. the bound JS context).
     skill_ctx: ?*anyopaque = null,
+    /// Authored keyframe animation, played back each tick onto component / SDF
+    /// fields. Deep-copied into `arena` at init (scene_data needn't outlive init).
+    timeline: ?core.Timeline = null,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -86,6 +89,10 @@ pub const SceneRuntime = struct {
         self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity };
         errdefer self.arena.deinit();
         const a = self.arena.allocator();
+
+        // Keep the authored timeline alive for the runtime (scene_data needn't
+        // outlive init): deep-copy tracks/keyframes/strings into our arena.
+        if (scene_data.timeline) |tl| self.timeline = try dupeTimeline(a, tl);
 
         // ECS half (headless `core`): transforms, spin, squash, camera, builtin meshes.
         const entities = try core.loadScene(a, &self.world, scene_data);
@@ -703,6 +710,15 @@ pub const SceneRuntime = struct {
     pub fn update(self: *SceneRuntime, dt: f32) !void {
         self.time += dt;
 
+        // 0. Keyframe playback: map wall-clock time to a looping timeline frame
+        //    and write each track's sampled value onto its target field. Done
+        //    first so animated transforms/SDF feed parenting, physics, and render.
+        if (self.timeline) |tl| {
+            const total: f32 = @floatFromInt(tl.duration_frames);
+            const frame = if (total > 0 and tl.fps > 0) @mod(self.time * tl.fps, total) else 0;
+            self.applyTimeline(tl, frame);
+        }
+
         // 1. Sample each model's animation into its pose.
         for (self.bindings) |*b| {
             if (b.model) |*model| if (b.pose) |*pose| {
@@ -803,6 +819,96 @@ pub const SceneRuntime = struct {
             if (std.mem.eql(u8, b.name, name)) return b;
         }
         return null;
+    }
+
+    // --- Keyframe playback --------------------------------------------------
+
+    /// Deep-copy a timeline (tracks, keyframes, name/path strings) into `a`, so
+    /// it can outlive the caller's parse arena.
+    fn dupeTimeline(a: std.mem.Allocator, tl: core.Timeline) !core.Timeline {
+        const tracks = try a.alloc(core.keyframe.Track, tl.tracks.len);
+        for (tl.tracks, 0..) |tr, i| {
+            tracks[i] = .{
+                .target = try a.dupe(u8, tr.target),
+                .path = try a.dupe(u8, tr.path),
+                .keyframes = try a.dupe(core.keyframe.Keyframe, tr.keyframes),
+            };
+        }
+        return .{ .fps = tl.fps, .duration_frames = tl.duration_frames, .tracks = tracks };
+    }
+
+    /// Write `v` into the lane named by `lane` (".x"/".y"/".z", or ".r"/".g"/".b")
+    /// of a Vec3; returns whether it matched.
+    fn setVec3Lane(ptr: *m.Vec3, lane: []const u8, v: f32) bool {
+        if (std.mem.eql(u8, lane, ".x") or std.mem.eql(u8, lane, ".r")) {
+            ptr.x = v;
+            return true;
+        }
+        if (std.mem.eql(u8, lane, ".y") or std.mem.eql(u8, lane, ".g")) {
+            ptr.y = v;
+            return true;
+        }
+        if (std.mem.eql(u8, lane, ".z") or std.mem.eql(u8, lane, ".b")) {
+            ptr.z = v;
+            return true;
+        }
+        return false;
+    }
+
+    /// Apply a Vec3 sub-field: `field` like "position.x" against the expected `name`.
+    fn setVec3(ptr: *m.Vec3, field: []const u8, name: []const u8, v: f32) bool {
+        if (!std.mem.startsWith(u8, field, name)) return false;
+        return setVec3Lane(ptr, field[name.len..], v);
+    }
+
+    fn applyTimeline(self: *SceneRuntime, tl: core.Timeline, frame: f32) void {
+        for (tl.tracks) |tr| self.applyParam(tr.target, tr.path, core.keyframe.sample(tr.keyframes, frame));
+    }
+
+    /// Resolve a track's {target, path} to a mutable field and write `v`. Handles
+    /// SDF-node params and the transform / material / spin / squash components;
+    /// unknown paths are ignored (forward-compatible with the schema).
+    fn applyParam(self: *SceneRuntime, target: []const u8, path: []const u8, v: f32) void {
+        const sdf_prefix = "geometry.nodes.";
+        if (std.mem.startsWith(u8, path, sdf_prefix)) {
+            const rest = path[sdf_prefix.len..]; // "<index>.<field...>"
+            const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return;
+            const idx = std.fmt.parseInt(usize, rest[0..dot], 10) catch return;
+            const field = rest[dot + 1 ..];
+            if (self.world.sdf_scene) |*sc| {
+                if (idx >= sc.len) return;
+                const n = &sc.nodes[idx];
+                if (std.mem.eql(u8, field, "radius")) n.radius = v else if (std.mem.eql(u8, field, "k")) n.k = v else if (setVec3(&n.center, field, "center", v)) {} else if (setVec3(&n.half, field, "half", v)) {} else _ = setVec3(&n.color, field, "color", v);
+            }
+            return;
+        }
+
+        const bnd = self.find(target) orelse return;
+        const id = bnd.entity;
+
+        if (std.mem.startsWith(u8, path, "transform.")) {
+            const t = self.world.get(core.Transform, id) orelse return;
+            const f = path["transform.".len..];
+            if (setVec3(&t.position, f, "position", v)) {} else if (setVec3(&t.rotation, f, "rotation", v)) {} else _ = setVec3(&t.scale, f, "scale", v);
+        } else if (std.mem.startsWith(u8, path, "material.")) {
+            const mat = self.world.get(core.Material, id) orelse return;
+            const f = path["material.".len..];
+            if (std.mem.eql(u8, f, "metallic")) {
+                mat.metallic = v;
+            } else if (std.mem.eql(u8, f, "roughness")) {
+                mat.roughness = v;
+            } else if (std.mem.startsWith(u8, f, "color")) {
+                const lane = f["color".len..];
+                if (std.mem.eql(u8, lane, ".r")) mat.base_color.x = v else if (std.mem.eql(u8, lane, ".g")) mat.base_color.y = v else if (std.mem.eql(u8, lane, ".b")) mat.base_color.z = v else if (std.mem.eql(u8, lane, ".a")) mat.base_color.w = v;
+            } else {
+                _ = setVec3(&mat.emissive, f, "emissive", v);
+            }
+        } else if (std.mem.startsWith(u8, path, "spin.velocity")) {
+            const sp = self.world.get(core.Spin, id) orelse return;
+            _ = setVec3(&sp.velocity, path["spin.".len..], "velocity", v);
+        } else if (std.mem.eql(u8, path, "squash.value")) {
+            if (self.world.get(core.Squash, id)) |sq| sq.value = v;
+        }
     }
 
     /// Closing-speed impulse recorded between two named bodies last step, or 0.
