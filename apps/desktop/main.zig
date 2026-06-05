@@ -379,6 +379,36 @@ fn findCamera(world: *core.World) ?core.Entity {
     return it.next();
 }
 
+/// Drive the orbit camera from the timeline's `camera.controller.*` tracks at the
+/// current (looping) frame. The camera is an always-available keyframe part; its
+/// tracks feed the app's orbit controller (distance/yaw/pitch/target), which then
+/// writes the camera Transform via `orbit.apply`.
+fn applyCameraTimeline() void {
+    const tl = App.stage.timeline orelse return;
+    const total: f32 = @floatFromInt(tl.duration_frames);
+    if (total <= 0 or tl.fps <= 0) return;
+    const cur_frame = @mod(App.stage.time * tl.fps, total);
+    const prefix = "camera.controller.";
+    for (tl.tracks) |tr| {
+        if (!std.mem.startsWith(u8, tr.path, prefix)) continue;
+        const v = core.keyframe.sample(tr.keyframes, cur_frame);
+        const f = tr.path[prefix.len..];
+        if (std.mem.eql(u8, f, "distance")) {
+            App.orbit_cam.distance = v;
+        } else if (std.mem.eql(u8, f, "yaw")) {
+            App.orbit_cam.yaw = v;
+        } else if (std.mem.eql(u8, f, "pitch")) {
+            App.orbit_cam.pitch = v;
+        } else if (std.mem.eql(u8, f, "target.x")) {
+            App.orbit_cam.target.x = v;
+        } else if (std.mem.eql(u8, f, "target.y")) {
+            App.orbit_cam.target.y = v;
+        } else if (std.mem.eql(u8, f, "target.z")) {
+            App.orbit_cam.target.z = v;
+        }
+    }
+}
+
 /// Drain the inbound message queue in arrival order, applying each frame's
 /// effect. Runs at the top of `frame()` so a reload lands at a safe point, never
 /// reentrantly mid-tick. The editor pushes live edits (and, later, gameplay
@@ -611,6 +641,11 @@ export fn frame() void {
     }
     App.prev_pointer_down = App.pointer_down;
 
+    // Camera playback: drive the orbit controller from the timeline's
+    // camera.controller.* tracks (unless the user is actively orbiting), then
+    // write it into the camera Transform. The orbit cam is app/editor input, so
+    // animating it here is just another input source — core stays untouched.
+    if (App.drag_mode != .orbit) applyCameraTimeline();
     if (App.camera) |cam| App.orbit_cam.apply(&App.stage.world, cam);
 
     var gizmo_info: ?render.GizmoInfo = null;
