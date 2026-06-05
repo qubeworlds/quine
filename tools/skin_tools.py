@@ -162,16 +162,24 @@ def _similarity(src, dst):
 # ----------------------------------------------------------------- project (#4)
 def cmd_project(args):
     scene = args.scene
-    glb = args.glb or _glb_from_scene(scene)
     src = Image.open(args.image).convert("RGB"); SW, SH = src.size
     srcA = np.asarray(src)
     S = args.size
 
-    # screen->image alignment: your two eye points -> the model's detected eyes.
+    # screen->image alignment: your eye points -> the model's eyes. Auto-detected
+    # from the eye-island UVs, or given explicitly via --model-eyes for meshes
+    # with no eye islands (e.g. the bare procedural head).
     uv = render_gbuffer(scene, "uv", S)
-    model_eyes = np.array(_detect_model_eyes(uv))           # screen px @ size S
+    model_eyes = (np.array(args.model_eyes, float).reshape(2, 2)
+                  if args.model_eyes else np.array(_detect_model_eyes(uv)))
     img_eyes = np.array(args.image_eyes, float).reshape(2, 2)
     M = _similarity(model_eyes, img_eyes)                   # screen -> image
+
+    if args.out_image:  # G-buffer-only scatter -> texture PNG (no glb needed)
+        _project_scatter(uv, srcA, M, img_eyes, args)
+        return
+
+    glb = args.glb or _glb_from_scene(scene)
     project_pt, eye, _fwd = _scene_camera(scene, S)         # 3D -> the same screen
 
     # Texel-space (inverse) projection: rasterize the target UV layout to get
@@ -205,6 +213,43 @@ def cmd_project(args):
     print(f"projected {args.image} onto {args.out or glb}  "
           f"(model eyes {model_eyes[0].round().tolist()},{model_eyes[1].round().tolist()}; "
           f"{int(good.sum())} of {int(mask.sum())} texels covered)")
+
+
+def _project_scatter(uv, srcA, M, img_eyes, args):
+    """G-buffer-only paint: scatter the source image through the rendered UV map
+    into a texture PNG. For targets that aren't a glb on disk (the procedural
+    head, bound at runtime via QUINE_FACE_TEX). Front-view coverage; texels the
+    camera can't reach (head back/sides) are filled with a skin tone."""
+    SH, SW, _ = srcA.shape
+    R, G = uv[..., 0].astype(float), uv[..., 1].astype(float)
+    face = (R + G) > 20                       # any rendered mesh pixel
+    TS = args.tex
+    sumc = np.zeros((TS, TS, 3)); cnt = np.zeros((TS, TS))
+    sy, sx = np.where(face)
+    U = (R[face] / 255 * (TS - 1)).astype(int); V = (G[face] / 255 * (TS - 1)).astype(int)
+    ix = M[0, 0] * sx + M[0, 1] * sy + M[0, 2]
+    iy = M[1, 0] * sx + M[1, 1] * sy + M[1, 2]
+    ok = (ix >= 0) & (ix < SW) & (iy >= 0) & (iy < SH)
+    col = np.zeros((len(sx), 3)); col[ok] = srcA[iy[ok].astype(int), ix[ok].astype(int)]
+    np.add.at(sumc, (V[ok], U[ok]), col[ok]); np.add.at(cnt, (V[ok], U[ok]), 1)
+    hit = cnt > 0; tex = np.zeros((TS, TS, 3)); tex[hit] = sumc[hit] / cnt[hit, None]
+    tex, filled = _dilate(tex, hit, args.fill)
+    mid = img_eyes.mean(0)                     # a cheek sample, below the eyes
+    skin = srcA[min(SH - 1, int(mid[1]) + 80), min(SW - 1, int(mid[0]))]
+    tex[~filled] = skin
+    Image.fromarray(tex.astype(np.uint8)).save(args.out_image)
+    print(f"projected {args.image} -> {args.out_image}  "
+          f"({int(hit.sum())} texels hit, rest skin-filled)")
+
+
+def _dilate(img, mask, n):
+    m = mask.copy(); out = img.copy()
+    for _ in range(n):
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]:
+            sh = np.roll(np.roll(out, dy, 0), dx, 1)
+            shm = np.roll(np.roll(m, dy, 0), dx, 1)
+            f = (~m) & shm; out[f] = sh[f]; m[f] = True
+    return out, m
 
 
 def _scene_camera(scene, size):
@@ -345,10 +390,15 @@ def main():
     p.add_argument("--image", required=True, help="source image to project")
     p.add_argument("--image-eyes", nargs=4, type=float, required=True,
                    metavar=("LX", "LY", "RX", "RY"), help="eye centres in the source image (px)")
+    p.add_argument("--model-eyes", nargs=4, type=float, default=None,
+                   metavar=("LX", "LY", "RX", "RY"),
+                   help="explicit model eye screen positions (skip auto-detect; for featureless meshes)")
     p.add_argument("--glb", help="target glb (default: inferred from the scene)")
     p.add_argument("--out", help="output glb (default: overwrite target)")
+    p.add_argument("--out-image", help="write a texture PNG instead of a glb (for QUINE_FACE_TEX / procedural meshes)")
     p.add_argument("--size", type=int, default=768, help="G-buffer / projection screen resolution")
     p.add_argument("--tex", type=int, default=1024, help="texture resolution")
+    p.add_argument("--fill", type=int, default=3, help="dilation passes to fill scatter gaps (--out-image mode)")
     p.add_argument("--feather", type=float, default=2, help="composite edge feather (px)")
     p.set_defaults(func=cmd_project)
 
