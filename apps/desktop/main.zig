@@ -385,9 +385,7 @@ fn findCamera(world: *core.World) ?core.Entity {
 /// writes the camera Transform via `orbit.apply`.
 fn applyCameraTimeline() void {
     const tl = App.stage.timeline orelse return;
-    const total: f32 = @floatFromInt(tl.duration_frames);
-    if (total <= 0 or tl.fps <= 0) return;
-    const cur_frame = @mod(App.stage.time * tl.fps, total);
+    const cur_frame = App.stage.timelineFrame() orelse return; // shared frame source (scrub or free-run)
     const prefix = "camera.controller.";
     for (tl.tracks) |tr| {
         if (!std.mem.startsWith(u8, tr.path, prefix)) continue;
@@ -502,6 +500,12 @@ fn dispatchMessage(raw: []const u8) void {
                 App.stage.setTimeline(tl) catch {};
             } else |_| {}
         }
+    } else if (std.mem.eql(u8, tv.string, "timeline_time")) {
+        // Playhead sync: the editor sends its playhead time (seconds) so the
+        // preview scrubs/plays in lockstep instead of free-running its own loop.
+        if (v.object.get("t")) |x| if (numF32(x)) |f| {
+            App.stage.scrub_time = f;
+        };
     } else if (std.mem.eql(u8, tv.string, "drill_time")) {
         // Timeline → engine: the keyframe editor's playhead drives the SDF drill.
         // Setting this switches the drill demo from free-running to externally

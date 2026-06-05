@@ -83,6 +83,10 @@ pub const SceneRuntime = struct {
     /// Dedicated arena for a *live* timeline (the editor pushing edits): reset on
     /// each `setTimeline` so repeated pushes don't grow memory. Null until first.
     tl_arena: ?std.heap.ArenaAllocator = null,
+    /// Editor-driven playhead time (seconds). When set, the timeline is sampled at
+    /// this time instead of free-running — so scrubbing/play in the editor drives
+    /// the preview frame-for-frame. Null = free-run off the sim clock.
+    scrub_time: ?f32 = null,
     arena: std.heap.ArenaAllocator = undefined,
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
@@ -714,14 +718,10 @@ pub const SceneRuntime = struct {
     pub fn update(self: *SceneRuntime, dt: f32) !void {
         self.time += dt;
 
-        // 0. Keyframe playback: map wall-clock time to a looping timeline frame
-        //    and write each track's sampled value onto its target field. Done
-        //    first so animated transforms/SDF feed parenting, physics, and render.
-        if (self.timeline) |tl| {
-            const total: f32 = @floatFromInt(tl.duration_frames);
-            const frame = if (total > 0 and tl.fps > 0) @mod(self.time * tl.fps, total) else 0;
-            self.applyTimeline(tl, frame);
-        }
+        // 0. Keyframe playback: sample the timeline at the current frame and write
+        //    each track's value onto its target field. Done first so animated
+        //    transforms/SDF feed parenting, physics, and render.
+        if (self.timelineFrame()) |frame| self.applyTimeline(self.timeline.?, frame);
 
         // 1. Sample each model's animation into its pose.
         for (self.bindings) |*b| {
@@ -872,6 +872,18 @@ pub const SceneRuntime = struct {
         if (self.tl_arena == null) self.tl_arena = std.heap.ArenaAllocator.init(self.arena.child_allocator);
         _ = self.tl_arena.?.reset(.retain_capacity);
         self.timeline = try dupeTimeline(self.tl_arena.?.allocator(), tl);
+    }
+
+    /// Current timeline frame: editor-driven (`scrub_time`) when the editor is
+    /// steering the playhead, else free-running off the accumulated sim time.
+    /// Null when there's no timeline. The one frame source for both component and
+    /// camera playback, so they stay in lockstep with the editor.
+    pub fn timelineFrame(self: *SceneRuntime) ?f32 {
+        const tl = self.timeline orelse return null;
+        const total: f32 = @floatFromInt(tl.duration_frames);
+        if (total <= 0 or tl.fps <= 0) return 0;
+        const t = self.scrub_time orelse self.time;
+        return @mod(t * tl.fps, total);
     }
 
     fn applyTimeline(self: *SceneRuntime, tl: core.Timeline, frame: f32) void {
