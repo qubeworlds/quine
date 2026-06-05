@@ -270,6 +270,14 @@ fn loadScene() void {
                 _ = std.c.fclose(fp);
                 if (n > 0) {
                     loadSceneFrom(buf[0..n]);
+                    // QUINE_THUMB_T=<seconds>: advance the runtime so the captured
+                    // frame shows the scene's keyframe timeline at that time (an
+                    // update(0) at the seeded clock applies the tracks; dt=0 keeps
+                    // physics a no-op).
+                    if (std.c.getenv("QUINE_THUMB_T")) |tv| {
+                        App.stage.time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
+                        App.stage.update(0) catch {};
+                    }
                     return;
                 }
             }
