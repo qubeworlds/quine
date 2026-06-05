@@ -165,50 +165,71 @@ def cmd_project(args):
     glb = args.glb or _glb_from_scene(scene)
     src = Image.open(args.image).convert("RGB"); SW, SH = src.size
     srcA = np.asarray(src)
+    S = args.size
 
-    uv = render_gbuffer(scene, "uv", args.size)
-    H, W, _ = uv.shape
-    R, G, B = uv[..., 0].astype(float), uv[..., 1].astype(float), uv[..., 2].astype(float)
-    face = (R + G) > 25  # any rendered mesh pixel (black background elsewhere)
-
-    # screen->image alignment: your two eye points -> the model's detected eyes
+    # screen->image alignment: your two eye points -> the model's detected eyes.
+    uv = render_gbuffer(scene, "uv", S)
+    model_eyes = np.array(_detect_model_eyes(uv))           # screen px @ size S
     img_eyes = np.array(args.image_eyes, float).reshape(2, 2)
-    model_eyes = np.array(_detect_model_eyes(uv))
-    M = _similarity(np.array(model_eyes), img_eyes)  # screen -> image
+    M = _similarity(model_eyes, img_eyes)                   # screen -> image
+    project_pt, eye, _fwd = _scene_camera(scene, S)         # 3D -> the same screen
 
-    # scatter every face pixel's source colour into its texel (UV is exact here)
+    # Texel-space (inverse) projection: rasterize the target UV layout to get
+    # every texel's 3D point + normal, project those into the image, back-face
+    # cull. Covers the whole front in one pass — no scatter gaps to dilate.
+    gltf, binc = _read_glb(glb)
+    prim = gltf["meshes"][0]["primitives"][0]
+    pos = _accessor(gltf, binc, prim["attributes"]["POSITION"])
+    nrm = _accessor(gltf, binc, prim["attributes"]["NORMAL"])
+    uvc = _accessor(gltf, binc, prim["attributes"]["TEXCOORD_0"])
+    idx = _indices(gltf, binc, prim)
+
     TS = args.tex
-    sumc = np.zeros((TS, TS, 3)); cnt = np.zeros((TS, TS))
-    sy, sx = np.where(face)
-    U = (R[face] / 255 * (TS - 1)).astype(int)
-    V = (G[face] / 255 * (TS - 1)).astype(int)
-    ix = M[0, 0] * sx + M[0, 1] * sy + M[0, 2]
-    iy = M[1, 0] * sx + M[1, 1] * sy + M[1, 2]
-    ok = (ix >= 0) & (ix < SW) & (iy >= 0) & (iy < SH)
-    col = np.zeros((len(sx), 3)); col[ok] = srcA[iy[ok].astype(int), ix[ok].astype(int)]
-    np.add.at(sumc, (V[ok], U[ok]), col[ok]); np.add.at(cnt, (V[ok], U[ok]), 1)
-    hit = cnt > 0
-    tex = np.zeros((TS, TS, 3)); tex[hit] = sumc[hit] / cnt[hit, None]
-    tex, filled = _dilate(tex, hit, args.fill)
+    (posmap, nrmmap), mask = _rasterize_attrs(uvc, idx, [pos, nrm], TS)
+    vy, vx = np.where(mask)
+    P, N = posmap[vy, vx], nrmmap[vy, vx]
+    scr, zv = project_pt(P)
+    facing = ((eye - P) * N).sum(1) > 0                     # surface faces the camera
+    ix = M[0, 0] * scr[:, 0] + M[0, 1] * scr[:, 1] + M[0, 2]
+    iy = M[1, 0] * scr[:, 0] + M[1, 1] * scr[:, 1] + M[1, 2]
+    good = facing & (zv > 0) & (ix >= 0) & (ix < SW) & (iy >= 0) & (iy < SH)
 
     base = np.asarray(read_diffuse(glb).resize((TS, TS))).astype(float)
-    alpha = np.asarray(Image.fromarray((filled * 255).astype(np.uint8))
+    out = base.copy()
+    out[vy[good], vx[good]] = srcA[iy[good].astype(int), ix[good].astype(int)]
+    written = np.zeros((TS, TS), bool); written[vy[good], vx[good]] = True
+    alpha = np.asarray(Image.fromarray((written * 255).astype(np.uint8))
                        .filter(ImageFilter.GaussianBlur(args.feather))).astype(float) / 255
-    out = (tex * alpha[..., None] + base * (1 - alpha[..., None])).astype(np.uint8)
+    out = (out * alpha[..., None] + base * (1 - alpha[..., None])).astype(np.uint8)
     write_diffuse(glb, Image.fromarray(out), args.out)
     print(f"projected {args.image} onto {args.out or glb}  "
           f"(model eyes {model_eyes[0].round().tolist()},{model_eyes[1].round().tolist()}; "
-          f"{int(hit.sum())} texels hit)")
+          f"{int(good.sum())} of {int(mask.sum())} texels covered)")
 
 
-def _dilate(img, mask, n):
-    m = mask.copy(); out = img.copy()
-    for _ in range(n):
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]:
-            sh = np.roll(np.roll(out, dy, 0), dx, 1)
-            shm = np.roll(np.roll(m, dy, 0), dx, 1)
-            f = (~m) & shm; out[f] = sh[f]; m[f] = True
-    return out, m
+def _scene_camera(scene, size):
+    """Replicate the scene's orbit camera as a 3D->screen projector (size x size,
+    aspect 1), matching apps/desktop/orbit.zig + the engine's perspective."""
+    doc = json.load(open(scene))
+    cam = next((e["camera"] for e in doc.get("entities", []) if "camera" in e), None)
+    if cam is None:
+        raise SystemExit("scene has no camera entity")
+    c = cam["controller"]
+    tgt = np.array(c.get("target", [0, 0, 0]), float)
+    d = float(c.get("distance", 3.0)); yaw = float(c.get("yaw", 0.0)); pitch = float(c.get("pitch", 0.0))
+    fovY = float(cam.get("fovY", 0.66)); cp = np.cos(pitch)
+    eye = tgt + np.array([d * cp * np.sin(yaw), d * np.sin(pitch), d * cp * np.cos(yaw)])
+    f = tgt - eye; f /= np.linalg.norm(f)
+    right = np.cross(f, [0, 1.0, 0]); right /= np.linalg.norm(right)
+    upv = np.cross(right, f); tah = np.tan(fovY / 2)
+
+    def project_pt(Pp):
+        r = Pp - eye
+        xv, yv, zv = r @ right, r @ upv, r @ f
+        ndx = (xv / zv) / tah; ndy = (yv / zv) / tah
+        return np.stack([(ndx * 0.5 + 0.5) * size, (0.5 - ndy * 0.5) * size], 1), zv
+
+    return project_pt, eye, f
 
 
 def _glb_from_scene(scene):
@@ -251,7 +272,7 @@ def cmd_transfer(args):
     # the closest source surface point and copy that source texel's colour.
     TS = args.tex
     out = np.asarray(read_diffuse(args.dst).resize((TS, TS))).astype(np.uint8).copy()
-    tposmap, tmask = _rasterize_positions(t_uv, t_pos, t_idx, TS)
+    (tposmap,), tmask = _rasterize_attrs(t_uv, t_idx, [t_pos], TS)
     vy, vx = np.where(tmask)
     _, nn = tree.query(tposmap[vy, vx])
     su = (UVc[nn, 0] * (STW - 1)).astype(int) % STW
@@ -277,12 +298,13 @@ def _sample_surface(pos, uv, idx, per_tri):
     return P, U
 
 
-def _rasterize_positions(uv, pos, idx, TS):
-    """Scan-fill each UV triangle, writing the barycentric-interpolated 3D
-    position into a TSxTS map (+ a coverage mask)."""
-    posmap = np.zeros((TS, TS, 3)); mask = np.zeros((TS, TS), bool)
-    P = uv[idx] * (TS - 1)  # ntri x 3 x 2 in texel space
-    V = pos[idx]
+def _rasterize_attrs(uv, idx, attrs, TS):
+    """Scan-fill each UV triangle, writing barycentric-interpolated vertex
+    attributes into TSxTS maps (one per entry in `attrs`) + a coverage mask."""
+    maps = [np.zeros((TS, TS, a.shape[1])) for a in attrs]
+    mask = np.zeros((TS, TS), bool)
+    P = uv[idx] * (TS - 1)            # ntri x 3 x 2 in texel space
+    AV = [a[idx] for a in attrs]      # each: ntri x 3 x C
     for t in range(len(idx)):
         (x0, y0), (x1, y1), (x2, y2) = P[t]
         minx, maxx = int(max(0, np.floor(min(x0, x1, x2)))), int(min(TS - 1, np.ceil(max(x0, x1, x2))))
@@ -299,10 +321,12 @@ def _rasterize_positions(uv, pos, idx, TS):
         inside = (a >= -1e-4) & (b >= -1e-4) & (c >= -1e-4)
         if not inside.any():
             continue
-        P3 = a[..., None] * V[t, 0] + b[..., None] * V[t, 1] + c[..., None] * V[t, 2]
         yy, xx = ys[inside], xs[inside]
-        posmap[yy, xx] = P3[inside]; mask[yy, xx] = True
-    return posmap, mask
+        ai, bi, ci = a[inside, None], b[inside, None], c[inside, None]
+        for mi, av in enumerate(AV):
+            maps[mi][yy, xx] = ai * av[t, 0] + bi * av[t, 1] + ci * av[t, 2]
+        mask[yy, xx] = True
+    return maps, mask
 
 
 # --------------------------------------------------------------------- gbuffer
@@ -323,10 +347,9 @@ def main():
                    metavar=("LX", "LY", "RX", "RY"), help="eye centres in the source image (px)")
     p.add_argument("--glb", help="target glb (default: inferred from the scene)")
     p.add_argument("--out", help="output glb (default: overwrite target)")
-    p.add_argument("--size", type=int, default=768, help="G-buffer render resolution")
+    p.add_argument("--size", type=int, default=768, help="G-buffer / projection screen resolution")
     p.add_argument("--tex", type=int, default=1024, help="texture resolution")
-    p.add_argument("--fill", type=int, default=2, help="dilation passes to fill scatter gaps")
-    p.add_argument("--feather", type=float, default=3, help="composite edge feather (px)")
+    p.add_argument("--feather", type=float, default=2, help="composite edge feather (px)")
     p.set_defaults(func=cmd_project)
 
     t = sub.add_parser("transfer", help="copy one model's albedo onto another's UVs (closest-point)")
