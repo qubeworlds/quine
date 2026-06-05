@@ -57,3 +57,20 @@ python3 tools/skin_tools.py transfer \
 ```sh
 python3 tools/skin_tools.py gbuffer --scene face.scene.json --channel uv --out uv.png
 ```
+
+## Procedural geometry (the in-engine head)
+
+The G-buffer probe and texturing now cover the **static / procedural** pipeline,
+not just imported skinned glTF. The procedural head (`geometry.kind:"face"`)
+carries a canonical equirectangular unwrap — v runs crown→chin, u wraps around
+with the **+Z face centred at u=0.5** and the seam at the back — so any atlas
+authored to that layout fits any head. Bind one with `QUINE_FACE_TEX`:
+
+```sh
+QUINE_FACE_TEX=atlas.png QUINE_THUMB=1 QUINE_THUMB_SCENE=face-tex.scene.json \
+  QUINE_THUMB_OUT=/tmp/out.ppm QUINE_THUMB_SIZE=512 \
+  LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe xvfb-run -a ./zig-out/bin/quine
+```
+
+`gbuffer --channel uv` works on these scenes too (the head's UVs render as a
+smooth gradient), so the same probe-based tooling applies to procedural meshes.
