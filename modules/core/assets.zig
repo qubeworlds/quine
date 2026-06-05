@@ -741,10 +741,15 @@ pub fn ovalHead(
         const taper = 1.0 - chin * lower * lower;
         const y = yu * height * 0.5;
         const hr = radius * ring_r * taper;
+        // Canonical equirectangular unwrap: v down the head (0 crown → 1 chin),
+        // u around it with the +Z face centred at u=0.5 and the seam at the back.
+        // Predictable + paintable: anything authored to this layout fits any head.
+        const v_tex = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings));
         var s: u32 = 0;
         while (s <= segments) : (s += 1) {
-            const phi = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
-            verts[vi] = .{ .position = m.Vec3.init(hr * @cos(phi), y, hr * @sin(phi)), .normal = .{}, .color = color };
+            const u_tex = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments));
+            const phi = -0.5 * std.math.pi + u_tex * 2.0 * std.math.pi; // u=0/1 at back, u=0.5 at the face
+            verts[vi] = .{ .position = m.Vec3.init(hr * @cos(phi), y, hr * @sin(phi)), .normal = .{}, .color = color, .uv = .{ u_tex, v_tex } };
             vi += 1;
         }
     }

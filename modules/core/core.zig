@@ -73,6 +73,10 @@ pub const Gaze = components.Gaze;
 /// scene runtime uses it to expand a `kind:"eyes"` entity, sized from the head.
 pub const eye = @import("eye.zig");
 
+/// RGBA8 PNG decoder (used for glTF base-colour atlases and runtime texture
+/// loads, e.g. the static-mesh atlas via `QUINE_FACE_TEX`).
+pub const png = @import("png.zig");
+
 /// Signed-distance fields + surface-nets mesher — the continuous-surface path
 /// (a face as one blended skin rather than assembled primitives).
 pub const sdf = @import("sdf.zig");

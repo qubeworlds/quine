@@ -232,6 +232,19 @@ export fn init() void {
         App.renderer.preview = false;
         App.renderer.draw_grid = false;
     }
+    // QUINE_FACE_TEX=<path.png> binds a base-colour atlas onto the static meshes
+    // (the procedural head's canonical unwrap). Decoded with the engine's PNG
+    // reader and uploaded; static geometry stays white-fallback without it.
+    if (std.c.getenv("QUINE_FACE_TEX")) |p| {
+        if (std.c.fopen(p, "rb")) |fp| {
+            const buf = std.heap.c_allocator.alloc(u8, 32 * 1024 * 1024) catch unreachable;
+            const n = std.c.fread(buf.ptr, 1, buf.len, fp);
+            _ = std.c.fclose(fp);
+            if (core.png.decode(std.heap.c_allocator, buf[0..n])) |tex| {
+                App.renderer.uploadStaticTexture(tex);
+            } else |_| {}
+        }
+    }
     loadScene();
     if (builtin.os.tag == .emscripten) {
         // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.

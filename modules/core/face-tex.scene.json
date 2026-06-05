@@ -1,0 +1,7 @@
+{ "schemaVersion":1, "name":"facetex", "entities":[
+  { "name":"face", "geometry":{ "kind":"face", "eyes":false, "fedora":false,
+      "headRadius":0.12, "headHeight":0.32, "chin":0.4, "segments":64,
+      "skinColor":[1,1,1,1] }, "transform":{"position":[0,0,0]} },
+  { "name":"camera", "transform":{"position":[0,0,0.55]},
+    "camera":{"fovY":0.9,"near":0.01,"far":100,"controller":{"kind":"orbit","target":[0,0,0],"distance":0.5,"yaw":0.0,"pitch":0.0}} }
+] }
