@@ -255,6 +255,21 @@ export fn init() void {
             if (App.stage.world.get(core.MeshRef, b.entity)) |mr| mr.texture = 1;
         }
     }
+    // QUINE_AVATAR_TEX=<png> replaces the skinned avatar's base-colour atlas at
+    // startup (same path the live "texture" message drives) — a fast way to try a
+    // fitted atlas on the eyes-demo avatar without repacking + rebuilding the glb.
+    if (std.c.getenv("QUINE_AVATAR_TEX")) |p| {
+        if (std.c.fopen(p, "rb")) |fp| {
+            const buf = std.heap.c_allocator.alloc(u8, 32 * 1024 * 1024) catch unreachable;
+            const n = std.c.fread(buf.ptr, 1, buf.len, fp);
+            _ = std.c.fclose(fp);
+            if (core.png.decode(std.heap.c_allocator, buf[0..n])) |tex| {
+                var t = tex;
+                App.renderer.uploadSkinnedTexture(t);
+                t.deinit(std.heap.c_allocator);
+            } else |_| {}
+        }
+    }
     if (builtin.os.tag == .emscripten) {
         // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
         App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===true)?1:0") != 0;
@@ -525,6 +540,21 @@ fn dispatchMessage(raw: []const u8) void {
             .bool => |b| user_camera = b,
             else => {},
         };
+    } else if (std.mem.eql(u8, tv.string, "texture")) {
+        // Live base-colour swap for the skinned avatar (the fit editor pushes a
+        // warped atlas as a base64 PNG). Decode -> upload; no scene reload, so the
+        // 3D head updates as the sliders move. Shape: {type:"texture", png:"<b64>"}
+        const pv = v.object.get("png") orelse return;
+        if (pv != .string) return;
+        const dec = std.base64.standard.Decoder;
+        const need = dec.calcSizeForSlice(pv.string) catch return;
+        const decoded = arena.allocator().alloc(u8, need) catch return;
+        dec.decode(decoded, pv.string) catch return;
+        if (core.png.decode(std.heap.c_allocator, decoded)) |tex| {
+            var t = tex;
+            App.renderer.uploadSkinnedTexture(t); // copies pixels to the GPU
+            t.deinit(std.heap.c_allocator);
+        } else |_| {}
     }
 }
 
