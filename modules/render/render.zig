@@ -164,6 +164,12 @@ pub const Renderer = struct {
     bg_pip: sg.Pipeline = .{},
     /// Vertex-less fullscreen pipeline that sphere-traces an SDF/CSG scene.
     raymarch_pip: sg.Pipeline = .{},
+    /// G-buffer probe mode for offscreen tooling: 0 = normal render, 1 = UV,
+    /// 2 = world position, 3 = world normal. When non-zero the skinned mesh
+    /// outputs that channel as colour and the scene chrome (backdrop, grid,
+    /// gizmo, HUD) is suppressed onto a black clear, so a captured frame is a
+    /// clean screen->{UV,position,normal} map. See `shaders/skinned.glsl`.
+    debug_mode: u32 = 0,
 
     /// Initialize sokol-gfx and build the mesh pipeline. Must be called once
     /// after the GL/Metal/D3D11 context exists (i.e. inside sokol-app's init
@@ -381,22 +387,25 @@ pub const Renderer = struct {
     ) void {
         const view_proj = viewProj(queue, aspect);
         const eye4 = [4]f32{ queue.eye.x, queue.eye.y, queue.eye.z, 1 };
+        const probe = self.debug_mode != 0; // G-buffer pass: mesh only, black clear
 
-        sg.beginPass(.{ .action = self.pass_action, .swapchain = sglue.swapchain() });
+        var action = self.pass_action;
+        if (probe) action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+        sg.beginPass(.{ .action = action, .swapchain = sglue.swapchain() });
 
         // Preview backdrop fills the frame first (vertex-less fullscreen tri:
         // the shader builds positions from gl_VertexIndex, so no bindings).
-        if (self.preview) {
+        if (self.preview and !probe) {
             sg.applyPipeline(self.bg_pip);
             sg.draw(0, 3, 1);
         }
 
         // SDF/CSG scene (if any): sphere-traced as a fullscreen pass. Drawn before
         // the meshes/grid so they can composite on top (v1 targets SDF-only).
-        if (queue.sdf) |s| self.drawSdf(s, queue, aspect);
+        if (queue.sdf) |s| if (!probe) self.drawSdf(s, queue, aspect);
 
         // World-space reference grid first (model = identity, just view+proj).
-        if (self.draw_grid) {
+        if (self.draw_grid and !probe) {
             sg.applyPipeline(self.grid_pip);
             var bind = sg.Bindings{};
             bind.vertex_buffers[0] = self.grid_vbuf;
@@ -442,8 +451,10 @@ pub const Renderer = struct {
         // so glassy parts like the cornea composite over what's behind them.
         self.drawTransparent(queue, meshes, view_proj, eye4);
 
-        if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
-        if (hud) |info| drawHud(info);
+        if (!probe) {
+            if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
+            if (hud) |info| drawHud(info);
+        }
 
         sg.endPass();
         sg.commit();
@@ -523,11 +534,16 @@ pub const Renderer = struct {
         bind.samplers[shd_skin.SMP_smp] = self.skinned_smp;
         sg.applyBindings(bind);
 
+        // G-buffer probe channel + world-position scale/bias (maps roughly
+        // [-1,1] world into 0..1 for an 8-bit position read). 0 = lit shading.
+        const dbg = shd_skin.FsSkinParams{ .dbg = .{ @floatFromInt(self.debug_mode), 0.5, 0.5, 0 } };
+
         for (scene.instances) |inst| {
             const palette = scene.palettes[inst.bucket * max_joints ..][0..max_joints];
             const vsp = shd_skin.VsParams{ .mvp = view_proj.mul(inst.model).m, .model = inst.model.m };
             sg.applyUniforms(shd_skin.UB_vs_params, sg.asRange(&vsp));
             sg.applyUniforms(shd_skin.UB_skin_params, sg.asRange(palette));
+            sg.applyUniforms(shd_skin.UB_fs_skin_params, sg.asRange(&dbg));
             sg.draw(0, self.skinned_index_count, 1);
         }
     }

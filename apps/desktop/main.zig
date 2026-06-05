@@ -222,6 +222,16 @@ export fn init() void {
             App.renderer.preview_dimples = if (has_surface) 0 else if (t.geo == .sphere) 1 else if (t.dimple) 2 else 0;
         }
     }
+    // QUINE_GBUFFER=uv|pos|normal renders the skinned mesh's G-buffer channel
+    // (screen->{UV,position,normal}) on a black clear with no scene chrome — the
+    // primitive the texture-projection / map-transfer tools read back. Pair with
+    // QUINE_THUMB[_SCENE] to capture it offscreen.
+    if (std.c.getenv("QUINE_GBUFFER")) |gv| {
+        const s = std.mem.span(gv);
+        App.renderer.debug_mode = if (std.mem.eql(u8, s, "uv")) 1 else if (std.mem.eql(u8, s, "pos")) 2 else if (std.mem.eql(u8, s, "normal")) 3 else 0;
+        App.renderer.preview = false;
+        App.renderer.draw_grid = false;
+    }
     loadScene();
     if (builtin.os.tag == .emscripten) {
         // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
