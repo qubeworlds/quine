@@ -903,15 +903,15 @@ pub const SceneRuntime = struct {
         self.timeline = try dupeTimeline(self.tl_arena.?.allocator(), tl);
     }
 
-    /// Current timeline frame: editor-driven (`scrub_time`) when the editor is
-    /// steering the playhead, else free-running off the accumulated sim time.
-    /// Null when there's no timeline. The one frame source for both component and
-    /// camera playback, so they stay in lockstep with the editor.
+    /// Current timeline frame: driven by the host playhead (`scrub_time`), else
+    /// held at frame 0 — the animation does NOT auto-start; a host (the editor's
+    /// play/scrub) advances it. Null when there's no timeline. The one frame source
+    /// for both component and camera playback, so they stay in lockstep.
     pub fn timelineFrame(self: *SceneRuntime) ?f32 {
         const tl = self.timeline orelse return null;
         const total: f32 = @floatFromInt(tl.duration_frames);
         if (total <= 0 or tl.fps <= 0) return 0;
-        const t = self.scrub_time orelse self.time;
+        const t = self.scrub_time orelse 0;
         return @mod(t * tl.fps, total);
     }
 
