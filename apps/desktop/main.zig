@@ -85,7 +85,7 @@ const App = struct {
     var instance: [1]render.SkinnedInstance = undefined;
     var palette: [render.max_joints]m.Mat4 = undefined;
 
-    var hud_visible: bool = true;
+    var hud_visible: bool = false; // closed on boot; Tab toggles it, host can opt in
     var fps_achieved: f64 = 0;
     var fps_requested: f64 = 0;
     var mouse_x: f32 = 0;
@@ -220,7 +220,8 @@ export fn init() void {
     }
     loadScene();
     if (builtin.os.tag == .emscripten) {
-        App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===false)?0:1") != 0;
+        // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
+        App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===true)?1:0") != 0;
     }
     if (builtin.os.tag != .emscripten) {
         std.debug.print("quine: render backend = {s}\n", .{render.backendName()});
