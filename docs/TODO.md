@@ -250,3 +250,10 @@ maturity, and packaging Jolt as an imported capability rather than static-linked
 
 Big tracks: textures (#1), scenes (#2), audio (#3). Quick unlocks to front-load:
 the follow camera and the bounce sound.
+
+## 5. Navmesh example
+
+- [ ] **Build a Navmesh example.** A scene that bakes a navigation mesh over the
+      ground/obstacles and has an actor path-find across it — exercising
+      pathfinding as a data-driven scene behaviour (like the destructible-SDF
+      debris: engine = mechanism, the scene supplies the geometry + agent).
