@@ -30,6 +30,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Rendering — lighting** | Lumen GI, many light types, shadows, reflections | 🟡 single hardcoded directional + ambient, **no shadows** | Biggest visual gap |
 | **Rendering — post** | TAA, bloom, DOF, SSAO, tonemap, color grading | ❌ none (raw forward output) | |
 | **Rendering — transparency** | OIT, refraction, subsurface | 🟡 single alpha pass, back-to-front sort | |
+| **2D — text / fonts / sprites** | Slate text, font rendering, Paper2D sprites | ❌ debug bitmap HUD only; no real fonts, no sprites | New domain (§15) |
 | **Animation** | Skeletal, blendspaces, state machines, IK, retarget, control rig | 🟡 glTF clip playback + keyframe timeline; no blending/IK/state machine | |
 | **Physics** | Chaos: rigid, cloth, destruction, vehicles, ragdoll | 🟡 Jolt rigid bodies + contacts; **single-threaded**, no constraints/ragdoll/soft/cloth | Determinism is the constraint |
 | **Audio** | MetaSounds, spatialization, mixing, reverb | ❌ none | TODO.md flags as next big piece |
@@ -37,7 +38,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Scene / world** | Levels, World Partition, streaming, sublevels | 🟡 single normalized-JSON scene, full load | No streaming / partitioning |
 | **Asset pipeline** | Import (FBX/glTF/USD), cooking, DDC, virtual assets | 🟡 glTF `.glb` + procedural; assets embedded, getting externalized | TODO.md: `quine_provide_asset` |
 | **Editor** | Full in-engine editor (the `world` repo plays this role) | 🟡 external web editor over WebSocket | Live material/scene/skill edit works |
-| **Input** | Enhanced Input, devices, action mapping | 🟡 keybindings + pointer/orbit + pinch-pan | Engine-side; gameplay input via skills |
+| **Input / controllers** | Enhanced Input, gamepad, action mapping, character controller | 🟡 keybindings + pointer/orbit + pinch-pan; no gamepad / action map / char controller | New domain (§16) |
 | **Networking** | Replication, rollback, dedicated servers | 🟡 transport + tick-gating; **no replication model** | → server-authoritative single-binary (§9) |
 | **Particles / VFX** | Niagara | ❌ none | |
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
@@ -283,12 +284,55 @@ want it, and why / why not).
   (TODO.md quick-win — visualize colliders), and a **replay record/playback**
   harness.
 
+### 15. 2D — text, fonts & sprites  — *committed (Phase 3)*
+- **Unreal:** Slate/UMG text with real font rendering, Paper2D sprites + flipbooks
+  + tilemaps, 2D physics.
+- **quine:** only the **debug HUD** — sokol-debugtext's fixed bitmap font (one
+  size, ASCII, no kerning). No real fonts, no sprites, no 2D draw path for
+  content.
+- **Call:** **Yes — the missing presentation layer.** Two pieces:
+  - **Text / fonts.** A real glyph path: load a font (TTF via a wasm-safe
+    rasterizer like `stb_truetype`, or ship an **SDF/MSDF atlas** — SDF text
+    scales crisply at any size and is one cheap shader, a good fit). Want:
+    world-space labels (entity names, debug values) **and** screen-space UI text,
+    Unicode, basic layout (wrap/align). The SDF atlas also reuses the alpha-blend
+    pass we already have.
+  - **Sprites.** A textured-quad 2D layer — screen-space (HUD/UI icons,
+    health bars) and world-space billboards (markers, particle sprites once §10
+    lands). Wants a sprite/quad batcher, an ortho pass alongside the 3D pass, and
+    texture-atlas support (rides on the texture registry from Phase 0 PBR work).
+  - **Where it lives:** the 2D **draw data** can be assembled in `core` (so it's
+    headless-testable and the editor can drive labels), but rasterization/upload
+    is **render**-side — same core→render rule. Don't build a UMG; this is a
+    draw layer, not a UI framework.
+
+### 16. Input & controllers  — *committed (Phase 5)*
+- **Unreal:** Enhanced Input (action/axis mappings, contexts), gamepad + device
+  abstraction, character movement controller, possession.
+- **quine:** a small keybinding table + pointer/orbit + mobile pinch-pan
+  (`apps/desktop/input.zig`, `orbit.zig`). No gamepad, no action-mapping
+  indirection, no character/movement controller; gameplay input only reaches the
+  sim ad hoc through skills.
+- **Call:** **Yes.** Three pieces, app→core:
+  - **Devices.** Gamepad support (sokol-app exposes it natively; on web the
+    Gamepad API), plus keyboard/mouse/touch unified behind one input snapshot.
+  - **Action mapping.** A data-driven **action/axis map** (named actions →
+    device bindings, rebindable, contexts) so skills read intent
+    (`input.action("jump")`, `input.axis("move")`) not raw keys — exposed through
+    the QuickJS facade. **Deterministic-critical:** inputs must enter the sim as
+    part of the per-tick input record (the same record the replay harness and
+    server-authoritative multiplayer in §9 capture), *not* read live mid-step.
+  - **Character controller.** A kinematic movement controller (capsule, ground/
+    slope/step handling) in `core` driven by those actions — the bridge between
+    input and the actor, and a prerequisite for proper player-driven scenes.
+
 ---
 
 ## Phased plan
 
-Per the decisions above, the near-term order is **multithreading first, audio
-next** — then visual fidelity and depth. Each phase builds on the last; in-flight
+Explicit near-term order (the agreed priorities): **1 multithreading → 2 audio →
+3 2D/text/sprites → 4 lights & shade → 5 controllers → 6 constraints & rigging**,
+with remaining depth/multiplayer after. Each phase builds on the last; in-flight
 items defer to `docs/TODO.md` for breakdown.
 
 ### Phase 0 — Finish what's in flight  *(see docs/TODO.md)*
@@ -325,7 +369,18 @@ skip C, hold the "result must not depend on thread count" invariant.
       contact listener already records.
 - [ ] **3D spatialization + attenuation**; **anim-event footsteps**; **music bed**.
 
-### Phase 3 — Make it look real  *(visual fidelity)*
+### Phase 3 — 2D: text, fonts & sprites  *(the presentation layer — see §15)*
+- [ ] **Font rendering** — SDF/MSDF glyph atlas (scales crisply, one cheap shader,
+      reuses the alpha-blend pass), or `stb_truetype` rasterization. Unicode +
+      basic layout (wrap/align). Retire the fixed debug-text font.
+- [ ] **World-space labels** (entity names/debug values) **and screen-space UI
+      text** — 2D draw data assembled in `core` (headless-testable), rasterized
+      render-side.
+- [ ] **Sprite / quad batcher** — an ortho 2D pass alongside the 3D pass; screen-
+      space (HUD/icons/bars) + world-space billboards. Rides the texture registry
+      from Phase 0.
+
+### Phase 4 — Lights & shade  *(visual fidelity)*
 - [ ] **Data-driven lights** in the scene schema (directional + point; color/
       intensity/direction/range).
 - [ ] **Shadow map** for the key directional light.
@@ -333,23 +388,33 @@ skip C, hold the "result must not depend on thread count" invariant.
       hardcoded sky color).
 - [ ] **Minimal post chain** — tonemap + exposure, then bloom.
 - [ ] **Jolt debug-draw** layer (colliders/contacts) — also a tooling win.
-- [ ] **Follow / free camera** beyond orbit.
 - [ ] *(stretch)* **SSAO**; **subsurface/wrap-diffuse** for skin.
 
-### Phase 4 — Make it feel alive & physical  *(motion & depth)*
+### Phase 5 — Controllers  *(input → sim — see §16)*
+- [ ] **Devices** — gamepad (sokol-app native / Gamepad API on web) + keyboard/
+      mouse/touch unified behind one per-tick input snapshot.
+- [ ] **Action / axis map** — data-driven, rebindable, contexts; skills read
+      intent (`input.action`/`input.axis`) not raw keys, via the QuickJS facade.
+      Inputs enter the sim as part of the **per-tick input record** (shared with
+      the replay harness + §9 multiplayer), never read live mid-step.
+- [ ] **Physics queries** — raycast / shape-cast API (ground/slope/step checks,
+      picking, AI sensing) — prerequisite for the controller below.
+- [ ] **Character controller** — kinematic capsule movement (ground/slope/step)
+      in `core`, driven by actions; the bridge between input and the actor.
+- [ ] **Follow / free camera** beyond orbit.
+
+### Phase 6 — Constraints & rigging  *(physical + animation depth)*
+- [ ] **Jolt constraints** (hinge / point / cone).
+- [ ] **Active ragdoll** for the actor (constraints + skeleton). *(ADR-0001)*
 - [ ] **Animation blending** — clip cross-fade + additive.
-- [ ] **Anim state machine** (idle/run/reach) driven by skill state.
-- [ ] **Two-bone IK** — feet plant, hands/head reach.
-- [ ] **Physics queries for skills** — raycast / shape cast API (ground checks,
-      picking, AI sensing).
-- [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
-- [ ] **Jolt constraints** (hinge/point/cone) → **active ragdoll** for the actor.
-      *(ADR-0001)*
-- [ ] **Configurable / raised entity cap**; additive scene merge for composing
-      actors.
+- [ ] **Anim state machine** (idle/run/reach) driven by controller + skill state.
+- [ ] **Two-bone IK** — feet plant, hands/head reach (pairs with the ragdoll).
 - [ ] *(stretch)* **soft body / cloth**.
 
-### Phase 5 — Make it multiplayer  *(server-authoritative — see §9)*
+### Phase 7 — Depth, scale & multiplayer  *(after the six — server-authoritative, §9)*
+- [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
+- [ ] **Configurable / raised entity cap**; additive scene merge for composing
+      actors.
 - [ ] **Server-owned tick authority** (the DO stamps a shared room tick).
 - [ ] **Authoritative sim in one place** — inputs to the server, confirmed
       state/inputs back (sidesteps cross-platform bit-exactness).
