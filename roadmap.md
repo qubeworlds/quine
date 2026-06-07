@@ -44,7 +44,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
 | **Navigation / AI** | NavMesh, behavior trees, EQS | ❌ none | |
 | **Terrain** | Landscape heightfield, sculpt, layers, LOD | ❌ none — but SDF mesher + brick cache reusable | New domain (§18) |
-| **Vegetation / foliage** | Foliage tool, instanced meshes, splines, wind | ❌ none; **renderer has no GPU instancing** | New domain (§18); instancing is the gate |
+| **Vegetation / foliage** | Foliage tool, instanced meshes, splines, wind | ❌ none; needs GPU instancing (→ pulled to Phase 4) | New domain (§18) |
 | **Hair / fur** | Groom (strands), hair physics, hair shading | ❌ none (RPM avatars use baked mesh hair) | New domain (§18); cards, not grooms |
 | **Capture / video recording** | Movie Render Queue, Sequencer render, screenshots | 🟡 single-frame PPM thumbnail (Xvfb) only; no video | New domain (§17) |
 | **Determinism / replay** | Not a first-class goal | ✅ fixed-timestep, plain-Zig core, replay-ready | **quine is ahead here** |
@@ -304,6 +304,8 @@ want it, and why / why not).
     health bars) and world-space billboards (markers, particle sprites once §10
     lands). Wants a sprite/quad batcher, an ortho pass alongside the 3D pass, and
     texture-atlas support (rides on the texture registry from Phase 0 PBR work).
+    This is where **GPU instancing** gets built (pulled forward from §18) — the
+    batcher is its first consumer, and crowds/particles/vegetation reuse it.
   - **Where it lives:** the 2D **draw data** can be assembled in `core` (so it's
     headless-testable and the editor can drive labels), but rasterization/upload
     is **render**-side — same core→render rule. Don't build a UMG; this is a
@@ -367,15 +369,17 @@ The "real world" environment layer. Three efforts, very different costs:
   - **Call:** start heightfield for cost, keep the SDF path for destructible/cave
     scenes. Both stay data-driven in the scene schema; meshing in `core`.
 
-- **Vegetation / foliage — gated on GPU instancing.** The real prerequisite is
-  **GPU instancing**, which the renderer **lacks today** (per-object draws). It's
-  a *foundational* render capability — foliage, crowds, and sprite-particles
-  (§10) all need it — so build it once, here or pulled earlier. Then:
+- **Vegetation / foliage — needs GPU instancing (landing in Phase 4).** The
+  prerequisite is **GPU instancing**, which the renderer lacks today (per-object
+  draws). It's a *foundational* render capability — foliage, crowds, and sprite-
+  particles (§10) all need it — so it's **pulled forward to Phase 4**, built
+  with the sprite batcher (both are instanced quads). By the time vegetation
+  lands it already exists. Then:
   - **Scatter** placement — seeded, deterministic if it feeds collision (trees as
     static bodies); purely visual ground cover can live render-side.
   - **Instanced draw** + distance **LOD/billboard** + frustum cull.
   - **Wind** — cheap vertex-shader sway (render-side, no determinism concern).
-  - **Call:** yes, but **land instancing first** — it's the gate and it's reusable.
+  - **Call:** yes; instancing (its gate) is **already done in Phase 4** — reusable.
 
 - **Hair & fur — cards, not grooms.** Strand grooms (Unreal's Groom) + hair
   physics are among the most expensive subsystems in any engine — **out of scope**.
@@ -447,9 +451,13 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **World-space labels** (entity names/debug values) **and screen-space UI
       text** — 2D draw data assembled in `core` (headless-testable), rasterized
       render-side.
+- [ ] **GPU instancing** — a render-layer primitive built here (the sprite
+      batcher is its first consumer). **Reused downstream** by crowds, sprite-
+      particles (§10), and vegetation (§18) — pulled forward so it's ready when
+      those land.
 - [ ] **Sprite / quad batcher** — an ortho 2D pass alongside the 3D pass; screen-
-      space (HUD/icons/bars) + world-space billboards. Rides the texture registry
-      from Phase 0.
+      space (HUD/icons/bars) + world-space billboards. Instanced quads (above);
+      rides the texture registry from Phase 0.
 
 ### Phase 5 — Lights & shade  *(visual fidelity)*
 - [ ] **Data-driven lights** in the scene schema (directional + point; color/
@@ -483,8 +491,8 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] *(stretch)* **soft body / cloth**.
 
 ### Phase 8 — World: terrain, vegetation & hair  *(environment richness — see §18)*
-- [ ] **GPU instancing** in the render layer — the gate for foliage, crowds, and
-      sprite-particles. Build it first.
+- [x] **GPU instancing** — *moved to Phase 4* (built with the sprite batcher);
+      ready to consume here for vegetation.
 - [ ] **Terrain** — heightfield (Jolt `HeightFieldShape` collision) for cost;
       SDF volumetric path for destructible/cave scenes (reuses the existing
       mesher + brick cache). Data-driven in the scene schema; meshing in `core`.
