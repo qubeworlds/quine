@@ -49,7 +49,7 @@ authoritative on the immediate task breakdown.
 > 11 UI · 12 Multithreading · 13 Navigation & NPCs · 14 Editor · 15 2D/text/sprites ·
 > 16 Input/controllers · 17 Recording · 18 World (terrain/veg/hair) · 19 Observability ·
 > 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter ·
-> 23 Props Store (typed asset taxonomy).
+> 23 Props Store (typed asset taxonomy) · 24 Discovery (the third sense).
 
 ---
 
@@ -75,6 +75,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Voice + Foley store (AI audio)** | none native | ❌ none | New (§20); ElevenLabs-generated, content-cached, shared w/ Plinken |
 | **Props store (typed assets)** | Marketplace (assets) | 🟡 *started* — Fedora (geometry) + materials are props | Unify the stores (§23); Continuum substrate |
 | **Motion library** | animation marketplace, retarget | 🟡 clip playback only; no shareable walk/dance library | New element of §23 |
+| **Discovery (the third sense)** | content browser, no agent discovery | ❌ none | New (§24); semantic + social, an agent tool |
 | **Observability / debug** | Insights, trace, Visual Logger | 🟡 HUD `tick/msg/drop` only | New (§19); → Analytics Engine |
 | **Scene / world** | Levels, World Partition, streaming, sublevels | 🟡 single normalized-JSON scene, full load | No streaming / partitioning |
 | **Asset pipeline** | Import (FBX/glTF/USD), cooking, DDC, virtual assets | 🟡 glTF `.glb` + procedural; assets embedded, getting externalized | TODO.md: `quine_provide_asset` |
@@ -511,9 +512,10 @@ stochastic AI is tamed by recording its outputs into the deterministic input log
   seat for an AI brain. Nothing AI-specific wired yet.
 - **Call:** **Yes — this is a differentiator.** Three pieces:
   - **LLM agent brains.** An NPC's decision-making can be an **AI agent**:
-    *perceive* (the navigation phase's query/sensor helpers exposed as tools),
-    *decide* (an async LLM tool-use call), *act* (return intents the skill /
-    character controller enact deterministically), *speak* (the TTS path below).
+    *perceive* (see/hear via the navigation phase's query/sensor helpers + **discover**
+    user content & nearby agents, §24, all as tools), *decide* (an async LLM tool-use
+    call), *act* (return intents the skill / character controller enact
+    deterministically), *speak* (the TTS path below).
     Use the latest Claude models for the brain. The skill stays the deterministic
     shell; the LLM is an oracle it consults.
   - **Determinism via the decision log.** LLM/TTS calls are async, external,
@@ -654,14 +656,45 @@ And we already started it — the **Fedora** and **materials** are props today.
   phase (where the store + Continuum publishing live). Start cataloguing props the
   moment a second one exists (it does: Fedora + materials).
 
+### 24. Discovery & social perception — the third sense  — *with the AI-native phase*
+Agents **see** (sensors, §13 / north-star) and **hear** (audio, §3). In a world
+where *users* create the content (§23) and *other agents* inhabit it, there's a
+**third sense: discovery** — finding the props, characters, and worlds others made,
+and finding **each other**. Without it, a UGC world becomes unnavigable the moment
+it's bigger than one author's head. This is what lets you "meet Clawdboot in
+Qubeworld" and have an agent *use* a hat a stranger published yesterday.
+
+- **Two halves:**
+  - **Content discovery** — **semantic search over the Props Store / Continuum**:
+    every prop carries a description + tags + embedding, so a player *or an agent*
+    can ask "find me a fedora" / "a menacing walk" / "a sci-fi door sound" and get
+    composable results. Built on the existing **Continuum API** (D1 metadata, R2
+    archives, KV) — add an embedding index + query endpoint.
+  - **Social / spatial discovery** — who/what is **near me** and **who can I
+    reach**: nearby agents/players (the §13 spatial index), presence in the shared
+    world (§9), and reachable worlds (the beaming graph). The substrate for
+    encounters — meeting Clawdboot, bumping into another player's creation.
+- **It's a sense, exposed as a tool.** Agents get `discover(query)` /
+  `whoIsNear()` alongside their see/hear tools (§20). Same determinism pattern:
+  the call is **app/Worker-side and non-deterministic**, so its result is
+  **recorded into the decision log** and replayed, never re-queried — discovery
+  stays exact under replay/multiplayer.
+- **Why it matters:** it closes the **UGC loop** — users create props (§23), the
+  store indexes them, agents + players **discover and compose** them, which makes
+  more worlds, which need more discovery. Seeing + hearing make a world *present*;
+  discovery makes a world *full of other people's stuff* livable. **Where it
+  lands:** with the **AI-native phase** (agent tools + the Continuum index), riding
+  the Props Store.
+
 ---
 
 ## Phased plan
 
 Near-term order (the agreed priorities): **1 multithreading → 2 observability →
 3 audio → 4 video recording → 5 2D/text/sprites → 6 lights & shade →
-7 controllers → 8 navigation & NPCs → 9 constraints & rigging →
-10 world (terrain/veg/hair) → 11 depth/scale & shared-world multiplayer**.
+7 controllers → 8 navigation & NPCs → 9 AI-native gameplay →
+10 constraints & rigging → 11 world (terrain/veg/hair) →
+12 depth/scale & shared-world multiplayer**.
 Phase headers + this line are the **single source of truth for ordering**; prose
 elsewhere refers to phases **by name**, not number, so reorders don't go stale.
 Each phase builds on the last; in-flight items defer to `docs/TODO.md`.
@@ -798,6 +831,11 @@ Layers on the NPC stack: agents *are* gameplay, not a bolt-on.
       taxonomy (object / material / audio / **motion** / behavior; characters,
       scenes, games as composites) on the Continuum/qubepods substrate. Subsumes
       the script / character / Foley stores. Versioned, content-addressed, composable.
+- [ ] **Discovery — the third sense** *(see §24)* — semantic search over the
+      Props Store/Continuum (embeddings + query endpoint) + spatial/social
+      "who's near me"; exposed to agents as `discover()` / `whoIsNear()` tools
+      (recorded into the decision log). Closes the UGC loop; enables encounters
+      (meet Clawdboot in Qubeworld).
 - [ ] **Agent tool/effect budget** — rate/limit + cost-meter LLM + TTS calls
       (they're external spend); cache aggressively; degrade to scripted behavior
       when offline or over budget.
@@ -953,9 +991,12 @@ wraps them all.
 
 Three nested layers:
 
-- **The frame (outer world).** A persistent, shared, AI-inhabited world we author
-  — the overworld / hub / **Continuum**. It *is* a quine "game," but it's also the
-  stage every other game sits on. Because we own the outermost layer, we can
+- **The frame (outer world) — "Qubeworld".** A persistent, shared, AI-inhabited
+  world we author — the overworld / hub / **Continuum**, named **Qubeworld**. It
+  *is* a quine "game," but it's also the stage every other game sits on, and the
+  place you arrive: you spawn into Qubeworld and **meet its denizens** — you could
+  **meet Clawdboot** (a named, Claude-powered character) the way you'd meet a guide
+  in a town. Because we own the outermost layer, we can
   **always write the meta-narrative** — seasons, events, lore, consequences — that
   recontextualizes everything inside (a live, recursive, AI-driven version of a
   Fortnite-style event frame). The Star-Trek read writes itself: the registry is
@@ -969,8 +1010,11 @@ Three nested layers:
   is a reachable place inside the frame. Authoring *is* play; the Roblox loop, but
   every creation is a content-addressed, versioned, composable qube.
 - **Inhabitants.** AI agents (§20) live in the frame *and* the sub-games — NPCs,
-  guides, antagonists, companions — voiced (TTS), remembering, reacting, and able
-  to **cross between worlds** alongside players.
+  guides, antagonists, companions (Clawdboot among them) — voiced (TTS),
+  remembering, reacting, and able to **cross between worlds** alongside players.
+  Crucially they don't just see and hear — they **discover** (§24) the props,
+  characters, and worlds *other users* made, so a living world stays navigable as
+  its content explodes.
 
 ### Beaming & the time tunnel — the connective tissue
 
@@ -1026,6 +1070,10 @@ prescriptive; pick the ones that pull hardest.
 - **Hidden Roles** — social-deduction (Werewolf/Mafia) with **AI players** whose
   reasoning you can **replay and inspect** afterward — determinism turns "what was
   the AI thinking" into a feature. *(AI agents + multiplayer + determinism)*
+- **Meet Clawdboot in Qubeworld** — spawn into the shared frame and meet a named,
+  Claude-powered denizen who greets you, **discovers** what you (and other users)
+  have made, and shows you around. *(AI agent + discovery §24 + voice + the frame)*
+  — the social/discovery flagship.
 
 ### Year 3 — scale, the frame & the north-star
 - **The Frame** — the persistent shared overworld itself: players **beam** between
