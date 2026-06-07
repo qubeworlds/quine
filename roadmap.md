@@ -38,18 +38,50 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Asset pipeline** | Import (FBX/glTF/USD), cooking, DDC, virtual assets | 🟡 glTF `.glb` + procedural; assets embedded, getting externalized | TODO.md: `quine_provide_asset` |
 | **Editor** | Full in-engine editor (the `world` repo plays this role) | 🟡 external web editor over WebSocket | Live material/scene/skill edit works |
 | **Input** | Enhanced Input, devices, action mapping | 🟡 keybindings + pointer/orbit + pinch-pan | Engine-side; gameplay input via skills |
-| **Networking** | Replication, rollback, dedicated servers | 🟡 transport + tick-gating; **no replication model** | Room relay via Cloudflare DO |
+| **Networking** | Replication, rollback, dedicated servers | 🟡 transport + tick-gating; **no replication model** | → server-authoritative single-binary (§9) |
 | **Particles / VFX** | Niagara | ❌ none | |
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
 | **Navigation / AI** | NavMesh, behavior trees, EQS | ❌ none | |
 | **Terrain / foliage** | Landscape, foliage, splines, water | ❌ none | |
 | **Determinism / replay** | Not a first-class goal | ✅ fixed-timestep, plain-Zig core, replay-ready | **quine is ahead here** |
 | **Web/wasm target** | Heavy, deprecated HTML5 path | ✅ first-class WebGL2/WebGPU + Jolt-in-wasm | **quine is ahead here** |
-| **Determinism-safe multithread** | Task graph everywhere | ❌ single-threaded by choice | Job pool deliberately off |
+| **Determinism-safe multithread** | Task graph everywhere | ❌ single-threaded today | → multithreading planned, native **and** web, determinism kept (§12) |
 
 **Where quine already wins for its niche:** determinism, headless/replay,
 wasm-first, lean code/data split, live-edit loop. We should not regress these to
 chase Unreal parity.
+
+## Determinism stance (the decision)
+
+Determinism is a **tiered** property, and the tiers cost wildly different amounts:
+
+1. **Same-binary determinism** — same build + same tick count + same inputs →
+   same state. quine **has this today**, nearly for free, from the plain-Zig
+   fixed-timestep core. It powers headless tests, replay, and cheap-bandwidth
+   multiplayer. **Keep it. It's load-bearing and cheap.**
+2. **Cross-platform bit-exactness** — a native host and a wasm client agree
+   *bit-for-bit*. quine does **not** have this and **should not pursue it** —
+   it needs soft-float / strict-float discipline and is the only genuinely
+   expensive tier.
+
+The trap is framing the choice as "keep determinism (and pay for tier 2)" vs.
+"give it up." There's a **third door** that sidesteps tier 2 without abandoning
+determinism: run the authoritative sim in **exactly one place** (see §9).
+
+Two costs people *attribute* to determinism don't actually bite here, so they're
+not reasons to drop it:
+
+- **Multithreading is not in conflict with determinism** — Jolt is deterministic
+  independent of thread count, per-entity systems can be partitioned
+  deterministically, and bakes/decoders run outside the tick entirely. We commit
+  to multithreading **while keeping same-binary determinism** (§12).
+- **GPU effects (particles, cloth) are non-deterministic** — but they live in the
+  render layer, which is already allowed to be non-deterministic. They never
+  threatened the core.
+
+**The invariant we hold instead of "single-threaded":** *the core's observable
+result must not depend on thread count or scheduling.* That permits threading
+anything, as long as we forbid data races and order-dependent float reductions.
 
 ---
 
@@ -129,9 +161,9 @@ want it, and why / why not).
   unlocks (b) **active ragdoll** for the actor (ADR-0001 calls this out),
   (c) **raycast/shape-query API** exposed to skills (currently none — needed for
   AI, picking, ground checks). **Soft body / cloth** later; **vehicles** out of
-  scope. The **job pool stays off** until we have a determinism story for
-  multithreaded Jolt (it's deterministic regardless of thread count by design,
-  but we want test coverage first) — see §12.
+  scope. The **Jolt job pool gets turned on** (Jolt is deterministic regardless
+  of thread count) once two concrete blockers are fixed — the unsynchronized
+  contact listener and `num_body_mutexes = 0` — see §12 for the staged plan.
 
 ### 5. Audio  — *flagged as next big piece*
 - **Unreal:** MetaSounds graph, 3D spatialization, attenuation, reverb, buses.
@@ -176,12 +208,20 @@ want it, and why / why not).
 - **quine:** transport only — `quine_enqueue` + world-tick drop guard; room
   relay is a Cloudflare Durable Object in the `world` repo. No replication model
   (no notion of owned/authoritative state, no rollback).
-- **Call:** **Yes, deliberately.** Determinism is our superpower here — pursue
-  **deterministic lockstep / rollback** (à la GGPO), not Unreal-style property
-  replication. Want, in order: (a) **server-owned tick authority** (TODO.md
-  follow-up — the DO stamps a shared tick), (b) **input replication** (send
-  inputs, not state; replay to converge), (c) **snapshot/restore** for late-join
-  + desync recovery. This is a research-grade track; sequence it after the
+- **Call:** **Yes — server-authoritative, single binary.** Determinism is our
+  superpower, but cross-*client* lockstep (each client runs the sim) would force
+  **cross-platform bit-exactness** (native↔wasm), the one expensive tier we're
+  ruling out (see "Determinism stance"). The third door: run the authoritative
+  sim in **exactly one place** — the Cloudflare DO (it already exists as the room
+  relay). Clients send **inputs**, the server runs the deterministic sim and
+  broadcasts confirmed state/inputs. That keeps lockstep's bandwidth win, never
+  compares two binaries, and never pays the float-determinism tax. Want, in
+  order: (a) **server-owned tick authority** (TODO.md follow-up — the DO stamps a
+  shared tick), (b) **input channel** server-side (the sim moves into the DO, or
+  the DO drives a headless engine), (c) **snapshot/restore** for late-join +
+  desync recovery. Only if hosting the authoritative sim becomes infeasible do we
+  fall back to drift-tolerant **state replication** (giving up determinism
+  deliberately). This is a research-grade track; sequence it after the
   single-player engine is solid.
 
 ### 10. Particles / VFX (Niagara)
@@ -198,15 +238,33 @@ want it, and why / why not).
   eventually want a tiny **world-space text/quad** layer, but app/editor UI lives
   in the web stack. Don't build a UMG.
 
-### 12. Concurrency / performance
+### 12. Concurrency / multithreading  — *committed: native **and** web*
 - **Unreal:** task graph, async everything, Nanite/Lumen GPU pipelines.
-- **quine:** single-threaded by choice (determinism + wasm).
-- **Call:** **Careful yes, late.** ADR-0001 wants 10k+ bodies on multicore. Jolt
-  is deterministic independent of thread count, so the **job pool can come back**
-  — but gated on (a) a determinism **test harness** (record tick+inputs, replay,
-  assert identical state) and (b) wasm threading support. Until then, profile and
-  optimize single-threaded. **GPU-driven culling / LOD / Nanite-style** geometry:
-  out of scope unless a scene demands it.
+- **quine:** single-threaded **today** — three coupled decisions in the code, not
+  one: `jolt.init(.{ .num_threads = 0 })`, `num_body_mutexes = 0`, and the
+  contact listener writes a flat `contacts[count]` array with a bare `count++`
+  (a data race under worker threads). `build.zig` also links the
+  **single-threaded libc++** for the wasm Jolt build.
+- **Call:** **Yes — and "multithreading" is four different jobs, not one.** They
+  differ wildly in cost and determinism risk:
+
+  | Tier | What | Determinism risk | Cost |
+  |---|---|---|---|
+  | **A. Content prep / bake** — PNG+glTF decode, SDF meshing / marching-cubes, navmesh bake, texture upload | **None** (runs *outside* the tick) | Low — app-layer pool, native `std.Thread` |
+  | **B. Jolt solver** (`num_threads > 0`) | None — Jolt deterministic across thread counts | Medium — fix contact listener + body mutexes |
+  | **C. Core ECS systems** | Medium — needs deterministic partitioning + fixed-order reductions | Medium, ~zero payoff today (systems are tiny) |
+  | **D. wasm threads** (A/B on web) | Same as native | **High** — `-pthread`, SharedArrayBuffer, **COOP/COEP cross-origin-isolation headers on the Worker**, pthread libc++ for Jolt, warmed thread pool |
+
+  **Decision: pursue web parity** — threading lands on native *and* web. Sequence
+  it **A → B → D**, and **skip C** (systems too small to be worth the determinism
+  care). Tier A is free money now (no determinism risk, no wasm dependency,
+  app-layer pool — keep `core` pure). Tier B unlocks ADR-0001's 10k bodies after
+  the two blockers. Tier D is the real project for web parity and drags in the
+  Worker infra above; gate the rest on it only where web scale actually demands
+  it. Throughout, hold the invariant from the Determinism stance (result must not
+  depend on thread count/scheduling) and back it with a **determinism test
+  harness** (record tick+inputs, replay, assert identical state). **GPU-driven
+  culling / LOD / Nanite-style** geometry: out of scope unless a scene demands it.
 
 ### 13. Navigation & AI
 - **Unreal:** NavMesh generation, behavior trees, EQS, crowd.
@@ -229,8 +287,9 @@ want it, and why / why not).
 
 ## Phased plan
 
-Phases are ordered by **leverage for the simulator goal**, not Unreal parity.
-Each builds on the last; near-term items defer to `docs/TODO.md` for breakdown.
+Per the decisions above, the near-term order is **multithreading first, audio
+next** — then visual fidelity and depth. Each phase builds on the last; in-flight
+items defer to `docs/TODO.md` for breakdown.
 
 ### Phase 0 — Finish what's in flight  *(see docs/TODO.md)*
 - [ ] **PBR texture maps** — load glTF UVs/images, CPU texture registry, sample
@@ -241,7 +300,32 @@ Each builds on the last; near-term items defer to `docs/TODO.md` for breakdown.
 - [ ] **Scene save** — round-trip normalized JSON back out. *(TODO.md)*
 - [ ] **Tests** for queue/tick-drop/material-revision paths. *(TODO.md)*
 
-### Phase 1 — Make it look real  *(visual fidelity)*
+### Phase 1 — Multithreading  *(native **and** web — see §12)*
+The enabler for everything physical, and the priority. Sequence **A → B → D**,
+skip C, hold the "result must not depend on thread count" invariant.
+- [ ] **Determinism test harness** — record tick+inputs, replay headless, assert
+      identical state. *Lands first; it's the safety net the rest leans on.*
+- [ ] **Tier A — thread the bakes** — app-layer thread pool for PNG/glTF decode,
+      SDF meshing / marching-cubes, navmesh bake, texture upload. Core stays pure.
+      *(zero determinism risk, no wasm dependency)*
+- [ ] **Tier B — threaded Jolt (native)** — make the contact listener
+      thread-safe (mutex around `add()`, or per-thread scratch reduced in fixed
+      order), set `num_body_mutexes`, flip `num_threads > 0`.
+- [ ] **Tier D — wasm threads (web parity)** — emscripten `-pthread`,
+      SharedArrayBuffer, **COOP/COEP cross-origin-isolation headers on the
+      Cloudflare Worker**, pthread-enabled libc++ for the Jolt build, warmed
+      thread pool. Verify same-binary determinism still holds on web.
+- [ ] **Scale check** — push toward ADR-0001's 10k+ bodies; profile.
+
+### Phase 2 — Audio  *(the next big piece — TODO.md flags it)*
+- [ ] **Audio engine** — miniaudio integration (single-header C, builds like
+      quickjs/wasm-safe). Core raises events, the app plays (mirrors the render
+      boundary).
+- [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the
+      contact listener already records.
+- [ ] **3D spatialization + attenuation**; **anim-event footsteps**; **music bed**.
+
+### Phase 3 — Make it look real  *(visual fidelity)*
 - [ ] **Data-driven lights** in the scene schema (directional + point; color/
       intensity/direction/range).
 - [ ] **Shadow map** for the key directional light.
@@ -252,30 +336,24 @@ Each builds on the last; near-term items defer to `docs/TODO.md` for breakdown.
 - [ ] **Follow / free camera** beyond orbit.
 - [ ] *(stretch)* **SSAO**; **subsurface/wrap-diffuse** for skin.
 
-### Phase 2 — Make it feel alive  *(motion & sound)*
-- [ ] **Audio** — miniaudio integration; contact-impulse bounce SFX, anim-event
-      footsteps, music bed; core raises events, app plays.
+### Phase 4 — Make it feel alive & physical  *(motion & depth)*
 - [ ] **Animation blending** — clip cross-fade + additive.
 - [ ] **Anim state machine** (idle/run/reach) driven by skill state.
 - [ ] **Two-bone IK** — feet plant, hands/head reach.
 - [ ] **Physics queries for skills** — raycast / shape cast API (ground checks,
       picking, AI sensing).
 - [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
-
-### Phase 3 — Make it interactive & physical  *(depth)*
-- [ ] **Jolt constraints** (hinge/point/cone).
-- [ ] **Active ragdoll** for the actor (constraints + skeletal). *(ADR-0001)*
+- [ ] **Jolt constraints** (hinge/point/cone) → **active ragdoll** for the actor.
+      *(ADR-0001)*
 - [ ] **Configurable / raised entity cap**; additive scene merge for composing
       actors.
-- [ ] **Content-addressed asset map** + fetch (beyond the first externalization).
 - [ ] *(stretch)* **soft body / cloth**.
 
-### Phase 4 — Make it multiplayer & scalable  *(research-grade)*
-- [ ] **Deterministic lockstep / input replication** (send inputs, not state).
+### Phase 5 — Make it multiplayer  *(server-authoritative — see §9)*
+- [ ] **Server-owned tick authority** (the DO stamps a shared room tick).
+- [ ] **Authoritative sim in one place** — inputs to the server, confirmed
+      state/inputs back (sidesteps cross-platform bit-exactness).
 - [ ] **Snapshot / restore** for late-join + desync recovery.
-- [ ] **Determinism test harness** — record tick+inputs, replay headless, assert
-      identical state. *(also gates the job pool)*
-- [ ] **Re-enable Jolt job pool** once determinism is proven + wasm threads land.
 - [ ] *(stretch)* **navmesh bake** + simple pathfinding.
 
 ---
