@@ -27,6 +27,29 @@ tick authority) lives in [`docs/TODO.md`](./docs/TODO.md). This file is the
 **longer horizon** and the **honest gap list**. Where they overlap, TODO.md is
 authoritative on the immediate task breakdown.
 
+## Contents
+
+**The plan**
+- [Scorecard at a glance](#scorecard-at-a-glance) — what Unreal has vs. quine
+- [Determinism stance](#determinism-stance-the-decision) — the load-bearing decision
+- [What quine has today](#what-quine-has-today-baseline) — verified baseline
+- [The gaps, by domain](#the-gaps-by-domain) — §1–§22, per-feature calls
+- [Phased plan](#phased-plan) — Phases 0–12 (ordering source of truth)
+- [Three-year arc](#three-year-arc) — phases grouped into Years 1–3
+
+**The vision**
+- [North-star scenario](#north-star-scenario--an-autonomous-agent-in-a-city) — agent in a city
+- [The frame](#the-frame--the-world-is-the-game) — world-is-the-game, beaming, Q & the Continuum
+- [Game & demo examples](#game--demo-examples) — flagships per year
+- [Ideas determinism unlocks](#ideas-determinism-unlocks-cheap-features-other-engines-cant-match)
+- [Explicitly out of scope](#explicitly-out-of-scope-for-now)
+
+> **Gap-section index (§):** 1 Lighting · 2 Materials · 3 Animation · 4 Physics ·
+> 5 Audio · 6 Post/camera · 7 Scene/world · 8 Assets · 9 Networking · 10 Particles ·
+> 11 UI · 12 Multithreading · 13 Navigation & NPCs · 14 Editor · 15 2D/text/sprites ·
+> 16 Input/controllers · 17 Recording · 18 World (terrain/veg/hair) · 19 Observability ·
+> 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter.
+
 ---
 
 ## Scorecard at a glance
@@ -48,7 +71,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Audio** | MetaSounds, spatialization, mixing, reverb | ❌ none | TODO.md flags as next big piece |
 | **Scripting / gameplay** | Blueprints (visual) + C++ + GAS | 🟡 QuickJS skills w/ pre/post-step hooks, Roblox-style facade | No visual scripting; thin API surface |
 | **AI agents (LLM NPCs)** | none native (bolt-on) | ❌ none — but skills are the natural seat | New domain (§20); determinism tames it |
-| **Character voice (TTS)** | none native | ❌ none | New (§20); cached, event-driven like audio |
+| **Voice + Foley store (AI audio)** | none native | ❌ none | New (§20); ElevenLabs-generated, content-cached, shared w/ Plinken |
 | **Script / character store** | Marketplace (assets) | ❌ none — Continuum/qubepods is the substrate | New (§20) |
 | **Observability / debug** | Insights, trace, Visual Logger | 🟡 HUD `tick/msg/drop` only | New (§19); → Analytics Engine |
 | **Scene / world** | Levels, World Partition, streaming, sublevels | 🟡 single normalized-JSON scene, full load | No streaming / partitioning |
@@ -496,16 +519,21 @@ stochastic AI is tamed by recording its outputs into the deterministic input log
     inputs): the agent's outputs are **recorded into the per-tick decision/input
     record**; replay + multiplayer feed *recorded* decisions, never re-call the
     model. So an AI-driven scene still replays bit-for-bit and stays in lockstep.
-  - **TTS character voice** (also in the Audio phase) — `speak(entity, text,
-    voice)` → **content-addressed cache** (hash of text+voice → clip in R2/KV) →
-    generate on miss → spatialized playback. Caching makes a line cheap the second
-    time and keeps replays stable.
+  - **TTS character voice + the Foley store** (also in the Audio phase) —
+    `speak(entity, text, voice)` and `sfx(name)` both resolve through one
+    **content-addressed AI-audio cache**: hash of (text/prompt + voice/style) →
+    clip in R2/KV → **generate on miss via ElevenLabs** (voice *and* sound
+    effects — door swooshes, phaser beams, footsteps, ambience) → spatialized
+    playback. A growing **Foley library** that fills itself: the first time a
+    laser fires we generate + cache it, every later shot is free, and replays stay
+    stable because the key is content. **Shared with Plinken** (the audio-plugin
+    tool) — the same Foley/voice store backs both, so creations cross the ecosystem.
   - **Script / character store.** A registry of publishable **skills + characters**
-    (behavior + look + voice as one shippable unit), reusable across scenes and
-    creators — built on the **Continuum / qubepods substrate** (a skill *is* a qube;
-    publish with the existing tooling). Versioned, content-addressed, with an
-    agent **tool/effect + cost budget** (LLM + TTS are real spend — rate-limit,
-    cache hard, degrade to scripted behavior when offline or over budget).
+    (behavior + look + voice + their Foley as one shippable unit), reusable across
+    scenes and creators — built on the **Continuum / qubepods substrate** (a skill
+    *is* a qube; publish with the existing tooling). Versioned, content-addressed,
+    with an agent **tool/effect + cost budget** (LLM + ElevenLabs are real spend —
+    rate-limit, cache hard, degrade to scripted behavior when offline or over budget).
   - **Boundary:** the brain (LLM), the voice (TTS), and the store (network) are all
     **app/Worker-side**; `core` only sees recorded decisions + `speak` events. The
     core→render rule holds, and determinism survives an external intelligence.
@@ -539,10 +567,17 @@ physical medium the body is in) plus **force helpers** authors call from skills.
   delayed), and **camera shake** + a screen flash/post pulse (Lights phase) for the
   nuke preset. The sim/destruction parts are deterministic `core`; the VFX/flash are
   render-side.
+- **Interactables & beam VFX** — the cheap, iconic set: **trigger volumes** +
+  **kinematic animated props** = the whooshing **slide door** (proximity → slide
+  open + a Foley swoosh); **beams** = a glowing line/cylinder + raycast hit +
+  impact spark + Foley zap, which covers **phaser/laser** weapons *and* the
+  **transporter beam** (beaming is the same line-of-energy primitive, §"The
+  frame"). Small to build, huge for flavor.
 - **Where it lands:** movement modes extend the **Controllers phase**; water
   buoyancy/constraints ride the **Constraints phase**; explosions compose the
-  particle system + SDF destruction in the **Depth phase**. Cheap, high-delight,
-  and they unlock whole game genres (flight, space, underwater, demolition).
+  particle system + SDF destruction in the **Depth phase**; interactables/beams sit
+  with the **2D/Lights** VFX work + the Foley store. Cheap, high-delight, and they
+  unlock whole game genres (flight, space, underwater, demolition).
 
 ### 22. States of matter — solid / liquid / gas / plasma / exotic  — *research pillar (Year 3+ spikes)*
 The unifying generalization of §21's "medium": **matter has a state**, each state
@@ -637,11 +672,12 @@ Pulled early: you can't debug threading, the multiplayer loop, or AI agents by e
 - [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the
       contact listener already records.
 - [ ] **3D spatialization + attenuation**; **anim-event footsteps**; **music bed**.
-- [ ] **TTS character voice** — `core` raises a `speak(entity, text, voice)` event;
-      the app/Worker resolves it to audio: **content-addressed cache** (hash of
-      text+voice → clip in R2/KV) first, else **generate via a TTS service** and
-      cache. Played back **spatialized** through the audio engine. External +
-      non-deterministic → **never in core**; the cache keying keeps replays stable.
+- [ ] **Voice + Foley store** *(see §20)* — `speak(entity,text,voice)` and
+      `sfx(name)` events resolve through one **content-addressed AI-audio cache**
+      (R2/KV) → **generate on miss via ElevenLabs** (voices *and* sound effects:
+      door swooshes, beams, footsteps, ambience) → spatialized playback. A
+      self-filling Foley library; **shared with Plinken**. External +
+      non-deterministic → **never in core**; content-keying keeps replays stable.
 
 ### Phase 4 — Video recording  *(early debugging leverage — see §17)*
 - [ ] **Live capture** — framebuffer readback each frame → encoder. Native: image
@@ -877,11 +913,16 @@ wraps them all.
 Three nested layers:
 
 - **The frame (outer world).** A persistent, shared, AI-inhabited world we author
-  — the overworld / hub / continuum. It *is* a quine "game," but it's also the
+  — the overworld / hub / **Continuum**. It *is* a quine "game," but it's also the
   stage every other game sits on. Because we own the outermost layer, we can
   **always write the meta-narrative** — seasons, events, lore, consequences — that
   recontextualizes everything inside (a live, recursive, AI-driven version of a
-  Fortnite-style event frame).
+  Fortnite-style event frame). The Star-Trek read writes itself: the registry is
+  the **Continuum**, and the outer-story author — the **AI director** that bends
+  world params at will, drops events, breaks the fourth wall — is a **"Q"**: an
+  omnipotent narrator entity, an LLM with write access to reality. The aesthetic
+  comes free with it — **beaming** (transporter ↔ our world-handoff), **phaser/
+  laser beams**, **whooshing slide doors** — iconic, cheap, and on-theme.
 - **Games-within-the-game.** Players author sub-worlds — scenes + skills +
   characters — and publish them as **qubes to the Continuum / script store**. Each
   is a reachable place inside the frame. Authoring *is* play; the Roblox loop, but
@@ -963,6 +1004,10 @@ prescriptive; pick the ones that pull hardest.
   *(states of matter §22 — the creative/scientific differentiator)*
 - **Demolition** — `explode`/nuke a building into **SDF debris** with shockwave +
   boom + camera shake; share the replay clip. *(explosions §21 + recording)*
+- **The Bridge** — a Star-Trek-styled set piece: **whooshing slide doors**, a "**Q**"
+  AI director who bends the rules and narrates, **phaser beams**, and **beaming**
+  crew between worlds. *(interactables + beams §21 + AI director + Foley store +
+  beaming)* — the flavor showcase that ties the vision together.
 
 ---
 
@@ -980,8 +1025,9 @@ Because every world is a tick+input log, a set of normally-hard features become
   with" someone who's offline. Free from replay.
 - **Seeded procedural worlds** — share a whole city/level/scenario **by seed**;
   everyone gets the identical world.
-- **AI director** — an LLM that tunes difficulty, spawns events, and writes the
-  **outer story** live, by editing world params (the param server).
+- **AI director ("a Q")** — an LLM that tunes difficulty, spawns events, and writes
+  the **outer story** live, by editing world params (the param server) — an
+  omnipotent narrator with write access to reality.
 - **Scenario fuzzing & regression testing** — for the AV/robotics wedge: generate
   thousands of deterministic scenarios, replay a policy across them, diff outcomes.
 - **"Rewind to fix"** — competitive integrity + debugging: any dispute or bug is
