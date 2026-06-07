@@ -49,7 +49,8 @@ authoritative on the immediate task breakdown.
 > 11 UI · 12 Multithreading · 13 Navigation & NPCs · 14 Editor · 15 2D/text/sprites ·
 > 16 Input/controllers · 17 Recording · 18 World (terrain/veg/hair) · 19 Observability ·
 > 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter ·
-> 23 Props Store (typed asset taxonomy) · 24 Discovery (the third sense).
+> 23 Props Store (typed asset taxonomy) · 24 Discovery (the third sense) ·
+> 25 Game stats & economy (health, QIN, QWB).
 
 ---
 
@@ -76,6 +77,8 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Props store (typed assets)** | Marketplace (assets) | 🟡 *started* — Fedora (geometry) + materials are props | Unify the stores (§23); Continuum substrate |
 | **Motion library** | animation marketplace, retarget | 🟡 clip playback only; no shareable walk/dance library | New element of §23 |
 | **Discovery (the third sense)** | content browser, no agent discovery | ❌ none | New (§24); semantic + social, an agent tool |
+| **Game stats / vitals** | GAS (health, attributes) | ❌ none | New (§25); deterministic ECS components |
+| **Economy (QIN / QWB)** | none native | ❌ none | New (§25); authoritative ledger, creator economy |
 | **Observability / debug** | Insights, trace, Visual Logger | 🟡 HUD `tick/msg/drop` only | New (§19); → Analytics Engine |
 | **Scene / world** | Levels, World Partition, streaming, sublevels | 🟡 single normalized-JSON scene, full load | No streaming / partitioning |
 | **Asset pipeline** | Import (FBX/glTF/USD), cooking, DDC, virtual assets | 🟡 glTF `.glb` + procedural; assets embedded, getting externalized | TODO.md: `quine_provide_asset` |
@@ -686,6 +689,37 @@ Qubeworld" and have an agent *use* a hat a stranger published yesterday.
   lands:** with the **AI-native phase** (agent tools + the Continuum index), riding
   the Props Store.
 
+### 25. Game stats & economy — health, wealth, QIN & the Qubes World Bank  — *gameplay + Year-3 economy*
+The RPG/sim layer: characters have **stats** (health, energy, attributes) and
+**wealth**, and the world runs on a real currency — **QIN** — governed by the
+**Qubes World Bank (QWB)**. The split mirrors our determinism model exactly:
+**stats are deterministic `core` state; money is authoritative server state.**
+
+- **Stats & vitals.** A small **ECS component** (health/energy/attributes) +
+  events (damage from combat/explosions §21/falls, heal, **death/respawn**).
+  Fully deterministic in `core` — same tick → same HP — so it replays and stays in
+  lockstep for free. Lightweight; can land **as soon as a game needs combat**
+  (Year 1/2), not gated on the economy.
+- **Wealth & QIN currency.** Each character/player has a **wallet** (QIN balance).
+  QIN is the in-world soft currency — earned (gameplay, selling props), spent
+  (props, characters, worlds, services), transferred (player ↔ player).
+- **Qubes World Bank (QWB) — the authoritative ledger.** Balances and transactions
+  **cannot** be client-simulated (that's money-printing). QWB is a **server-owned,
+  persistent ledger** — it lives with the param/state server (§9) on the DO +
+  durable storage (D1/KV/R2), validates every transfer (no double-spend), and is
+  the source of truth. Clients may keep an **optimistic local balance** for UI, but
+  QWB confirms. Built on the existing **qubepods micro-billing** substrate
+  (TAL-300) — real-money rails underneath, QIN as the in-world layer on top.
+- **The payoff — a creator economy.** QWB + the Props Store (§23) + discovery (§24)
+  close the loop: a creator publishes a prop, others **discover and buy/license** it
+  with QIN, the creator **earns**. UGC stops being a hobby and becomes an economy;
+  the **AI director ("a Q")** can even run sinks/faucets to keep it balanced.
+- **Determinism boundary.** Health/stats: deterministic `core`. The ledger:
+  app/Worker-side and authoritative — the sim *requests* a transaction (a `spend`
+  intent), the bank *confirms* (recorded into the decision log like any external
+  result), so replays stay exact. **Where it lands:** stats whenever combat ships;
+  **QIN + QWB with the shared-world / persistence work (Depth phase, Year 3).**
+
 ---
 
 ## Phased plan
@@ -876,6 +910,13 @@ Layers on the NPC stack: agents *are* gameplay, not a bolt-on.
       order, broadcast to all; edits **persist** (DO storage / D1 / KV / R2).
       Generalizes the live-edit channel to "any player → shared world."
 - [ ] **Snapshot / restore** for late-join + desync recovery.
+- [ ] **QIN currency + Qubes World Bank (QWB)** *(see §25)* — authoritative,
+      persistent ledger on the param-server substrate (validate transfers, no
+      double-spend), wallets per player/character, built on qubepods micro-billing.
+      Powers the Props Store marketplace + **creator payouts** (the §23/§24 UGC
+      loop becomes an economy). *(Character **stats/vitals** are a separate,
+      lightweight deterministic-`core` ECS component — land them whenever combat
+      ships, not gated on this.)*
 
 ---
 
@@ -1091,6 +1132,10 @@ prescriptive; pick the ones that pull hardest.
 - **Phase Sandbox** — freeze a lake, **melt** rock to lava, fill a room with smoke,
   ionize gas into **plasma**, and **scatter** matter through the time tunnel.
   *(states of matter §22 — the creative/scientific differentiator)*
+- **Tycoon / Bazaar** — a player economy: earn **QIN**, trade props in a
+  marketplace, run a shop, **creators get paid** when their stuff sells; the **QWB**
+  keeps it honest. *(stats & economy §25 + Props Store + discovery)* — the
+  creator-economy flagship.
 - **Demolition** — `explode`/nuke a building into **SDF debris** with shockwave +
   boom + camera shake; share the replay clip. *(explosions §21 + recording)*
 - **The Bridge** — a Star-Trek-styled set piece: **whooshing slide doors**, a "**Q**"
