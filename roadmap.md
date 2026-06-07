@@ -48,7 +48,8 @@ authoritative on the immediate task breakdown.
 > 5 Audio · 6 Post/camera · 7 Scene/world · 8 Assets · 9 Networking · 10 Particles ·
 > 11 UI · 12 Multithreading · 13 Navigation & NPCs · 14 Editor · 15 2D/text/sprites ·
 > 16 Input/controllers · 17 Recording · 18 World (terrain/veg/hair) · 19 Observability ·
-> 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter.
+> 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter ·
+> 23 Props Store (typed asset taxonomy).
 
 ---
 
@@ -72,7 +73,8 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Scripting / gameplay** | Blueprints (visual) + C++ + GAS | 🟡 QuickJS skills w/ pre/post-step hooks, Roblox-style facade | No visual scripting; thin API surface |
 | **AI agents (LLM NPCs)** | none native (bolt-on) | ❌ none — but skills are the natural seat | New domain (§20); determinism tames it |
 | **Voice + Foley store (AI audio)** | none native | ❌ none | New (§20); ElevenLabs-generated, content-cached, shared w/ Plinken |
-| **Script / character store** | Marketplace (assets) | ❌ none — Continuum/qubepods is the substrate | New (§20) |
+| **Props store (typed assets)** | Marketplace (assets) | 🟡 *started* — Fedora (geometry) + materials are props | Unify the stores (§23); Continuum substrate |
+| **Motion library** | animation marketplace, retarget | 🟡 clip playback only; no shareable walk/dance library | New element of §23 |
 | **Observability / debug** | Insights, trace, Visual Logger | 🟡 HUD `tick/msg/drop` only | New (§19); → Analytics Engine |
 | **Scene / world** | Levels, World Partition, streaming, sublevels | 🟡 single normalized-JSON scene, full load | No streaming / partitioning |
 | **Asset pipeline** | Import (FBX/glTF/USD), cooking, DDC, virtual assets | 🟡 glTF `.glb` + procedural; assets embedded, getting externalized | TODO.md: `quine_provide_asset` |
@@ -528,12 +530,12 @@ stochastic AI is tamed by recording its outputs into the deterministic input log
     laser fires we generate + cache it, every later shot is free, and replays stay
     stable because the key is content. **Shared with Plinken** (the audio-plugin
     tool) — the same Foley/voice store backs both, so creations cross the ecosystem.
-  - **Script / character store.** A registry of publishable **skills + characters**
-    (behavior + look + voice + their Foley as one shippable unit), reusable across
-    scenes and creators — built on the **Continuum / qubepods substrate** (a skill
-    *is* a qube; publish with the existing tooling). Versioned, content-addressed,
-    with an agent **tool/effect + cost budget** (LLM + ElevenLabs are real spend —
-    rate-limit, cache hard, degrade to scripted behavior when offline or over budget).
+  - **Script / character store** — a facet of the unified **Props Store (§23)**:
+    a character is a *composite prop* (geometry + material + motion + behavior +
+    voice/Foley) shipped as one unit, built on the **Continuum / qubepods substrate**
+    (a skill *is* a qube). Versioned, content-addressed, with an agent **tool/effect
+    + cost budget** (LLM + ElevenLabs are real spend — rate-limit, cache hard,
+    degrade to scripted behavior when offline or over budget).
   - **Boundary:** the brain (LLM), the voice (TTS), and the store (network) are all
     **app/Worker-side**; `core` only sees recorded decisions + `speak` events. The
     core→render rule holds, and determinism survives an external intelligence.
@@ -615,6 +617,42 @@ of scope, but a **tractable approximation ladder** fits the deterministic core.
   approximation proves out. The payoff: cryo/pyro sandboxes, lava, smoke-filled
   rooms, underwater worlds, plasma weapons, and genuinely novel "scattered-matter"
   mechanics no other engine offers.
+
+### 23. The Props Store — a typed asset taxonomy  — *cross-cutting; already started*
+The realization that unifies the stores (§20 script/character, the Foley store):
+**everything publishable is a *prop*** — a content-addressed, versioned,
+composable unit in the **Continuum**. There isn't a script store *and* a material
+store *and* a Foley store; there's **one Props Store** with a **typed taxonomy**.
+And we already started it — the **Fedora** and **materials** are props today.
+
+- **Element kinds (atomic props):**
+  - **Object / geometry** — meshes + procedural parts (the **Fedora**, nose, eyes,
+    SDF shapes). ✅ *started.*
+  - **Material** — PBR materials + surfaces (live-editable today). ✅ *started.*
+  - **Audio** — voice, **Foley**/SFX, music, ambience (ElevenLabs-filled, §20).
+    "Audio is another form of prop." 🟡 *planned.*
+  - **Motion** — animation as a **first-class, classifiable element**: **walk, run,
+    dance, gesture, idle** clips + keyframe timelines, **retargetable** across
+    characters. We have clip playback; a **motion library** (publish/share/compose
+    motions, blend them) is the new piece. 🟡
+  - **Behavior** — skills + AI agent behaviors + controllers (§20). 🟡
+- **Composite props (made of the above):**
+  - **Character** = geometry + material + motion + behavior + voice/Foley — *one
+    shippable unit* (this is what the §20 "character store" really is).
+  - **Scene / World** = entities (composites) + environment + rules.
+  - **Game / qube** = a scene + behaviors + the outer story.
+- **Why one taxonomy wins:** every prop rides the *same* rails — content-addressed,
+  versioned, **hot-swappable** (material + skill hot-reload already works), and
+  **composable** (drop a new hat on a character, swap its walk for a dance, retint
+  its material, regenerate its voice — independently). Classification by element is
+  what makes mix-and-match, search, and remix tractable; it's the Roblox/UGC loop
+  with a clean type system underneath.
+- **Where it lands:** **cross-cutting, not a single phase.** It *grows as each
+  element system ships* — geometry + material exist now, audio in the Audio phase,
+  motion with the animation work (Constraints phase), behavior with skills — and
+  the **unified registry + classification** is formalized around the AI-native
+  phase (where the store + Continuum publishing live). Start cataloguing props the
+  moment a second one exists (it does: Fedora + materials).
 
 ---
 
@@ -756,9 +794,10 @@ Layers on the NPC stack: agents *are* gameplay, not a bolt-on.
       outputs are **recorded into the per-tick input record** (same channel as
       inputs); replay feeds recorded decisions, never re-calls the model. Keeps
       replay/multiplayer exact despite an external, stochastic brain.
-- [ ] **Script / character store** — a registry of publishable **skills +
-      characters** (behavior + look + voice), reusable across scenes; built on the
-      Continuum / qubepods substrate (skills as qubes). Versioned, content-addressed.
+- [ ] **Props Store — unified registry** *(see §23)* — formalize the typed
+      taxonomy (object / material / audio / **motion** / behavior; characters,
+      scenes, games as composites) on the Continuum/qubepods substrate. Subsumes
+      the script / character / Foley stores. Versioned, content-addressed, composable.
 - [ ] **Agent tool/effect budget** — rate/limit + cost-meter LLM + TTS calls
       (they're external spend); cache aggressively; degrade to scripted behavior
       when offline or over budget.
@@ -769,6 +808,8 @@ Layers on the NPC stack: agents *are* gameplay, not a bolt-on.
 - [ ] **Animation blending** — clip cross-fade + additive.
 - [ ] **Anim state machine** (idle/run/reach) driven by controller + skill state.
 - [ ] **Two-bone IK** — feet plant, hands/head reach (pairs with the ragdoll).
+- [ ] **Motion library** *(see §23)* — walk / run / **dance** / gesture / idle as
+      shareable, **retargetable** props in the Props Store; blendable + composable.
 - [ ] *(stretch)* **soft body / cloth**.
 
 ### Phase 11 — World: terrain, vegetation & hair  *(environment richness — see §18)*
