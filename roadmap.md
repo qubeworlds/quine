@@ -44,6 +44,7 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
 | **Navigation / AI** | NavMesh, behavior trees, EQS | ❌ none | |
 | **Terrain / foliage** | Landscape, foliage, splines, water | ❌ none | |
+| **Capture / video recording** | Movie Render Queue, Sequencer render, screenshots | 🟡 single-frame PPM thumbnail (Xvfb) only; no video | New domain (§17) |
 | **Determinism / replay** | Not a first-class goal | ✅ fixed-timestep, plain-Zig core, replay-ready | **quine is ahead here** |
 | **Web/wasm target** | Heavy, deprecated HTML5 path | ✅ first-class WebGL2/WebGPU + Jolt-in-wasm | **quine is ahead here** |
 | **Determinism-safe multithread** | Task graph everywhere | ❌ single-threaded today | → multithreading planned, native **and** web, determinism kept (§12) |
@@ -326,14 +327,37 @@ want it, and why / why not).
     slope/step handling) in `core` driven by those actions — the bridge between
     input and the actor, and a prerequisite for proper player-driven scenes.
 
+### 17. Capture & video recording  — *committed (Phase 3)*
+- **Unreal:** Movie Render Queue, Sequencer-driven renders, high-res screenshots.
+- **quine:** the **`QUINE_THUMB` path only** — render *one* frame to a PPM under
+  Xvfb + software GL. No video, no multi-frame capture.
+- **Call:** **Yes, early — it pays for itself as a debugging tool** (share a bug
+  repro as a clip, diff a regression visually, show work without a display). It
+  sits **after audio** so recordings can mux the audio track. The determinism +
+  fixed-timestep core makes this unusually clean — two modes:
+  - **Live capture.** Grab the framebuffer each frame into an encoder. Native:
+    readback from the offscreen target the thumbnail path already uses → an
+    encoder (pipe an image sequence to `ffmpeg`, or link a small encoder).
+    Web: **`MediaRecorder` on the canvas** → WebM (the editor can offer a
+    download). Reuses the live-edit message channel for start/stop.
+  - **Offline / deterministic render.** Replay a recorded **tick+input log**
+    (the same log the Phase 1 determinism harness and §9 multiplayer capture)
+    headless under Xvfb, render every fixed step at a *locked* 60 fps decoupled
+    from wall-clock, and encode. This gives **perfect, repeatable, real-time-
+    independent** captures (slow machine, same output) — the strongest debugging
+    artifact, and it falls out almost for free once the replay harness exists.
+  - **Boundary:** capture orchestration is **app/render**-side (framebuffer +
+    encoder are GPU/IO); `core` stays untouched — it just advances ticks. Audio
+    muxing rides the Phase 2 engine.
+
 ---
 
 ## Phased plan
 
 Explicit near-term order (the agreed priorities): **1 multithreading → 2 audio →
-3 2D/text/sprites → 4 lights & shade → 5 controllers → 6 constraints & rigging**,
-with remaining depth/multiplayer after. Each phase builds on the last; in-flight
-items defer to `docs/TODO.md` for breakdown.
+3 video recording → 4 2D/text/sprites → 5 lights & shade → 6 controllers →
+7 constraints & rigging**, with remaining depth/multiplayer after. Each phase
+builds on the last; in-flight items defer to `docs/TODO.md` for breakdown.
 
 ### Phase 0 — Finish what's in flight  *(see docs/TODO.md)*
 - [ ] **PBR texture maps** — load glTF UVs/images, CPU texture registry, sample
@@ -369,7 +393,16 @@ skip C, hold the "result must not depend on thread count" invariant.
       contact listener already records.
 - [ ] **3D spatialization + attenuation**; **anim-event footsteps**; **music bed**.
 
-### Phase 3 — 2D: text, fonts & sprites  *(the presentation layer — see §15)*
+### Phase 3 — Video recording  *(early debugging leverage — see §17)*
+- [ ] **Live capture** — framebuffer readback each frame → encoder. Native: image
+      sequence to `ffmpeg` (or a small linked encoder); web: `MediaRecorder` on
+      the canvas → WebM. Start/stop over the live-edit message channel.
+- [ ] **Offline deterministic render** — replay a tick+input log headless (Xvfb),
+      render every fixed step at a locked 60 fps decoupled from wall-clock, encode.
+      Repeatable, machine-independent captures; reuses the Phase 1 replay harness.
+- [ ] **Audio mux** — fold the Phase 2 audio track into the recording.
+
+### Phase 4 — 2D: text, fonts & sprites  *(the presentation layer — see §15)*
 - [ ] **Font rendering** — SDF/MSDF glyph atlas (scales crisply, one cheap shader,
       reuses the alpha-blend pass), or `stb_truetype` rasterization. Unicode +
       basic layout (wrap/align). Retire the fixed debug-text font.
@@ -380,7 +413,7 @@ skip C, hold the "result must not depend on thread count" invariant.
       space (HUD/icons/bars) + world-space billboards. Rides the texture registry
       from Phase 0.
 
-### Phase 4 — Lights & shade  *(visual fidelity)*
+### Phase 5 — Lights & shade  *(visual fidelity)*
 - [ ] **Data-driven lights** in the scene schema (directional + point; color/
       intensity/direction/range).
 - [ ] **Shadow map** for the key directional light.
@@ -390,7 +423,7 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Jolt debug-draw** layer (colliders/contacts) — also a tooling win.
 - [ ] *(stretch)* **SSAO**; **subsurface/wrap-diffuse** for skin.
 
-### Phase 5 — Controllers  *(input → sim — see §16)*
+### Phase 6 — Controllers  *(input → sim — see §16)*
 - [ ] **Devices** — gamepad (sokol-app native / Gamepad API on web) + keyboard/
       mouse/touch unified behind one per-tick input snapshot.
 - [ ] **Action / axis map** — data-driven, rebindable, contexts; skills read
@@ -403,7 +436,7 @@ skip C, hold the "result must not depend on thread count" invariant.
       in `core`, driven by actions; the bridge between input and the actor.
 - [ ] **Follow / free camera** beyond orbit.
 
-### Phase 6 — Constraints & rigging  *(physical + animation depth)*
+### Phase 7 — Constraints & rigging  *(physical + animation depth)*
 - [ ] **Jolt constraints** (hinge / point / cone).
 - [ ] **Active ragdoll** for the actor (constraints + skeleton). *(ADR-0001)*
 - [ ] **Animation blending** — clip cross-fade + additive.
@@ -411,7 +444,7 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Two-bone IK** — feet plant, hands/head reach (pairs with the ragdoll).
 - [ ] *(stretch)* **soft body / cloth**.
 
-### Phase 7 — Depth, scale & multiplayer  *(after the six — server-authoritative, §9)*
+### Phase 8 — Depth, scale & multiplayer  *(after the seven — server-authoritative, §9)*
 - [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
 - [ ] **Configurable / raised entity cap**; additive scene merge for composing
       actors.
