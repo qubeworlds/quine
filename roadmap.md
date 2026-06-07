@@ -43,7 +43,9 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Particles / VFX** | Niagara | ❌ none | |
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
 | **Navigation / AI** | NavMesh, behavior trees, EQS | ❌ none | |
-| **Terrain / foliage** | Landscape, foliage, splines, water | ❌ none | |
+| **Terrain** | Landscape heightfield, sculpt, layers, LOD | ❌ none — but SDF mesher + brick cache reusable | New domain (§18) |
+| **Vegetation / foliage** | Foliage tool, instanced meshes, splines, wind | ❌ none; **renderer has no GPU instancing** | New domain (§18); instancing is the gate |
+| **Hair / fur** | Groom (strands), hair physics, hair shading | ❌ none (RPM avatars use baked mesh hair) | New domain (§18); cards, not grooms |
 | **Capture / video recording** | Movie Render Queue, Sequencer render, screenshots | 🟡 single-frame PPM thumbnail (Xvfb) only; no video | New domain (§17) |
 | **Determinism / replay** | Not a first-class goal | ✅ fixed-timestep, plain-Zig core, replay-ready | **quine is ahead here** |
 | **Web/wasm target** | Heavy, deprecated HTML5 path | ✅ first-class WebGL2/WebGPU + Jolt-in-wasm | **quine is ahead here** |
@@ -350,6 +352,42 @@ want it, and why / why not).
     encoder are GPU/IO); `core` stays untouched — it just advances ticks. Audio
     muxing rides the Phase 2 engine.
 
+### 18. World — terrain, vegetation, hair & fur  — *committed (Phase 8)*
+The "real world" environment layer. Three efforts, very different costs:
+
+- **Terrain — strong fit, half-built.** quine already has an **SDF + marching-
+  cubes / surface-nets mesher with an 8³ brick cache** (`core/sdf.zig`,
+  `marching_cubes.zig`, `sdf_cache.zig`) for destructible walls. Two paths:
+  - *Volumetric SDF terrain* — caves, overhangs, **destructible** by the same
+    code that already clears wall material into Jolt debris. On-brand; reuses the
+    mesher and brick cache; collision from the meshed surface (already done for
+    debris). Meshing is a **bake → threads under Phase 1 Tier A**.
+  - *Heightfield terrain* — cheaper, classic; **Jolt `HeightFieldShape`** gives
+    collision directly, render a gridded mesh with LOD. Less flexible (no caves).
+  - **Call:** start heightfield for cost, keep the SDF path for destructible/cave
+    scenes. Both stay data-driven in the scene schema; meshing in `core`.
+
+- **Vegetation / foliage — gated on GPU instancing.** The real prerequisite is
+  **GPU instancing**, which the renderer **lacks today** (per-object draws). It's
+  a *foundational* render capability — foliage, crowds, and sprite-particles
+  (§10) all need it — so build it once, here or pulled earlier. Then:
+  - **Scatter** placement — seeded, deterministic if it feeds collision (trees as
+    static bodies); purely visual ground cover can live render-side.
+  - **Instanced draw** + distance **LOD/billboard** + frustum cull.
+  - **Wind** — cheap vertex-shader sway (render-side, no determinism concern).
+  - **Call:** yes, but **land instancing first** — it's the gate and it's reusable.
+
+- **Hair & fur — cards, not grooms.** Strand grooms (Unreal's Groom) + hair
+  physics are among the most expensive subsystems in any engine — **out of scope**.
+  Pragmatic ladder:
+  - **Hair cards** — textured alpha strips. Needs almost nothing beyond the
+    **PBR-texture + alpha work already in Phase 0**; the right default (most games
+    still ship this). Today RPM avatars already use baked mesh hair.
+  - **Shell fur** — concentric alpha shells; cheap, good for short fur.
+  - *(long-range, likely never)* **strand grooms + hair physics** — only if a use
+    case demands film-grade hair.
+  - **Call:** hair cards as the target; shell fur if a furry asset needs it.
+
 ---
 
 ## Phased plan
@@ -444,7 +482,18 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Two-bone IK** — feet plant, hands/head reach (pairs with the ragdoll).
 - [ ] *(stretch)* **soft body / cloth**.
 
-### Phase 8 — Depth, scale & multiplayer  *(after the seven — server-authoritative, §9)*
+### Phase 8 — World: terrain, vegetation & hair  *(environment richness — see §18)*
+- [ ] **GPU instancing** in the render layer — the gate for foliage, crowds, and
+      sprite-particles. Build it first.
+- [ ] **Terrain** — heightfield (Jolt `HeightFieldShape` collision) for cost;
+      SDF volumetric path for destructible/cave scenes (reuses the existing
+      mesher + brick cache). Data-driven in the scene schema; meshing in `core`.
+- [ ] **Vegetation** — seeded scatter (deterministic where it feeds collision),
+      instanced draw + LOD/billboard + cull, cheap vertex-shader **wind**.
+- [ ] **Hair cards** — textured alpha strips (rides Phase 0 PBR + alpha); **shell
+      fur** if a furry asset needs it. *(strand grooms / hair physics out of scope)*
+
+### Phase 9 — Depth, scale & multiplayer  *(after the rest — server-authoritative, §9)*
 - [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
 - [ ] **Configurable / raised entity cap**; additive scene merge for composing
       actors.
@@ -473,6 +522,8 @@ decision, not an oversight:
 - **Unreal-style property replication** — we pursue deterministic lockstep
   instead.
 - **In-engine editor** — intentionally external (`world` repo).
+- **Strand-based hair grooms + hair physics** — film-grade, hugely expensive;
+  hair cards / shell fur cover us (§18).
 
 ---
 
