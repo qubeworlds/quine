@@ -42,7 +42,8 @@ Legend: ✅ have it · 🟡 partial / stubbed · ❌ missing · 🚫 deliberatel
 | **Networking** | Replication, rollback, dedicated servers | 🟡 transport + tick-gating; **no replication model** | → server-authoritative single-binary (§9) |
 | **Particles / VFX** | Niagara | ❌ none | |
 | **UI** | UMG / Slate | 🟡 debug HUD only | |
-| **Navigation / AI** | NavMesh, behavior trees, EQS | ❌ none | |
+| **Pathfinding / navmesh** | NavMesh gen, Detour, crowd avoidance | ❌ none — the one new NPC piece | New domain (§13) |
+| **Autonomous NPCs / AI** | Behavior Trees, EQS, AI Perception, AIController | 🟡 skills already do goal-directed behavior; no nav/perception layer | Brain stays in skills (§13) |
 | **Terrain** | Landscape heightfield, sculpt, layers, LOD | ❌ none — but SDF mesher + brick cache reusable | New domain (§18) |
 | **Vegetation / foliage** | Foliage tool, instanced meshes, splines, wind | ❌ none; needs GPU instancing (→ pulled to Phase 4) | New domain (§18) |
 | **Hair / fur** | Groom (strands), hair physics, hair shading | ❌ none (RPM avatars use baked mesh hair) | New domain (§18); cards, not grooms |
@@ -270,12 +271,40 @@ want it, and why / why not).
   harness** (record tick+inputs, replay, assert identical state). **GPU-driven
   culling / LOD / Nanite-style** geometry: out of scope unless a scene demands it.
 
-### 13. Navigation & AI
-- **Unreal:** NavMesh generation, behavior trees, EQS, crowd.
-- **quine:** none (skills are hand-coded JS).
-- **Call:** **Later, lightweight.** A **navmesh bake** + simple pathfinding is on
-  the long-range list (TODO.md). Behavior trees / EQS: skills cover this for now;
-  revisit if scenes get many agents.
+### 13. Navigation & autonomous NPCs  — *committed (Phase 7)*
+- **Unreal:** NavMesh generation, Behavior Trees, EQS, AI Perception, crowd
+  (Detour/RVO), the AIController/Pawn split.
+- **quine:** none as a *subsystem* — **but the brain already exists**. Skills
+  (QuickJS) already do goal-directed behavior: keepie-uppie predicts the ball's
+  landing, runs the actor under it, and heads it back — an autonomous agent in
+  miniature. What's missing is the *sensorimotor + spatial* layer around it.
+- **Call:** **Yes — and it's a stack, not one feature.** An NPC =
+  **locomotion + perception + pathfinding + decision-making**, and three of the
+  four are already scheduled:
+
+  | NPC needs | Source |
+  |---|---|
+  | **Locomotion** — move the body | Character controller — **Phase 6** |
+  | **Perception** — sense the world | Physics queries (raycast / shape-cast / overlap) — **Phase 6** |
+  | **Pathfinding** — where to go | Navmesh + A* — **the one genuinely new piece** |
+  | **Decision-making** — what to do | **Skills** (QuickJS) — exists today |
+
+  So the new work, all in deterministic `core`, exposed to skills via the facade:
+  - **Navmesh bake** — generate a walkable mesh from static geometry / terrain
+    (§18). It's a **bake → threads under Phase 1 Tier A**, and re-bakes when SDF
+    terrain is destroyed (ties into the brick cache).
+  - **Pathfinding** — A* over the navmesh (deterministic tie-breaking), string-
+    pulling/funnel for smooth paths. `nav.findPath(from, to)` in the prelude.
+  - **Path following + steering** — seek / arrive / path-follow feeding the
+    character controller; **local avoidance** (RVO/ORCA) for crowds.
+  - **Perception helpers** — line-of-sight (raycast), vision cones, nearest /
+    in-radius **entity queries** (a spatial index over the ECS).
+  - **Decision-making stays in skills** — but ship a **behavior-tree / utility-AI
+    helper in the JS prelude** so authors compose NPCs from primitives instead of
+    ad-hoc `if`-trees. **Not** a C++ BT/EQS engine — the deterministic-core +
+    scriptable-brain split is the whole point.
+  - **Crowds** reuse GPU instancing (Phase 4) to render + the anim state machine
+    (Phase 7) to animate many agents.
 
 ### 14. Editor & tooling
 - **Unreal:** full in-engine editor, sequencer, profiler, content browser.
@@ -287,7 +316,7 @@ want it, and why / why not).
   (TODO.md quick-win — visualize colliders), and a **replay record/playback**
   harness.
 
-### 15. 2D — text, fonts & sprites  — *committed (Phase 3)*
+### 15. 2D — text, fonts & sprites  — *committed (Phase 4)*
 - **Unreal:** Slate/UMG text with real font rendering, Paper2D sprites + flipbooks
   + tilemaps, 2D physics.
 - **quine:** only the **debug HUD** — sokol-debugtext's fixed bitmap font (one
@@ -311,7 +340,7 @@ want it, and why / why not).
     is **render**-side — same core→render rule. Don't build a UMG; this is a
     draw layer, not a UI framework.
 
-### 16. Input & controllers  — *committed (Phase 5)*
+### 16. Input & controllers  — *committed (Phase 6)*
 - **Unreal:** Enhanced Input (action/axis mappings, contexts), gamepad + device
   abstraction, character movement controller, possession.
 - **quine:** a small keybinding table + pointer/orbit + mobile pinch-pan
@@ -354,7 +383,7 @@ want it, and why / why not).
     encoder are GPU/IO); `core` stays untouched — it just advances ticks. Audio
     muxing rides the Phase 2 engine.
 
-### 18. World — terrain, vegetation, hair & fur  — *committed (Phase 8)*
+### 18. World — terrain, vegetation, hair & fur  — *committed (Phase 9)*
 The "real world" environment layer. Three efforts, very different costs:
 
 - **Terrain — strong fit, half-built.** quine already has an **SDF + marching-
@@ -398,8 +427,9 @@ The "real world" environment layer. Three efforts, very different costs:
 
 Explicit near-term order (the agreed priorities): **1 multithreading → 2 audio →
 3 video recording → 4 2D/text/sprites → 5 lights & shade → 6 controllers →
-7 constraints & rigging**, with remaining depth/multiplayer after. Each phase
-builds on the last; in-flight items defer to `docs/TODO.md` for breakdown.
+7 navigation & NPCs → 8 constraints & rigging → 9 world (terrain/veg/hair)**,
+with remaining depth/scale/multiplayer after. Each phase builds on the last;
+in-flight items defer to `docs/TODO.md` for breakdown.
 
 ### Phase 0 — Finish what's in flight  *(see docs/TODO.md)*
 - [ ] **PBR texture maps** — load glTF UVs/images, CPU texture registry, sample
@@ -482,7 +512,20 @@ skip C, hold the "result must not depend on thread count" invariant.
       in `core`, driven by actions; the bridge between input and the actor.
 - [ ] **Follow / free camera** beyond orbit.
 
-### Phase 7 — Constraints & rigging  *(physical + animation depth)*
+### Phase 7 — Navigation & autonomous NPCs  *(gameplay brain — see §13)*
+Builds directly on Phase 6 (locomotion + perception). The brain stays in skills.
+- [ ] **Navmesh bake** — walkable mesh from static geometry / terrain; a bake
+      (threads under Phase 1 Tier A), re-baked when SDF terrain is destroyed.
+- [ ] **Pathfinding** — A* over the navmesh (deterministic tie-breaking) + funnel
+      smoothing; `nav.findPath(from, to)` in the QuickJS prelude.
+- [ ] **Path following + steering** — seek/arrive/path-follow into the character
+      controller; **local avoidance** (RVO/ORCA) for crowds.
+- [ ] **Perception helpers** — line-of-sight, vision cones, nearest/in-radius
+      **entity queries** (a spatial index over the ECS), exposed to skills.
+- [ ] **Behavior-tree / utility-AI helper** in the JS prelude — authors compose
+      NPCs from primitives, not ad-hoc `if`-trees. *(not a C++ BT/EQS engine)*
+
+### Phase 8 — Constraints & rigging  *(physical + animation depth)*
 - [ ] **Jolt constraints** (hinge / point / cone).
 - [ ] **Active ragdoll** for the actor (constraints + skeleton). *(ADR-0001)*
 - [ ] **Animation blending** — clip cross-fade + additive.
@@ -490,7 +533,7 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Two-bone IK** — feet plant, hands/head reach (pairs with the ragdoll).
 - [ ] *(stretch)* **soft body / cloth**.
 
-### Phase 8 — World: terrain, vegetation & hair  *(environment richness — see §18)*
+### Phase 9 — World: terrain, vegetation & hair  *(environment richness — see §18)*
 - [x] **GPU instancing** — *moved to Phase 4* (built with the sprite batcher);
       ready to consume here for vegetation.
 - [ ] **Terrain** — heightfield (Jolt `HeightFieldShape` collision) for cost;
@@ -501,7 +544,7 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Hair cards** — textured alpha strips (rides Phase 0 PBR + alpha); **shell
       fur** if a furry asset needs it. *(strand grooms / hair physics out of scope)*
 
-### Phase 9 — Depth, scale & multiplayer  *(after the rest — server-authoritative, §9)*
+### Phase 10 — Depth, scale & multiplayer  *(after the rest — server-authoritative, §9)*
 - [ ] **CPU particle system** in core (deterministic; debris/splash/sparks).
 - [ ] **Configurable / raised entity cap**; additive scene merge for composing
       actors.
@@ -509,7 +552,6 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Authoritative sim in one place** — inputs to the server, confirmed
       state/inputs back (sidesteps cross-platform bit-exactness).
 - [ ] **Snapshot / restore** for late-join + desync recovery.
-- [ ] *(stretch)* **navmesh bake** + simple pathfinding.
 
 ---
 
