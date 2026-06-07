@@ -555,6 +555,74 @@ Builds directly on Phase 6 (locomotion + perception). The brain stays in skills.
 
 ---
 
+## North-star scenario — an autonomous agent in a city
+
+A concrete stress-test target: **a self-driving car through a town (GTA-like)** or
+**a robot walking through a city (Terminator-like)**. Neither is a "feature" — each
+stresses the engine along axes the phased plan only partly covers, and forces
+capabilities not yet planned. This section decomposes the target so the gaps are
+explicit.
+
+**Why this target fits quine specifically:** a **deterministic, replayable** city
+sim is exactly what autonomous-vehicle / robotics validation needs — reproduce a
+disengagement bit-for-bit, regression-test a driving policy, replay a scenario
+across a fleet. The core strength (determinism) maps onto a high-value use case.
+
+### The capability stack
+
+| Capability | Car | Robot | Status |
+|---|---|---|---|
+| Many autonomous agents (traffic, pedestrians) | ✓ | ✓ | Phase 7 + crowds |
+| Pathfinding / navmesh | ✓ | ✓ | Phase 7 |
+| Locomotion | wheeled | legged | Phase 6 (char ctrl) / Phase 8 (ragdoll) |
+| Multithreading / scale | ✓ | ✓ | Phase 1 |
+| Instanced rendering (crowds/props) | ✓ | ✓ | Phase 4 |
+| **Large world** (a whole town) | ✓ | ✓ | ❌ **new** — streaming + LOD + cull + origin-rebasing |
+| **Many-light rendering** (night city) | ✓ | ✓ | ❌ **new** — clustered/deferred (Phase 5 is single-light) |
+| **Vehicle dynamics** | ✓ | – | ❌ **new** — reverses "vehicles out of scope" |
+| **Sensor simulation** (camera/LiDAR/radar) | ✓ | ✓ | ❌ **new domain** |
+| **Road network / traffic rules** | ✓ | (✓) | ❌ **new** — road graph, lanes, signals |
+| Day-night / weather | ✓ | ✓ | ❌ new (stretch) |
+
+~Half the stack is already scheduled (the agent / crowd / nav / scale substrate).
+The scenario forces **six new tentpoles**, each a phase-sized effort:
+
+1. **Large-world streaming** — the biggest structural gap. A city dwarfs one
+   full-loaded scene. Needs **tile streaming** (load as the agent moves), **LOD**,
+   **frustum + occlusion culling**, and **floating-origin rebasing** (float
+   precision dies far from origin — and rebasing must stay **deterministic**).
+   Reverses §7's "streaming out of scope."
+2. **Sensor simulation** — the heart of "self-driving" / "Terminator vision":
+   **camera** (render-to-texture per agent — the `QUINE_THUMB` offscreen path is
+   the seed), **LiDAR / depth** (batched raycasts — the Phase 6/7 query API, scaled,
+   ideally GPU), **radar**, segmentation buffers. Feeds an autonomy policy (a skill,
+   or an external ML model over the feed). Entirely new domain.
+3. **Vehicle dynamics** — Jolt **`VehicleConstraint`** (wheels, suspension,
+   engine/brake/steer). Reverses "vehicles out of scope" — required for the car.
+4. **Many-light rendering** — a night city has hundreds of emitters (street lamps,
+   headlights, windows). Single-light forward (Phase 5) won't scale; needs
+   **clustered-forward or deferred** shading + many shadow casters. A renderer
+   rearchitecture.
+5. **Road network & traffic** — beyond generic navmesh: a **road graph** (lanes,
+   splines, connections), **traffic signals**, right-of-way / lane-following — for
+   the ego-agent *and* NPC traffic.
+6. **Legged-robot locomotion** — a **kinematic** pedestrian (char controller + walk
+   anim, Phases 6/8) is tractable and is how GTA does crowds. **Dynamically-balanced
+   bipedal** walking (true Terminator) is **research-grade** (motorized constraints
+   + balance control on an active ragdoll).
+
+### Sequencing reality
+
+This is a **multi-year north-star, not a phase.** The tractable path layers on the
+plan: Phases 1 / 4 / 6 / 7 already build the agent + crowd + nav substrate; then
+streaming, many-light rendering, sensors, vehicles, and road-network are the new
+tentpoles. The two honest **research risks — dynamic bipedal locomotion and
+real-time high-fidelity sensor sim at city scale — are spikes, not commitments.**
+Start the robot kinematic, start the car with simple sensors, and let determinism
+be the differentiator (repeatable scenario testing).
+
+---
+
 ## Explicitly out of scope (for now)
 
 To keep focus, these Unreal pillars are **not** goals — listed so it's a
@@ -566,7 +634,10 @@ decision, not an oversight:
 - **Control Rig / full animation retargeting pipeline** — procedural parts +
   glTF retarget-by-name covers us.
 - **Vehicles, chaos destruction at Unreal scale** — niche; SDF-debris is our
-  destruction story.
+  destruction story. *(Vehicles reverse if we pursue the city north-star — Jolt
+  `VehicleConstraint` is the path.)*
+- **Large-world streaming / partitioning** — single-scene full-load is fine until
+  a scene gets big. *(Reverses for the city north-star — the biggest gap there.)*
 - **USD / FBX import** — glTF is our interchange format.
 - **UMG/Slate UI framework** — UI lives in the external web editor.
 - **Unreal-style property replication** — we pursue deterministic lockstep
