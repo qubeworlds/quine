@@ -181,6 +181,55 @@ export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, le
     App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
 }
 
+/// Pick the instance under a framebuffer pixel (`px`,`py`) and return its
+/// instance id, or -1 if nothing was hit. Uses the LIVE camera (`last_vp` +
+/// `queue.eye`), so it stays correct after the user orbits: project every
+/// drawable's body centre to the screen, keep candidates within a pixel
+/// threshold, and pick the one nearest the camera. The id is parsed from the
+/// entity name the loader assigns (`b<id>`), so JS can call `game.remove(id)` and
+/// the removal propagates to peers through the normal protocol. Exported for the
+/// web loader's click-to-remove (3D hit test).
+export fn quine_pick(px: f32, py: f32) i32 {
+    const w = sapp.widthf();
+    const h = sapp.heightf();
+    const vp = App.last_vp;
+    const eye = App.queue.eye;
+    const threshold = h * 0.03 + 12.0; // generous tap target, in framebuffer px
+    var best_id: i32 = -1;
+    var best_depth: f32 = std.math.floatMax(f32);
+    var it = App.stage.world.query(&.{ core.Transform, core.MeshRef });
+    while (it.next()) |e| {
+        const tf = App.stage.world.get(core.Transform, e).?;
+        // Aim at the body centre (position is the feet; lift by half the height).
+        const center = m.Vec3{ .x = tf.position.x, .y = tf.position.y + tf.scale.y * 0.5, .z = tf.position.z };
+        const s = gizmo.worldToScreen(vp, center, w, h) orelse continue;
+        const dx = s[0] - px;
+        const dy = s[1] - py;
+        if (dx * dx + dy * dy > threshold * threshold) continue;
+        const id = instanceIdFor(e);
+        if (id < 0) continue;
+        const depth = center.sub(eye).length();
+        if (depth < best_depth) {
+            best_depth = depth;
+            best_id = id;
+        }
+    }
+    return best_id;
+}
+
+/// Map an entity to the instance id encoded in its loader-assigned name (`b<id>`),
+/// or -1 if it isn't an instance entity.
+fn instanceIdFor(e: core.Entity) i32 {
+    for (App.stage.bindings) |b| {
+        if (b.entity.index == e.index) {
+            if (b.name.len > 1 and b.name[0] == 'b')
+                return std.fmt.parseInt(i32, b.name[1..], 10) catch -1;
+            return -1;
+        }
+    }
+    return -1;
+}
+
 /// Red channel of the fedora's current mesh colour (-1 if it has no mesh) —
 /// a cheap, observable proxy for "the scene rebuilt with the pushed material".
 fn fedoraRed() f32 {
@@ -503,6 +552,15 @@ fn dispatchMessage(raw: []const u8) void {
             if (parseRgba(x)) |e| mat.emissive = .{ .x = e.x, .y = e.y, .z = e.z };
         }
         if (std.mem.eql(u8, nv.string, "fedora")) App.fedora_r = mat.base_color.x;
+    } else if (std.mem.eql(u8, tv.string, "remove")) {
+        // Remove one instance from the running scene — a click-to-remove, applied
+        // locally or mirrored from a peer. Despawn the named entity so `extract`
+        // drops it from the render queue next frame. Instances (bunnies) carry no
+        // physics body, so there's nothing else to release. Shape:
+        //   {type:"remove", name:"b123"}
+        const nv = v.object.get("name") orelse return;
+        if (nv != .string) return;
+        if (App.stage.find(nv.string)) |b| App.stage.world.despawn(b.entity);
     } else if (std.mem.eql(u8, tv.string, "gaze")) {
         // Live, in-place eye direction: update one entity's Gaze target without
         // rebuilding the world — the gaze system eases toward it and the eye

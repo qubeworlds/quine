@@ -54,6 +54,13 @@ fn project(vp: m.Mat4, p: m.Vec3, w: f32, h: f32) ?[2]f32 {
     return .{ (ndc_x * 0.5 + 0.5) * w, (1.0 - (ndc_y * 0.5 + 0.5)) * h };
 }
 
+/// Project a world point to framebuffer pixels (origin top-left); null if behind
+/// the camera. Public so entity picking (click-to-select/remove) can reuse the
+/// exact projection the renderer and gizmo use.
+pub fn worldToScreen(vp: m.Mat4, p: m.Vec3, w: f32, h: f32) ?[2]f32 {
+    return project(vp, p, w, h);
+}
+
 /// Distance from point (px,py) to the segment (ax,ay)-(bx,by), in pixels.
 fn distToSegment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) f32 {
     const vx = bx - ax;
