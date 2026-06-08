@@ -258,6 +258,9 @@ pub fn build(b: *Build) !void {
     mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
     mod_app.addAnonymousImport("head.glb", .{ .root_source_file = b.path("assets/head.glb") });
     mod_app.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
+    // Stanford bunny (static OBJ) — embedded for native/headless dev; the web
+    // build provides it at runtime via `quine_provide_asset` instead.
+    mod_app.addAnonymousImport("bunny.obj", .{ .root_source_file = b.path("assets/bunny.obj") });
     mod_app.addAnonymousImport("scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
     mod_app.addAnonymousImport("skill.js", .{ .root_source_file = b.path("modules/script/keepie-uppie.skill.js") });
     // Link the QuickJS interpreter into the app (native + web) so behaviour

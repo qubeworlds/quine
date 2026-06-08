@@ -67,6 +67,7 @@ const is_web = builtin.os.tag == .emscripten;
 const character_glb = @embedFile("character.glb");
 const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
 const rpm_glb = @embedFile("rpm.glb"); // Ready Player Me sample avatar (eye bones + blendshapes)
+const bunny_obj = @embedFile("bunny.obj"); // Stanford bunny static mesh (native/headless; web provides at runtime)
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -201,6 +202,7 @@ export fn init() void {
     // not just the embedded path.
     App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
     App.assets.append(std.heap.c_allocator, .{ .name = "rpm.glb", .bytes = rpm_glb }) catch {};
+    App.assets.append(std.heap.c_allocator, .{ .name = "bunny.obj", .bytes = bunny_obj }) catch {};
     if (std.c.getenv("QUINE_HEAD_FILE")) |p| {
         if (std.c.fopen(p, "rb")) |fp| {
             const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch unreachable;

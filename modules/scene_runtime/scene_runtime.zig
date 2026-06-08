@@ -95,6 +95,11 @@ pub const SceneRuntime = struct {
     /// clear the rubble so the solid reforms).
     debris_frame: f32 = -1,
     arena: std.heap.ArenaAllocator = undefined,
+    /// Cache of static meshes loaded from an asset (e.g. an `.obj`), keyed by
+    /// source name → handle. A field of 2048 instances all referencing the same
+    /// asset loads + uploads it ONCE and shares the handle, instead of parsing a
+    /// model per entity. Lives in the runtime arena (freed on deinit).
+    static_meshes: std.StringHashMapUnmanaged(core.MeshHandle) = .{},
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
@@ -135,10 +140,18 @@ pub const SceneRuntime = struct {
             if (e.geometry) |g| if (g == .sdf) {
                 self.world.sdf_scene = g.sdf;
             };
+            // Static mesh asset (`.obj`): load once, share the handle across every
+            // instance (one GPU upload), drawn by the normal opaque mesh path — the
+            // many-distinct-characters field (e.g. thousands of Stanford bunnies).
+            // No skeleton, so it skips the skinned-binding path below.
+            if (e.geometry) |g| if (g == .gltf and std.mem.endsWith(u8, g.gltf.source, ".obj")) {
+                const handle = try self.staticMesh(a, assets, g.gltf.source);
+                self.world.set(core.MeshRef, ent, .{ .mesh = handle });
+            };
             // glTF geometry: resolve the source bytes, load the skinned model
             // (into the arena, freed with the runtime), scale it, and set up the
             // scratch pose + head joint for animation and parenting.
-            if (e.geometry) |g| if (g == .gltf) {
+            if (e.geometry) |g| if (g == .gltf and !std.mem.endsWith(u8, g.gltf.source, ".obj")) {
                 const bytes = resolve(assets, g.gltf.source) orelse return error.AssetNotFound;
                 bnd.model = try core.loadModel(a, bytes);
                 if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
@@ -680,6 +693,18 @@ pub const SceneRuntime = struct {
     /// generated here (their buffers live as long as the runtime); `builtin`
     /// meshes are already wired by `core.loadScene`, and glTF/`fedora` (which
     /// need a loaded model) land next, so they're skipped for now.
+    /// Resolve a static-mesh asset to a shared `MeshHandle`, loading + registering
+    /// it on first use and returning the cached handle thereafter. So N instances
+    /// of the same `.obj` cost one parse + one GPU upload, not N.
+    fn staticMesh(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, src: []const u8) !core.MeshHandle {
+        if (self.static_meshes.get(src)) |h| return h;
+        const bytes = resolve(assets, src) orelse return error.AssetNotFound;
+        const mesh = try core.loadObjMesh(a, bytes);
+        const handle = self.world.meshes.add(mesh);
+        try self.static_meshes.put(a, try a.dupe(u8, src), handle);
+        return handle;
+    }
+
     fn buildMesh(self: *SceneRuntime, a: std.mem.Allocator, ent: core.Entity, e: core.scene.Entity) !void {
         const g = e.geometry orelse return;
         switch (g) {

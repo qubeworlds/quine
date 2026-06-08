@@ -101,6 +101,23 @@ pub const Gaze = struct {
     ease: f32 = 12.0,
 };
 
+/// A gentle idle hop: the `hop` system lifts the entity's `Transform.position.y`
+/// from `base_y` along a rectified sine, so a field of characters springs and
+/// settles like they're alive. `phase` offsets each entity so they don't bounce
+/// in lockstep. Deterministic — `t` accumulates the fixed `dt`, no wall-clock.
+pub const Hop = struct {
+    /// Resting Y the hop lifts from (captured from the spawn Transform).
+    base_y: f32 = 0,
+    /// Peak lift, in world units.
+    amplitude: f32 = 0.3,
+    /// Bounce rate (radians/second of the underlying sine).
+    speed: f32 = 3.0,
+    /// Per-entity phase offset (radians) so the field isn't synchronised.
+    phase: f32 = 0,
+    /// Accumulated time (seconds) — deterministic, summed from the fixed dt.
+    t: f32 = 0,
+};
+
 /// A perspective camera. Combined with the entity's `Transform` (eye position
 /// and orientation) to produce the view and projection matrices during
 /// extraction. The aspect ratio is supplied at extract time by the viewport.

@@ -18,6 +18,7 @@ const Transform = components.Transform;
 const Spin = components.Spin;
 const Squash = components.Squash;
 const Gaze = components.Gaze;
+const Hop = components.Hop;
 
 /// Advance the rotation of every entity that carries a `Spin`, by its own
 /// angular velocity. Entities without a `Spin` (e.g. the camera) are left
@@ -52,6 +53,22 @@ pub fn squash(world: anytype, dt: f64) void {
             .y = sq.rest_scale.y * (1.0 - v),
             .z = sq.rest_scale.z * (1.0 + 0.5 * v),
         };
+    }
+}
+
+/// Bob every entity that carries a `Hop`: lift its Y from `base_y` along a
+/// rectified sine (|sin|), so it springs up and settles back like a hop, each
+/// offset by its own `phase`. Deterministic — `t` accumulates the fixed dt, so
+/// the same tick count yields the same pose. Writes only the Y so the entity's
+/// authored X/Z (its place in the field) is preserved.
+pub fn hop(world: anytype, dt: f64) void {
+    const dt32: f32 = @floatCast(dt);
+    var it = world.query(&.{ Transform, Hop });
+    while (it.next()) |e| {
+        const h = world.get(Hop, e).?;
+        h.t += dt32;
+        const lift = @abs(@sin(h.t * h.speed + h.phase)) * h.amplitude;
+        world.get(Transform, e).?.position.y = h.base_y + lift;
     }
 }
 

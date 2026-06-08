@@ -5,6 +5,8 @@ zig-out/
 zig-pkg/
 *.o
 *.obj
+# …but Wavefront OBJ *mesh* assets are source, not compiled objects — track them.
+!assets/*.obj
 
 # Local Zig toolchain (if vendored via init.sh)
 .zig/

@@ -183,6 +183,9 @@ pub const Parent = struct {
 
 pub const Spin = struct { velocity: Vec3 = .{ 0, 0, 0 } };
 pub const Squash = struct { rest_scale: ?Vec3 = null, value: f32 = 0, recovery: f32 = 7 };
+/// Idle hop: bobs the entity's Y from its rest position. `phase` (radians) lets a
+/// field of characters bounce out of sync. Maps to the `Hop` component.
+pub const Hop = struct { amplitude: f32 = 0.3, speed: f32 = 3, phase: f32 = 0 };
 
 pub const CameraController = union(enum) {
     orbit: struct { target: Vec3 = .{ 0, 0, 0 }, distance: f32 = 5, yaw: f32 = 0, pitch: f32 = 0 },
@@ -204,6 +207,7 @@ pub const Entity = struct {
     parent: ?Parent = null,
     spin: ?Spin = null,
     squash: ?Squash = null,
+    hop: ?Hop = null,
     camera: ?Camera = null,
     /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
     /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
@@ -353,6 +357,7 @@ fn parseEntity(v: Value) !Entity {
         e.spin = .{ .velocity = try asVec3(x.object.get("velocity") orelse return error.InvalidScene) };
     }
     if (o.get("squash")) |x| e.squash = try parseSquash(x);
+    if (o.get("hop")) |x| e.hop = try parseHop(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
     if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
@@ -567,6 +572,16 @@ fn parseSquash(v: Value) !Squash {
     if (o.get("value")) |x| s.value = try asF32(x);
     if (o.get("recovery")) |x| s.recovery = try asF32(x);
     return s;
+}
+
+fn parseHop(v: Value) !Hop {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var h = Hop{};
+    if (o.get("amplitude")) |x| h.amplitude = try asF32(x);
+    if (o.get("speed")) |x| h.speed = try asF32(x);
+    if (o.get("phase")) |x| h.phase = try asF32(x);
+    return h;
 }
 
 fn parseCamera(v: Value) !Camera {

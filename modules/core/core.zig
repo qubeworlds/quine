@@ -67,6 +67,7 @@ pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Squash = components.Squash;
 pub const Gaze = components.Gaze;
+pub const Hop = components.Hop;
 
 /// Eye anatomy as engine knowledge: one `eye.Spec` expands into the five parts
 /// (sclera/iris/cornea/pupil/tear-line) as primitives + materials + flags. The
@@ -124,11 +125,17 @@ test {
     _ = @import("sdf_cache.zig");
     _ = @import("marching_cubes.zig");
     _ = @import("png.zig");
+    _ = @import("obj.zig");
 }
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.
 pub const loadGlbMesh = gltf.loadStaticMesh;
+
+/// Load a static mesh from a Wavefront OBJ (positions + triangles; smooth
+/// normals computed, frame normalised to unit height). Allocator-backed — the
+/// scene runtime loads a model once and shares the handle across instances.
+pub const loadObjMesh = @import("obj.zig").loadStaticMesh;
 
 /// Load geometry + skeleton + animation clips from a binary glTF (.glb).
 pub const loadModel = gltf.loadModel;
@@ -160,7 +167,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop }, max_entities);
 
 // =============================================================================
 // World
@@ -250,6 +257,7 @@ pub const World = struct {
         systems.spin(self, dt);
         systems.squash(self, dt);
         systems.gaze(self, dt);
+        systems.hop(self, dt);
     }
 };
 
@@ -299,6 +307,14 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
         }
         if (e.camera) |c| world.set(Camera, ent, .{ .fov_y = c.fov_y, .near = c.near, .far = c.far });
         if (e.gaze) |g| world.set(Gaze, ent, .{ .target = v3(g), .dir = v3(g) });
+        if (e.hop) |h| world.set(Hop, ent, .{
+            // Lift from the authored rest height, so the hop bobs above where the
+            // entity was placed (not from y=0).
+            .base_y = if (e.transform) |t| t.position[1] else 0,
+            .amplitude = h.amplitude,
+            .speed = h.speed,
+            .phase = h.phase,
+        });
 
         // Builtin geometry references static mesh data, so it needs no allocator
         // and can be wired here. glTF/procedural meshes own buffers -> app-side.
