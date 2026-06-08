@@ -69,7 +69,13 @@ pub const MeshData = struct {
 
 /// Maximum number of distinct meshes a world can register. Fixed so the
 /// registry needs no allocator and stays a value type.
-pub const max_meshes = 64;
+///
+/// Sized to match the entity capacity (`ecs.default_capacity`): a scene where
+/// every entity carries its OWN mesh — thousands of distinct meshes, the "8K"
+/// target — must be able to register one per entity without overflowing. Each
+/// `MeshData` is two slices (~16 B) + a u32 rev, so the table is small static
+/// memory; the heavy vertex/index data lives in the caller's arena, not here.
+pub const max_meshes = 8192;
 
 /// A fixed-capacity table of meshes. For this scaffold meshes reference static
 /// geometry (e.g. the triangle below); an allocator-backed store will replace

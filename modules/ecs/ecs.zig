@@ -25,7 +25,12 @@ pub const Registry = registry.Registry;
 
 /// Default entity capacity for worlds that don't specify their own. Bump this
 /// (or pass a larger capacity to `Registry`) when a world outgrows it.
-pub const default_capacity = 1024;
+///
+/// Sized for a scene of thousands of DISTINCT entities (each its own mesh) —
+/// the "8K" target. The registry's storage is fixed-capacity static memory
+/// (`[capacity]T` per component), so this just grows the .bss of a `World`
+/// value; it never allocates per-tick. Raise again as scenes grow.
+pub const default_capacity = 8192;
 
 test {
     // Pull in the registry's generic tests under `zig build test`.

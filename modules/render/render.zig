@@ -190,6 +190,18 @@ pub const Renderer = struct {
         sg.setup(.{
             .environment = sglue.environment(),
             .logger = .{ .func = sokol.log.func },
+            // The mesh cache uploads each distinct mesh as a vertex + index
+            // buffer, so a scene of N distinct meshes needs ~2N GPU buffers.
+            // sokol's pools are fixed-size and preallocated at setup, and the
+            // default (128) overflows the moment a scene has more than ~64
+            // meshes — makeBuffer then returns an invalid handle and the draw
+            // corrupts. Size the buffer pool to cover the full mesh capacity
+            // (2 per mesh) plus headroom for engine-internal buffers (SDF,
+            // fullscreen passes). Bump the image/view pools for many textured
+            // meshes too. This is the "thousands of distinct meshes / 8K" path.
+            .buffer_pool_size = 2 * @as(i32, core.max_meshes) + 256,
+            .image_pool_size = 1024,
+            .view_pool_size = 1024,
         });
 
         // Clear color attachment 0 to opaque black, and the depth buffer to far.
