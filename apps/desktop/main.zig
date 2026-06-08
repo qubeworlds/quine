@@ -192,29 +192,60 @@ export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, le
 export fn quine_pick(px: f32, py: f32) i32 {
     const w = sapp.widthf();
     const h = sapp.heightf();
-    const vp = App.last_vp;
-    const eye = App.queue.eye;
-    const threshold = h * 0.03 + 12.0; // generous tap target, in framebuffer px
+    // Unproject the cursor into a world-space ray (inverse of the live view-proj),
+    // then ray-sphere test each bunny and take the CLOSEST hit along the ray. This
+    // is a true hit test: it picks the bunny the cursor actually points at, not
+    // merely the nearest-to-camera one whose screen centre is near the click.
+    const inv = App.last_vp.inverse();
+    const ndc_x = (px / w) * 2.0 - 1.0;
+    const ndc_y = 1.0 - (py / h) * 2.0;
+    // Two points along the ray (NDC z = 0 and 1 — both valid in either clip
+    // convention), unprojected with the perspective w-divide.
+    const p0 = unproject(inv, ndc_x, ndc_y, 0.0);
+    const p1 = unproject(inv, ndc_x, ndc_y, 1.0);
+    var dir = p1.sub(p0);
+    const dl = dir.length();
+    if (dl < 1e-6) return -1;
+    dir = dir.scale(1.0 / dl);
+
     var best_id: i32 = -1;
-    var best_depth: f32 = std.math.floatMax(f32);
+    var best_t: f32 = std.math.floatMax(f32);
     var it = App.stage.world.query(&.{ core.Transform, core.MeshRef });
     while (it.next()) |e| {
-        const tf = App.stage.world.get(core.Transform, e).?;
-        // Aim at the body centre (position is the feet; lift by half the height).
-        const center = m.Vec3{ .x = tf.position.x, .y = tf.position.y + tf.scale.y * 0.5, .z = tf.position.z };
-        const s = gizmo.worldToScreen(vp, center, w, h) orelse continue;
-        const dx = s[0] - px;
-        const dy = s[1] - py;
-        if (dx * dx + dy * dy > threshold * threshold) continue;
         const id = instanceIdFor(e);
         if (id < 0) continue;
-        const depth = center.sub(eye).length();
-        if (depth < best_depth) {
-            best_depth = depth;
+        const tf = App.stage.world.get(core.Transform, e).?;
+        // Bounding sphere on the body centre (position is the feet; lift half the
+        // height). Radius a touch over half-height so the tap target is forgiving
+        // but still tight enough not to grab neighbours.
+        const center = m.Vec3{ .x = tf.position.x, .y = tf.position.y + tf.scale.y * 0.5, .z = tf.position.z };
+        const r = 0.55 * @max(tf.scale.x, @max(tf.scale.y, tf.scale.z));
+        const oc = center.sub(p0); // ray origin = p0 (on the ray through the cursor)
+        const b = oc.dot(dir);
+        const disc = b * b - (oc.dot(oc) - r * r);
+        if (disc < 0) continue;
+        const sq = @sqrt(disc);
+        const t_near = b - sq;
+        const t = if (t_near > 0) t_near else b + sq; // if the camera is inside, use the far root
+        if (t <= 0) continue;
+        if (t < best_t) {
+            best_t = t;
             best_id = id;
         }
     }
     return best_id;
+}
+
+/// Unproject an NDC point through `inv` (the inverse view-proj), applying the
+/// perspective w-divide — one point on the world-space ray through that pixel.
+fn unproject(inv: m.Mat4, nx: f32, ny: f32, nz: f32) m.Vec3 {
+    const a = inv.m;
+    const x = a[0] * nx + a[4] * ny + a[8] * nz + a[12];
+    const y = a[1] * nx + a[5] * ny + a[9] * nz + a[13];
+    const z = a[2] * nx + a[6] * ny + a[10] * nz + a[14];
+    const wv = a[3] * nx + a[7] * ny + a[11] * nz + a[15];
+    const iw = if (@abs(wv) > 1e-9) 1.0 / wv else 0.0;
+    return .{ .x = x * iw, .y = y * iw, .z = z * iw };
 }
 
 /// Map an entity to the instance id encoded in its loader-assigned name (`b<id>`),

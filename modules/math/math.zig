@@ -190,6 +190,38 @@ pub const Mat4 = extern struct {
         } };
     }
 
+    /// Full 4x4 inverse (cofactor / adjugate method) — works for projection
+    /// matrices too (unlike `affineInverse`, which assumes a `[0,0,0,1]` last
+    /// row). Used to unproject a screen pixel into a world-space ray for picking.
+    /// Returns identity if the matrix is singular.
+    pub fn inverse(self: Mat4) Mat4 {
+        const a = self.m;
+        var inv: [16]f32 = undefined;
+        inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+        inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+        inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+        inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+        inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+        inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+        inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+        inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+        inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+        inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+        inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+        inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+        inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+        inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+        inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+        inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+
+        var det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+        if (@abs(det) < 1e-12) return Mat4.identity;
+        det = 1.0 / det;
+        var out: Mat4 = undefined;
+        for (0..16) |i| out.m[i] = inv[i] * det;
+        return out;
+    }
+
     pub fn scaling(s: Vec3) Mat4 {
         var r = Mat4.identity;
         r.m[0] = s.x;
@@ -454,4 +486,14 @@ test "affineInverse undoes a rotate-scale-translate" {
     try testing.expectApproxEqAbs(p.x, back.x, 1e-4);
     try testing.expectApproxEqAbs(p.y, back.y, 1e-4);
     try testing.expectApproxEqAbs(p.z, back.z, 1e-4);
+}
+
+test "full inverse undoes a perspective * view (non-affine)" {
+    // A projection matrix has a non-trivial last row, so affineInverse can't undo
+    // it — the full inverse must. Verify M * M^-1 == identity.
+    const view = Mat4.translation(Vec3.init(2, -1, -8)).mul(Mat4.rotationY(0.5));
+    const proj = Mat4.perspective(1.0, 1.6, 0.1, 100.0);
+    const vp = proj.mul(view);
+    const prod = vp.mul(vp.inverse());
+    for (Mat4.identity.m, prod.m) |e, a| try testing.expectApproxEqAbs(e, a, 1e-3);
 }
