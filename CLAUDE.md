@@ -69,6 +69,22 @@ tarball + `SHA256SUMS` init.sh expects) and upload the result under the
 (e.g. quickjs-ng) requires regenerating the cache** — otherwise a fresh session
 restores a `zig-pkg/` without it and the build tries to fetch from the network.
 
+## Distributing the engine + shared assets (the CDN)
+
+The engine is **content-agnostic** — the wasm carries no game content; the host
+hands meshes in at boot via `quine_provide_asset`. Distribution of both the
+**engine bundles** and the **shared example assets** is the job of the public CDN
+(`cdn.qubeworlds.com`, R2 bucket `cdn-qubeworlds`), and *only* the CDN — apps
+(qubeworlds.com, editor, play, the `/docs/eyes` playground) load them from there;
+they do not bundle or serve engine/assets themselves.
+
+`scripts/publish-cdn.sh` is the single publisher: it builds both web backends and
+uploads `quine-{webgl2,webgpu}.{js,wasm}` to `/engine/` and the shared meshes +
+example scene/skill to `/assets/`, then sets open (wildcard-GET) CORS so one CDN
+serves every app. Run it after an engine or shared-asset change (needs Cloudflare
+R2 creds). **User-uploaded assets are a separate, private concern** (the
+`qubeworlds-user` bucket) — not published here.
+
 ## Conventions
 
 - **Backends are auto-selected** by platform (Metal/D3D11/GL). Do not add
