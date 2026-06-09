@@ -386,6 +386,17 @@ pub fn build(b: *Build) !void {
     const scene_runtime_tests = b.addTest(.{ .root_module = mod_scene_runtime });
     test_step.dependOn(&b.addRunArtifact(scene_runtime_tests).step);
 
+    // Frame tests: the standalone app's navigator state machine is pure app-layer
+    // logic (no GPU/engine), so it runs headless like the rest. `frame.zig` pulls
+    // in `worlds.zig` via its relative import.
+    const mod_frame_tests = b.createModule(.{
+        .root_source_file = b.path("apps/desktop/frame.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const frame_tests = b.addTest(.{ .root_module = mod_frame_tests });
+    test_step.dependOn(&b.addRunArtifact(frame_tests).step);
+
     // Script tests link QuickJS and evaluate inside the engine.
     const script_tests = b.addTest(.{ .root_module = mod_script });
     const run_script_tests = b.addRunArtifact(script_tests);
