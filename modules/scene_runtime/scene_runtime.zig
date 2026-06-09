@@ -302,7 +302,15 @@ pub const SceneRuntime = struct {
         // rewritten each tick) and a buoyancy rig per floating dynamic body. The
         // same wave function (core.ocean) feeds the mesh AND the buoyancy forces.
         if (scene_data.ocean) |oc| {
-            self.ocean = oc;
+            // Own the wave list: `oc.waves` is a slice into the caller's PARSE
+            // arena, which is freed right after init (the same contract
+            // `dupeTimeline` exists for). Keeping the slice was a use-after-free
+            // that read garbage waves each tick on web (wasm's dlmalloc reuses
+            // the freed block immediately): a flat sea + billion-newton drag
+            // forces that flung the boat. Deep-copy into the runtime arena.
+            var owned = oc;
+            owned.waves = try a.dupe(core.scene.Wave, oc.waves);
+            self.ocean = owned;
             const res = @max(oc.resolution, 1);
             const verts = try a.alloc(core.Vertex, core.ocean.gridVertexCount(res));
             const indices = try a.alloc(u32, core.ocean.gridIndexCount(res));
