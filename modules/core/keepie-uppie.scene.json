@@ -1,6 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "keepie-uppie",
+  "assets": [
+    { "name": "CesiumMan.glb", "url": "CesiumMan.glb" }
+  ],
   "script": {
     "source": "./keepie-uppie.ts",
     "params": {
