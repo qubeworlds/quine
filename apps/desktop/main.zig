@@ -59,15 +59,13 @@ const max_ticks_per_frame: u32 = 8;
 // The scene + its behaviour script, embedded so they ship inside the binary
 // (no filesystem on web). `scene.json` is the normalized scene `world` emits.
 const is_web = builtin.os.tag == .emscripten;
-// Game assets belong to the game qube, not the engine (manifest.ts) — the goal
-// is to fetch them at runtime via `quine_provide_asset`. That externalization
-// regressed the web render (the runtime fetch wasn't landing before scene load),
-// so meshes are embedded again for now while that channel is verified with a
-// real browser snapshot. The channel + registry stay wired (provide overrides).
-const character_glb = @embedFile("character.glb");
-const head_glb = @embedFile("head.glb"); // Lee Perry-Smith head (CC-BY)
-const rpm_glb = @embedFile("rpm.glb"); // Ready Player Me sample avatar (eye bones + blendshapes)
-const bunny_obj = @embedFile("bunny.obj"); // Stanford bunny static mesh (native/headless; web provides at runtime)
+// The engine ships NO game meshes — like any engine, assets are loaded at
+// runtime, not linked in. They live on the CDN and reach the engine the same way
+// on every target: a scene references an asset by URL, and the bytes are
+// registered (via the asset channel) before the scene builds. On web the JS host
+// fetches the URL and calls `quine_provide_asset`; on native the engine fetches
+// the SAME CDN URL itself (`ensureAssets` → `fetchUrl`), so the fast AI test runs
+// the real CDN flow instead of an embedded shortcut.
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
@@ -185,6 +183,49 @@ export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, le
     App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
 }
 
+/// Read a whole file via libc into an allocator-owned buffer (native paths).
+fn readFileBytes(a: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const pz = a.dupeZ(u8, path) catch return null;
+    defer a.free(pz);
+    const fp = std.c.fopen(pz.ptr, "rb") orelse return null;
+    defer _ = std.c.fclose(fp);
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    var chunk: [65536]u8 = undefined;
+    while (true) {
+        const nread = std.c.fread(&chunk, 1, chunk.len, fp);
+        if (nread == 0) break;
+        list.appendSlice(a, chunk[0..nread]) catch {
+            list.deinit(a);
+            return null;
+        };
+    }
+    return list.toOwnedSlice(a) catch null;
+}
+
+/// Load a harness-written asset manifest — JSON `{ "<name>": "<local path>" }` —
+/// and register each file's bytes under its name. The native counterpart of the
+/// web host's `quine_provide_asset`: the harness fetched the assets from the CDN
+/// (per a scene's `assets` manifest) and points us at the local copies via
+/// QUINE_ASSETS_FILE. The engine still never fetches — it's fed.
+fn loadAssetsFile(path: []const u8) void {
+    const a = std.heap.c_allocator;
+    const manifest = readFileBytes(a, path) orelse return;
+    defer a.free(manifest);
+    var parsed = std.json.parseFromSlice(std.json.Value, a, manifest, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .string) continue;
+        const bytes = readFileBytes(a, entry.value_ptr.*.string) orelse continue;
+        const name = a.dupe(u8, entry.key_ptr.*) catch {
+            a.free(bytes);
+            continue;
+        };
+        App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
+    }
+}
+
 /// Pick the instance under a framebuffer pixel (`px`,`py`) and return its
 /// instance id, or -1 if nothing was hit. Uses the LIVE camera (`last_vp` +
 /// `queue.eye`), so it stays correct after the user orbits: project every
@@ -279,24 +320,13 @@ export fn init() void {
     // tracks) — the editor's camera toggle flips it live, and headless captures
     // can opt out of camera animation without authoring a separate scene.
     if (std.c.getenv("QUINE_CAMERA_FREE") != null) user_camera = true;
-    // Seed the asset registry from the embedded game meshes. `QUINE_HEAD_FILE=
-    // <path>` instead provides head.glb through the *external* registry path
-    // (read a file at runtime, register it) — so the Linux engine can verify the
-    // externalized-asset flow end-to-end (everything but the browser's JS fetch),
-    // not just the embedded path.
-    App.assets.append(std.heap.c_allocator, .{ .name = "CesiumMan.glb", .bytes = character_glb }) catch {};
-    App.assets.append(std.heap.c_allocator, .{ .name = "rpm.glb", .bytes = rpm_glb }) catch {};
-    App.assets.append(std.heap.c_allocator, .{ .name = "bunny.obj", .bytes = bunny_obj }) catch {};
-    if (std.c.getenv("QUINE_HEAD_FILE")) |p| {
-        if (std.c.fopen(p, "rb")) |fp| {
-            const buf = std.heap.c_allocator.alloc(u8, 8 * 1024 * 1024) catch unreachable;
-            const n = std.c.fread(buf.ptr, 1, buf.len, fp);
-            _ = std.c.fclose(fp);
-            App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = buf[0..n] }) catch {};
-        }
-    } else {
-        App.assets.append(std.heap.c_allocator, .{ .name = "head.glb", .bytes = head_glb }) catch {};
-    }
+    // The asset registry starts EMPTY — the engine embeds no meshes and never
+    // fetches; assets are FED to it. On web the JS host fetches each asset (from a
+    // scene's `assets` manifest) and calls `quine_provide_asset`. On native a
+    // harness loader does the same job and points the engine at the fetched bytes
+    // via QUINE_ASSETS_FILE — a JSON map of { "<name>": "<local path>" } — which we
+    // load + register here, before any scene builds. Same flow, no engine fetch.
+    if (std.c.getenv("QUINE_ASSETS_FILE")) |p| loadAssetsFile(std.mem.span(p));
     if (thumb_cfg) |t| {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;

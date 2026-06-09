@@ -172,10 +172,11 @@ pub fn cockpitJson(a: std.mem.Allocator) []const u8 {
         , .{ col[0], col[1], col[2], col[0] * 0.7, col[1] * 0.7, col[2] * 0.7 });
     }
 
-    // The cockpit links its reusable HTML overlay — the Navigator. The engine
-    // ignores `overlay`; the host fetches it (a hydrating JS module) and mounts it
-    // over the canvas. Content lives on the CDN, never in the engine.
-    b.raw("\n],\"overlay\":\"https://cdn.qubeworlds.com/overlays/navigator.js\"}");
+    // The cockpit declares its `assets` manifest (none — pure primitives) and
+    // links its reusable HTML overlay (the Navigator). The engine ignores both;
+    // the host reads `assets` (to fetch + feed the engine) and `overlay` (to mount
+    // it). Content lives on the CDN, never in the engine.
+    b.raw("\n],\"assets\":[],\"overlay\":\"https://cdn.qubeworlds.com/overlays/navigator.js\"}");
     return b.done();
 }
 
@@ -223,7 +224,7 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
         }
     }
 
-    b.raw("\n]}");
+    b.raw("\n],\"assets\":[]}"); // pure primitives — no assets to fetch
     return b.done();
 }
 
@@ -294,7 +295,10 @@ pub fn rabbitsJson(a: std.mem.Allocator) []const u8 {
         }
     }
 
-    b.raw("\n]}");
+    // The rabbits world's `assets` manifest: the one mesh every bunny shares,
+    // pinned to its CDN URL — that's how the scene decides which bunny the engine
+    // renders. The host fetches it and feeds the engine before the scene builds.
+    b.raw("\n],\"assets\":[{\"name\":\"bunny.obj\",\"url\":\"https://cdn.qubeworlds.com/assets/bunny.obj\"}]}");
     return b.done();
 }
 
@@ -439,8 +443,9 @@ pub fn terrainJson(a: std.mem.Allocator) []const u8 {
     const frames_per_leg: u32 = 34;
     const legs: u32 = @intCast(route.len); // last leg returns to start
     const dur = frames_per_leg * legs;
-    // Close the entities array, then attach the timeline as a sibling key.
-    b.raw("\n],\n\"timeline\":{");
+    // Close the entities array, declare the (empty) assets manifest, then attach
+    // the timeline as a sibling key. Terrain is pure primitives — no assets.
+    b.raw("\n],\n\"assets\":[],\n\"timeline\":{");
     b.print("\"fps\":{d},\"durationFrames\":{d},\"tracks\":[", .{ fps, dur });
 
     emitAgentTrack(&b, "x", route[0..], frames_per_leg);

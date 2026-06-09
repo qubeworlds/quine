@@ -253,14 +253,9 @@ pub fn build(b: *Build) !void {
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
-    // Embed the character mesh, the normalized scene, and the behaviour skill so
-    // they ship inside the binary (no filesystem on web).
-    mod_app.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
-    mod_app.addAnonymousImport("head.glb", .{ .root_source_file = b.path("assets/head.glb") });
-    mod_app.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
-    // Stanford bunny (static OBJ) — embedded for native/headless dev; the web
-    // build provides it at runtime via `quine_provide_asset` instead.
-    mod_app.addAnonymousImport("bunny.obj", .{ .root_source_file = b.path("assets/bunny.obj") });
+    // The engine embeds NO game meshes (assets load at runtime from the CDN —
+    // host-fed via the asset channel). Only the demo scene + skill are embedded so
+    // the native standalone has something to render with no host.
     mod_app.addAnonymousImport("scene.json", .{ .root_source_file = b.path("modules/core/keepie-uppie.scene.json") });
     mod_app.addAnonymousImport("skill.js", .{ .root_source_file = b.path("modules/script/keepie-uppie.skill.js") });
     // Link the QuickJS interpreter into the app (native + web) so behaviour
