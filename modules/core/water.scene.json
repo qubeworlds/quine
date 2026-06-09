@@ -21,7 +21,7 @@
   "entities": [
     {
       "name": "boat",
-      "transform": { "position": [0, 0.6, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "transform": { "position": [0, 0.3, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
       "geometry": { "kind": "gltf", "source": "boat.glb" },
       "material": { "color": [0.62, 0.42, 0.24, 1], "roughness": 0.8 },
       "body": {
