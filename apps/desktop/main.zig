@@ -479,7 +479,20 @@ fn reloadScene(json: []const u8) void {
     // without this the renderer keeps drawing the previous scene's buffers (e.g.
     // the fedora stays its old colour even though the new mesh data differs).
     App.renderer.invalidateMeshes();
-    buildStage(json) catch return;
+    // If the build fails (e.g. an asset arrived late, a bad scene), DON'T leave the
+    // just-deinited stage dead — the frame loop would then `update` a freed world
+    // and trap. Fall back to a valid empty stage so the engine stays alive and a
+    // retry (the host re-enqueues the scene) can succeed.
+    buildStage(json) catch {
+        buildStage(empty_scene) catch {};
+        return;
+    };
+    // Start the new scene's clock clean: drop the fixed-step backlog the BUILD
+    // frame accrued (parsing, glTF load, physics setup — a real hitch). Otherwise
+    // the first frame drains it as a burst of catch-up ticks that fast-forwards
+    // the freshly-spawned scene — e.g. slamming the boat's stiff buoyancy so it
+    // tunnels through before the first visible frame (the cold-load race).
+    App.accumulator = 0;
     App.js.rebind(&App.stage);
 }
 
@@ -766,8 +779,13 @@ export fn frame() void {
     if (App.autoplay) App.stage.scrub_time = App.stage.time;
 
     // Drain the fixed-step accumulator: each step advances the scene (animation,
-    // the JS skill via pre/post hooks, physics) by one deterministic tick.
-    App.accumulator += frame_dt;
+    // the JS skill via pre/post hooks, physics) by one deterministic tick. Clamp
+    // the time a single frame can add to at most `max_ticks_per_frame` steps'
+    // worth — the spiral-of-death guard: after a hitch (cold boot, a scene build,
+    // a tab refocus, a GC pause) the sim advances a bounded amount instead of
+    // bursting many catch-up ticks, which would fast-forward / destabilise a
+    // freshly built scene rather than letting it settle one tick at a time.
+    App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
     var ticks: u32 = 0;
     while (App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
         App.stage.update(@floatCast(fixed_dt)) catch {};
