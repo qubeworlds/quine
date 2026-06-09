@@ -60,8 +60,11 @@ for s in cockpit tunnel rabbits terrain; do
 done
 # rabbits' shared mesh, co-located in its folder:
 put scenes/rabbits/bunny.obj assets/bunny.obj text/plain
-# the editor's keepie-uppie demo scene + skill + its meshes (CesiumMan + rpm):
-put scenes/keepie-uppie/scene.json    modules/core/keepie-uppie.scene.json  application/json
+# the editor's keepie-uppie demo scene + skill + its meshes (CesiumMan + rpm). The
+# RUNTIME scene points script.source at the compiled, co-located skill (skill.js);
+# the authoring source keeps its .ts.
+python3 -c "import json;d=json.load(open('modules/core/keepie-uppie.scene.json'));d['script']['source']='skill.js';json.dump(d,open('zig-out/keepie-uppie.runtime.json','w'))"
+put scenes/keepie-uppie/scene.json    zig-out/keepie-uppie.runtime.json     application/json
 put scenes/keepie-uppie/skill.js      modules/script/keepie-uppie.skill.js  text/javascript
 put scenes/keepie-uppie/CesiumMan.glb assets/CesiumMan.glb                  model/gltf-binary
 put scenes/keepie-uppie/rpm.glb       assets/rpm-head.glb                   model/gltf-binary
