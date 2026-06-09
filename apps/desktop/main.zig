@@ -875,7 +875,12 @@ export fn frame() void {
         gizmo_info = .{ .origin = tf.position, .length = App.giz.length, .active_axis = active };
     }
 
-    const aspect = w / h;
+    // Guard against a zero (or absent) viewport height: on a cold first load the
+    // canvas can report h==0 before CSS layout settles, and w/h would be +inf ->
+    // a degenerate/NaN projection (the surface strobes, geometry projects to
+    // nothing) for the first frame(s) until it's sized. Fall back to 1:1 until
+    // the viewport is real.
+    const aspect = if (h > 0 and w > 0) w / h else 1.0;
 
     // Extract the frame's geometry. The ball + fedora are regular mesh entities
     // (the fedora's Transform is carried by the parenting each tick); the skinned
