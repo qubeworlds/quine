@@ -297,17 +297,23 @@ pub fn rabbitsJson(a: std.mem.Allocator) []const u8 {
 
 // --- Terrain + Navmesh -------------------------------------------------------
 
-/// Deterministic terrain height at grid cell (ix,iz): a couple of summed waves.
+/// Deterministic terrain height at grid cell (ix,iz): layered waves with a steep
+/// ridge + fine detail, so the relief reads as real hills and valleys (not a
+/// near-flat field). Range ~[-2, 5.5].
 fn terrainHeight(ix: u32, iz: u32) f32 {
     const fx: f32 = @floatFromInt(ix);
     const fz: f32 = @floatFromInt(iz);
-    return 0.9 * @sin(fx * 0.55) * @cos(fz * 0.5) + 0.5 * @sin((fx + fz) * 0.32) + 0.6;
+    const rolling = 1.9 * @sin(fx * 0.55) * @cos(fz * 0.5); // broad hills
+    const ridge = 1.3 * @sin((fx + fz) * 0.32); // a diagonal ridge/valley
+    const detail = 0.5 * @sin(fx * 1.3 + fz * 0.7); // small bumps
+    return rolling + ridge + detail + 1.7;
 }
 
 const terrain_n: u32 = 12;
 const terrain_spacing: f32 = 1.2;
-/// Tiles at or below this height are "walkable" (the navmesh covers them).
-const walkable_max: f32 = 1.05;
+/// Tiles at or below this height are "walkable" (the navmesh covers them) — the
+/// lowlands/valleys, leaving the raised hills bare.
+const walkable_max: f32 = 1.6;
 
 fn terrainX(ix: u32) f32 {
     return @as(f32, @floatFromInt(ix)) * terrain_spacing - @as(f32, @floatFromInt(terrain_n - 1)) * terrain_spacing * 0.5;
