@@ -361,6 +361,21 @@ pub fn build(b: *Build) !void {
         run.step.dependOn(b.getInstallStep());
         if (b.args) |args| run.addArgs(args);
         b.step("run", "Build and run the quine desktop app").dependOn(&run.step);
+
+        // dump-scenes: emit the Frame's procedural worlds as standalone scene-JSON
+        // files (single source of truth = apps/desktop/worlds.zig), so they can be
+        // published to the CDN and loaded by the engine like any other scene.
+        const mod_dump = b.createModule(.{
+            .root_source_file = b.path("tools/dump_scenes.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true, // file I/O via std.c, like the rest of the app
+        });
+        mod_dump.addAnonymousImport("worlds", .{ .root_source_file = b.path("apps/desktop/worlds.zig") });
+        const dump = b.addExecutable(.{ .name = "dump-scenes", .root_module = mod_dump });
+        const run_dump = b.addRunArtifact(dump);
+        if (b.args) |args| run_dump.addArgs(args);
+        b.step("dump-scenes", "Emit the Frame worlds as standalone scene-JSON files").dependOn(&run_dump.step);
     }
 
     // --- tests: ecs + core are headless, so they run anywhere (CI-friendly) --

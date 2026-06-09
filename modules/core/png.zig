@@ -144,6 +144,100 @@ fn paeth(a: u32, b: u32, c: u32) u32 {
     return c;
 }
 
+// =============================================================================
+// Encoder — write an 8-bit truecolour (RGB) PNG. Used by the offscreen capture
+// so the engine emits a real .png per frame, no external convert step. The zlib
+// stream is "stored" (uncompressed) deflate: valid PNG, larger files, but needs
+// no compressor — fine for thumbnails / example captures.
+// =============================================================================
+
+fn putU32be(dst: *[4]u8, v: u32) void {
+    dst[0] = @intCast((v >> 24) & 0xff);
+    dst[1] = @intCast((v >> 16) & 0xff);
+    dst[2] = @intCast((v >> 8) & 0xff);
+    dst[3] = @intCast(v & 0xff);
+}
+
+fn writeChunk(a: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), ctype: []const u8, data: []const u8) !void {
+    var lenb: [4]u8 = undefined;
+    putU32be(&lenb, @intCast(data.len));
+    try out.appendSlice(a, &lenb);
+    const crc_start = out.items.len; // CRC covers type + data
+    try out.appendSlice(a, ctype);
+    try out.appendSlice(a, data);
+    var crcb: [4]u8 = undefined;
+    putU32be(&crcb, std.hash.Crc32.hash(out.items[crc_start..]));
+    try out.appendSlice(a, &crcb);
+}
+
+/// Encode `rgb` (width*height*3, top-down, 8-bit) as a PNG. Caller owns the bytes.
+pub fn encodeRgb(a: std.mem.Allocator, width: u32, height: u32, rgb: []const u8) ![]u8 {
+    std.debug.assert(rgb.len == @as(usize, width) * @as(usize, height) * 3);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(a);
+    try out.appendSlice(a, &signature);
+
+    var ihdr: [13]u8 = undefined;
+    putU32be(ihdr[0..4], width);
+    putU32be(ihdr[4..8], height);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 2; // colour type: truecolour RGB
+    ihdr[10] = 0; // compression: deflate
+    ihdr[11] = 0; // filter: adaptive (we use None per row)
+    ihdr[12] = 0; // interlace: none
+    try writeChunk(a, &out, "IHDR", &ihdr);
+
+    // Raw filtered scanlines: each row prefixed by filter byte 0 (None).
+    const row_bytes = @as(usize, width) * 3;
+    const raw = try a.alloc(u8, (row_bytes + 1) * height);
+    defer a.free(raw);
+    var y: usize = 0;
+    while (y < height) : (y += 1) {
+        const dst = y * (row_bytes + 1);
+        raw[dst] = 0;
+        @memcpy(raw[dst + 1 .. dst + 1 + row_bytes], rgb[y * row_bytes .. y * row_bytes + row_bytes]);
+    }
+
+    // zlib stream: header + stored deflate blocks (<=65535 each) + Adler-32(raw).
+    var z: std.ArrayListUnmanaged(u8) = .empty;
+    defer z.deinit(a);
+    try z.appendSlice(a, &[_]u8{ 0x78, 0x01 }); // CMF/FLG, (0x78<<8|0x01)%31==0
+    var off: usize = 0;
+    while (off < raw.len) {
+        const block: usize = @min(raw.len - off, 0xFFFF);
+        try z.append(a, if (off + block >= raw.len) 1 else 0); // BFINAL, BTYPE=stored
+        const len16: u16 = @intCast(block);
+        try z.appendSlice(a, &[_]u8{ @intCast(len16 & 0xff), @intCast((len16 >> 8) & 0xff) });
+        const nlen = ~len16;
+        try z.appendSlice(a, &[_]u8{ @intCast(nlen & 0xff), @intCast((nlen >> 8) & 0xff) });
+        try z.appendSlice(a, raw[off .. off + block]);
+        off += block;
+    }
+    var adlerb: [4]u8 = undefined;
+    putU32be(&adlerb, std.hash.Adler32.hash(raw));
+    try z.appendSlice(a, &adlerb);
+    try writeChunk(a, &out, "IDAT", z.items);
+
+    try writeChunk(a, &out, "IEND", "");
+    return out.toOwnedSlice(a);
+}
+
+test "encodeRgb round-trips through the decoder" {
+    const a = std.testing.allocator;
+    // 2x2: red, green / blue, white.
+    const px = [_]u8{ 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255 };
+    const png = try encodeRgb(a, 2, 2, &px);
+    defer a.free(png);
+    var tex = try decode(a, png);
+    defer tex.deinit(a);
+    try std.testing.expectEqual(@as(u32, 2), tex.width);
+    try std.testing.expectEqual(@as(u32, 2), tex.height);
+    // RGBA8: first pixel red, last white (alpha forced to 255).
+    try std.testing.expectEqual(@as(u8, 255), tex.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 0), tex.pixels[1]);
+    try std.testing.expectEqual(@as(u8, 255), tex.pixels[15]);
+}
+
 test "decodes an 8-bit RGBA PNG round-trip (filter types exercised by zlib)" {
     // A 2x2 PNG with distinct corners, produced by Python's zlib/PIL offline and
     // pasted here would bloat the test; instead assert the decoder rejects junk

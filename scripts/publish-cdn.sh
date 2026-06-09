@@ -24,11 +24,14 @@ cd "$ROOT_DIR"
 BUCKET="cdn-qubeworlds"
 ZIG="$ROOT_DIR/.zig/zig"; [ -x "$ZIG" ] || ZIG=zig
 
-# 1. Build both web backends (each bakes in one sokol backend).
+# 1. Build both web backends (each bakes in one sokol backend), and dump the
+#    Frame's procedural worlds to standalone scene JSON (zig-out/scenes).
 if [ "${QUINE_SKIP_BUILD:-0}" != "1" ]; then
   echo "==> Building quine wasm bundles (webgl2 + webgpu)"
   "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2
   "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu
+  echo "==> Dumping example scenes (cockpit/tunnel/rabbits/terrain)"
+  "$ZIG" build dump-scenes
 fi
 
 # `npx wrangler r2 object put` reads CLOUDFLARE_* from the env; --remote hits R2
@@ -55,6 +58,15 @@ put assets/head.glb       assets/head.glb                        model/gltf-bina
 put assets/CesiumMan.glb  assets/CesiumMan.glb                   model/gltf-binary
 put assets/scene.json     modules/core/keepie-uppie.scene.json   application/json
 put assets/skill.js       modules/script/keepie-uppie.skill.js   text/javascript
+
+# 3b. Example scenes → /examples/<name>/scene.json. Standalone, data-only scenes
+#     the engine loads like any other (the Frame's worlds + transitions). These
+#     double as public engine examples in the docs. terrain references no meshes;
+#     rabbits references bunny.obj from /assets/.
+echo "==> Uploading example scenes to /examples/"
+for s in cockpit tunnel rabbits terrain; do
+  put "examples/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
+done
 
 # 4. Open CORS so the one CDN serves every app (qubeworlds.com, editor, play, …).
 #    Public, read-only assets — a wildcard GET origin is intentional.

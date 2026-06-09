@@ -124,6 +124,11 @@ const App = struct {
     /// scenes) or headless thumbnails (which render one requested scene).
     var frame: frame_mod.Frame = .{};
     var frame_active: bool = false;
+    /// Standalone wall-rate timeline playback: when set (and not in the Frame),
+    /// the scene's timeline free-runs at wall-clock so a lone scene's animation
+    /// (e.g. the CDN terrain example's walking agent) plays on its own — no editor
+    /// host scrubbing it. Opt-in via window.QUINE_AUTOPLAY / env QUINE_AUTOPLAY.
+    var autoplay: bool = false;
     /// Whether a Frame scene has been built yet (first load vs. a swap that must
     /// tear down the previous stage first).
     var frame_inited: bool = false;
@@ -388,6 +393,10 @@ export fn init() void {
     if (builtin.os.tag == .emscripten) {
         // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
         App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===true)?1:0") != 0;
+        // Standalone wall-rate timeline playback, opt-in by the host.
+        App.autoplay = emscripten_run_script_int("(window.QUINE_AUTOPLAY===true)?1:0") != 0;
+    } else {
+        App.autoplay = std.c.getenv("QUINE_AUTOPLAY") != null;
     }
     if (builtin.os.tag != .emscripten) {
         std.debug.print("quine: render backend = {s}\n", .{render.backendName()});
@@ -472,12 +481,12 @@ fn loadScene() void {
                 _ = std.c.fclose(fp);
                 if (n > 0) {
                     loadSceneFrom(buf[0..n]);
-                    // QUINE_THUMB_T=<seconds>: advance the runtime so the captured
-                    // frame shows the scene's keyframe timeline at that time (an
-                    // update(0) at the seeded clock applies the tracks; dt=0 keeps
-                    // physics a no-op).
+                    // QUINE_THUMB_T=<seconds>: scrub the scene's keyframe timeline to
+                    // that time so the captured frame shows it mid-animation. The
+                    // timeline samples `scrub_time` (not the wall clock), so set that;
+                    // update(0) applies the tracks with physics a no-op (dt=0).
                     if (std.c.getenv("QUINE_THUMB_T")) |tv| {
-                        App.stage.time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
+                        App.stage.scrub_time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
                         App.stage.update(0) catch {};
                     }
                     return;
@@ -816,6 +825,10 @@ export fn frame() void {
         if (App.frame.state == .world) App.stage.scrub_time = App.stage.time;
     }
 
+    // Standalone autoplay (no Frame): free-run the scene's timeline at wall-rate
+    // so a lone CDN scene animates on its own (the terrain example's agent walk).
+    if (!App.frame_active and App.autoplay) App.stage.scrub_time = App.stage.time;
+
     // Drain the fixed-step accumulator: each step advances the scene (animation,
     // the JS skill via pre/post hooks, physics) by one deterministic tick.
     App.accumulator += frame_dt;
@@ -1126,8 +1139,9 @@ fn thumbSceneJson(t: ThumbCfg) []const u8 {
     };
 }
 
-/// Read back the framebuffer and write it to `out` as a (top-down RGB) PPM via
-/// libc (so sokol's stdout chatter doesn't matter).
+/// Read back the framebuffer and write it to `out` via libc. The format follows
+/// the extension: `.png` → a real PNG (engine's own encoder), anything else → a
+/// (top-down RGB) PPM. So a per-frame capture needs no external convert step.
 fn captureThumb(out: [*:0]const u8) void {
     const alloc = std.heap.c_allocator;
     const w: usize = @intCast(sapp.width());
@@ -1137,24 +1151,40 @@ fn captureThumb(out: [*:0]const u8) void {
     glFinish();
     glReadPixels(0, 0, @intCast(w), @intCast(h), 0x1908, 0x1401, buf.ptr); // GL_RGBA, GL_UNSIGNED_BYTE
 
-    const header = std.fmt.allocPrint(alloc, "P6\n{d} {d}\n255\n", .{ w, h }) catch return;
-    defer alloc.free(header);
-    const ppm = alloc.alloc(u8, header.len + w * h * 3) catch return;
-    defer alloc.free(ppm);
-    @memcpy(ppm[0..header.len], header);
+    // Top-down RGB (GL reads bottom-up).
+    const rgb = alloc.alloc(u8, w * h * 3) catch return;
+    defer alloc.free(rgb);
     var y: usize = 0;
     while (y < h) : (y += 1) {
-        const src = (h - 1 - y) * w * 4; // GL is bottom-up; flip to top-down
-        const dst = header.len + y * w * 3;
+        const src = (h - 1 - y) * w * 4;
+        const dst = y * w * 3;
         var x: usize = 0;
         while (x < w) : (x += 1) {
-            ppm[dst + x * 3 + 0] = buf[src + x * 4 + 0];
-            ppm[dst + x * 3 + 1] = buf[src + x * 4 + 1];
-            ppm[dst + x * 3 + 2] = buf[src + x * 4 + 2];
+            rgb[dst + x * 3 + 0] = buf[src + x * 4 + 0];
+            rgb[dst + x * 3 + 1] = buf[src + x * 4 + 1];
+            rgb[dst + x * 3 + 2] = buf[src + x * 4 + 2];
         }
     }
-    const f = std.c.fopen(out, "wb") orelse return;
-    _ = std.c.fwrite(ppm.ptr, 1, ppm.len, f);
+
+    const path = std.mem.span(out);
+    if (std.mem.endsWith(u8, path, ".png")) {
+        const bytes = core.png.encodeRgb(alloc, @intCast(w), @intCast(h), rgb) catch return;
+        defer alloc.free(bytes);
+        writeFileLibc(out, bytes);
+    } else {
+        const header = std.fmt.allocPrint(alloc, "P6\n{d} {d}\n255\n", .{ w, h }) catch return;
+        defer alloc.free(header);
+        const ppm = alloc.alloc(u8, header.len + rgb.len) catch return;
+        defer alloc.free(ppm);
+        @memcpy(ppm[0..header.len], header);
+        @memcpy(ppm[header.len..], rgb);
+        writeFileLibc(out, ppm);
+    }
+}
+
+fn writeFileLibc(path: [*:0]const u8, data: []const u8) void {
+    const f = std.c.fopen(path, "wb") orelse return;
+    _ = std.c.fwrite(data.ptr, 1, data.len, f);
     _ = std.c.fclose(f);
 }
 
