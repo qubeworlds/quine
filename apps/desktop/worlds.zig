@@ -212,9 +212,12 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
         // A gently funnelling, wavy radius so the corridor breathes.
         const rr = 3.2 + 0.7 * @sin(fz * 0.55);
         const twist = fz * 0.22;
-        // Hue cycles with depth: blue -> cyan -> magenta vortex.
-        const hue = @mod(0.58 + fz * 0.018, 1.0);
-        const col = hsv(hue, 0.85, 1.0);
+        // Match the intro TeleportTunnel's look (accent #5fd4ff on near-black):
+        // one cyan-blue hue throughout — no magenta drift — with the near rings
+        // washed toward white (the intro lerps accent->white as rings approach)
+        // and the deep rings the fully saturated accent.
+        const depth = fz / @as(f32, @floatFromInt(rings - 1));
+        const col = hsv(0.55 + 0.03 * depth, 0.45 + 0.5 * depth, 1.0);
         var j: u32 = 0;
         while (j < per_ring) : (j += 1) {
             const ang = (@as(f32, @floatFromInt(j)) / @as(f32, per_ring)) * 2.0 * std.math.pi + twist;
