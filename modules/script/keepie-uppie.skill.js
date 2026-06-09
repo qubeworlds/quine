@@ -1,4 +1,4 @@
-// keepie-uppie skill — the interpreted form of the editor's keepie-uppie.ts,
+// keepie-uppie skill -- the interpreted form of the editor's keepie-uppie.ts,
 // running in QuickJS against the prelude facade. The actor sees the ball, runs
 // under its predicted landing, and heads it back up on each touch. Apart from
 // the IIFE wrapper (no ES module loader), this is the same code as

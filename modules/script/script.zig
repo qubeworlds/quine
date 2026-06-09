@@ -17,6 +17,12 @@ const SceneRuntime = sr.SceneRuntime;
 
 pub const Error = error{ NoRuntime, NoContext, SkillError };
 
+/// Write to fd 2. Emscripten routes stderr (on newline) to Module.printErr — the
+/// engine's one error channel to the host. Native: the terminal's stderr.
+fn stderr(s: []const u8) void {
+    _ = std.c.write(2, s.ptr, s.len);
+}
+
 /// A JS scripting context bound to a `SceneRuntime`. Initialise IN PLACE
 /// (`var js: Js = undefined; try js.init(&scene)`) — the context opaque and the
 /// scene's skill_ctx both point at it, so its address must be stable.
@@ -27,6 +33,7 @@ pub const Js = struct {
     global: c.JSValue,
     pre_handler: ?c.JSValue = null,
     post_handler: ?c.JSValue = null,
+    handler_err_reported: bool = false, // throttle per-tick handler errors to once
 
     pub fn init(self: *Js, scene: *SceneRuntime) Error!void {
         const rt = c.JS_NewRuntime() orelse return error.NoRuntime;
@@ -49,6 +56,7 @@ pub const Js = struct {
     /// facade over the `quine_*` natives), then the skill itself (which registers
     /// its pre/post handlers), then wire the SceneRuntime's hooks to drive them.
     pub fn loadSkill(self: *Js, src: []const u8) Error!void {
+        self.handler_err_reported = false; // a fresh skill gets to report anew
         try self.evalChecked(@embedFile("prelude.js"));
         try self.evalChecked(src);
         self.rebind(self.scene);
@@ -68,9 +76,45 @@ pub const Js = struct {
     }
 
     fn evalChecked(self: *Js, src: []const u8) Error!void {
-        const v = c.JS_Eval(self.ctx, src.ptr, src.len, "<skill>", c.JS_EVAL_TYPE_GLOBAL);
+        // QuickJS JS_Eval reads one past `input_len` (lookahead) — it wants a
+        // NUL-terminated buffer. @embedFile (native skill/prelude) is sentinel-
+        // terminated, but a std.json slice (the web-injected skill) is NOT, so
+        // JS_Eval reads a garbage byte → bogus "unexpected token"/"invalid UTF-8".
+        // Dupe to a NUL-terminated buffer so both paths behave identically.
+        const z = std.heap.c_allocator.dupeZ(u8, src) catch return error.SkillError;
+        defer std.heap.c_allocator.free(z);
+        const v = c.JS_Eval(self.ctx, z.ptr, src.len, "<skill>", c.JS_EVAL_TYPE_GLOBAL);
         defer c.JS_FreeValue(self.ctx, v);
-        if (c.JS_IsException(v)) return error.SkillError;
+        if (c.JS_IsException(v)) {
+            self.reportException("skill load");
+            return error.SkillError;
+        }
+    }
+
+    /// Surface a QuickJS exception (message + stack) to the host. The ONLY
+    /// engine→host error channel is stderr → emscripten → Module.printErr, so a
+    /// skill error that isn't written here is invisible (it was being swallowed).
+    /// Writes straight to fd 2 via libc (std.debug.print pulls process/signal code
+    /// that won't compile for wasm32-emscripten). `where` tags the origin.
+    fn reportException(self: *Js, where: []const u8) void {
+        const exc = c.JS_GetException(self.ctx);
+        defer c.JS_FreeValue(self.ctx, exc);
+        if (c.JS_ToCString(self.ctx, exc)) |msg| {
+            defer c.JS_FreeCString(self.ctx, msg);
+            stderr("quine ");
+            stderr(where);
+            stderr(" error: ");
+            stderr(std.mem.span(msg));
+            stderr("\n");
+        }
+        const stack = c.JS_GetPropertyStr(self.ctx, exc, "stack");
+        defer c.JS_FreeValue(self.ctx, stack);
+        if (c.JS_ToCString(self.ctx, stack)) |s| {
+            defer c.JS_FreeCString(self.ctx, s);
+            stderr("  at: ");
+            stderr(std.mem.span(s));
+            stderr("\n");
+        }
     }
 
     fn registerNatives(self: *Js) void {
@@ -96,6 +140,12 @@ pub const Js = struct {
     fn callHandler(self: *Js, handler: c.JSValue, dt: f32) void {
         var args = [_]c.JSValue{c.JS_NewFloat64(self.ctx, dt)};
         const r = c.JS_Call(self.ctx, handler, self.global, 1, &args);
+        // A throwing handler used to be swallowed every tick. Report the first one
+        // (throttled — it runs at tick rate) so a broken skill is visible.
+        if (c.JS_IsException(r) and !self.handler_err_reported) {
+            self.handler_err_reported = true;
+            self.reportException("skill tick");
+        }
         c.JS_FreeValue(self.ctx, r);
         c.JS_FreeValue(self.ctx, args[0]);
     }

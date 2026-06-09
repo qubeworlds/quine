@@ -1,4 +1,4 @@
-// Skill runtime prelude — the Roblox-flavored facade over the quine_* natives.
+// Skill runtime prelude -- the Roblox-flavored facade over the quine_* natives.
 //
 // Loaded into the JS context before a skill, so a skill can be written against
 // the same surface as the editor's @world/shared/runtime (world.get(name),

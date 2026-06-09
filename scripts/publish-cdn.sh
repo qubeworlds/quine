@@ -65,7 +65,13 @@ put scenes/rabbits/bunny.obj assets/bunny.obj text/plain
 # the authoring source keeps its .ts.
 python3 -c "import json;d=json.load(open('modules/core/keepie-uppie.scene.json'));d['script']['source']='skill.js';json.dump(d,open('zig-out/keepie-uppie.runtime.json','w'))"
 put scenes/keepie-uppie/scene.json    zig-out/keepie-uppie.runtime.json     application/json
-put scenes/keepie-uppie/skill.js      modules/script/keepie-uppie.skill.js  text/javascript
+# The RUNTIME skill is comment-stripped (a runtime artifact, not the authoring
+# source): comments are where stray non-ASCII / encoding hazards hide, and the
+# host injects the skill source verbatim into the engine's QuickJS. terser strips
+# comments without mangling; fall back to the raw source if terser is unavailable.
+npx --yes terser modules/script/keepie-uppie.skill.js --compress=false --mangle=false --format comments=false \
+  -o zig-out/keepie-uppie.skill.js 2>/dev/null || cp modules/script/keepie-uppie.skill.js zig-out/keepie-uppie.skill.js
+put scenes/keepie-uppie/skill.js      zig-out/keepie-uppie.skill.js         "text/javascript; charset=utf-8"
 put scenes/keepie-uppie/CesiumMan.glb assets/CesiumMan.glb                  model/gltf-binary
 put scenes/keepie-uppie/rpm.glb       assets/rpm-head.glb                   model/gltf-binary
 # the /docs/eyes demo's avatar mesh:
