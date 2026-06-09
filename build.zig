@@ -339,7 +339,7 @@ pub fn build(b: *Build) !void {
                 "-sALLOW_MEMORY_GROWTH=1",
                 "-sSTACK_SIZE=8388608",
                 "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
-                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_pick,_malloc,_free",
+                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_autoplay,_quine_set_hud,_quine_pick,_malloc,_free",
             },
         });
         // `zig build` emits the web bundle into zig-out/web.
