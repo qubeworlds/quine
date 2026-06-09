@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "name": "rabbits",
+  "room": "default",
+  "base": "base-dev",
+  "assets": [{ "name": "bunny.obj", "url": "bunny.obj" }]
+}

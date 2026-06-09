@@ -55,11 +55,14 @@ put engine/quine-webgpu.wasm zig-out/web/quine-webgpu.wasm application/wasm
 #    moves/cleans up as a unit. (The Navigator overlay + the world index.json are
 #    published from the `world` repo, alongside the scenes that link them.)
 echo "==> Uploading scenes to scenes/<name>/"
-for s in cockpit tunnel rabbits terrain; do
+for s in cockpit tunnel terrain; do
   put "scenes/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
 done
-# rabbits' shared mesh, co-located in its folder:
-put scenes/rabbits/bunny.obj assets/bunny.obj text/plain
+# rabbits is now LIVE (multiplayer): a minimal scene that links the game-server
+# room — its bunny field comes from the room's instances, not baked JSON. Static
+# authored file (not the worlds.zig dump), + its shared mesh co-located.
+put scenes/rabbits/scene.json modules/core/rabbits.scene.json application/json
+put scenes/rabbits/bunny.obj  assets/bunny.obj                 text/plain
 # the editor's keepie-uppie demo scene + skill + its meshes (CesiumMan + rpm). The
 # RUNTIME scene points script.source at the compiled, co-located skill (skill.js);
 # the authoring source keeps its .ts.
