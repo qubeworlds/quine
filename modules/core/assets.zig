@@ -65,6 +65,12 @@ pub const MeshData = struct {
     vertices: []const Vertex,
     /// Triangle list indices; empty means "draw `vertices` directly".
     indices: []const u32 = &.{},
+    /// The vertices are rewritten in place every tick (e.g. the animated water
+    /// grid). Render uploads such a mesh to a persistent stream-update GPU buffer
+    /// and refreshes it with `updateBuffer` instead of destroying + recreating the
+    /// buffer each frame (which thrashes / wedges the WebGL context). Indices stay
+    /// static. The vertex COUNT must not change once registered.
+    dynamic: bool = false,
 };
 
 /// Maximum number of distinct meshes a world can register. Fixed so the

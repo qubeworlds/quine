@@ -19,6 +19,11 @@ pub const GpuMesh = struct {
     index_count: u32 = 0,
     indexed: bool = false,
     uploaded: bool = false,
+    /// The vertex buffer is a persistent stream-update buffer (a `dynamic`
+    /// mesh, e.g. the water grid): on a revision bump we `updateBuffer` it in
+    /// place rather than destroy + recreate, so per-frame geometry doesn't
+    /// thrash the GL context. Indices are still static.
+    streamed: bool = false,
     /// Registry revision this buffer was uploaded from; if the mesh is edited in
     /// place (its revision bumped) we re-upload to pick up the new data.
     rev: u32 = 0,
@@ -39,18 +44,41 @@ pub const MeshCache = struct {
         const cur = registry.rev(handle);
         if (gm.uploaded and gm.rev == cur) return gm;
 
+        const data = registry.get(handle);
+
+        // A `dynamic` mesh whose vertex count is unchanged: refresh its persistent
+        // stream buffer in place (no destroy/create). This is the per-tick water
+        // grid path — recreating the buffer every frame wedges WebGL on Safari.
+        if (gm.uploaded and gm.streamed and gm.vertex_count == @as(u32, @intCast(data.vertices.len))) {
+            sg.updateBuffer(gm.vbuf, sg.asRange(data.vertices));
+            gm.rev = cur;
+            return gm;
+        }
+
         // Stale (or never uploaded): an in-place edit bumped the revision. Drop
         // the old buffers before re-uploading so the recolour shows and nothing
         // leaks. invalidate() is a no-op on a fresh (un-uploaded) slot.
         if (gm.uploaded) self.invalidate(handle);
 
-        const data = registry.get(handle);
-        gm.vbuf = sg.makeBuffer(.{
-            .data = sg.asRange(data.vertices),
-            .label = "mesh-vertices",
-        });
-        gm.rev = cur;
         gm.vertex_count = @intCast(data.vertices.len);
+        if (data.dynamic) {
+            // Persistent stream-update buffer: allocate by size, then fill — so
+            // later ticks `updateBuffer` it in place (see the fast path above).
+            gm.vbuf = sg.makeBuffer(.{
+                .size = @intCast(data.vertices.len * @sizeOf(core.Vertex)),
+                .usage = .{ .vertex_buffer = true, .stream_update = true },
+                .label = "mesh-vertices-dyn",
+            });
+            sg.updateBuffer(gm.vbuf, sg.asRange(data.vertices));
+            gm.streamed = true;
+        } else {
+            gm.vbuf = sg.makeBuffer(.{
+                .data = sg.asRange(data.vertices),
+                .label = "mesh-vertices",
+            });
+            gm.streamed = false;
+        }
+        gm.rev = cur;
 
         if (data.indices.len > 0) {
             gm.ibuf = sg.makeBuffer(.{

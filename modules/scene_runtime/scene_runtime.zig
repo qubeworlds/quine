@@ -309,7 +309,9 @@ pub const SceneRuntime = struct {
             core.ocean.buildIndices(res, indices);
             core.ocean.buildVerts(verts, oc.waves, oc.level, oc.extent, res, vec4(oc.color), 0);
             self.water_verts = verts;
-            const handle = self.world.meshes.add(.{ .vertices = verts, .indices = indices });
+            // `dynamic`: render keeps a persistent stream buffer and updates it in
+            // place each tick (vs. recreating it every frame, which wedges WebGL).
+            const handle = self.world.meshes.add(.{ .vertices = verts, .indices = indices, .dynamic = true });
             self.water_mesh = handle;
             const water_ent = self.world.spawn();
             self.world.set(core.Transform, water_ent, .{}); // grid is already in world space
