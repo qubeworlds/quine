@@ -172,7 +172,10 @@ pub fn cockpitJson(a: std.mem.Allocator) []const u8 {
         , .{ col[0], col[1], col[2], col[0] * 0.7, col[1] * 0.7, col[2] * 0.7 });
     }
 
-    b.raw("\n]}");
+    // The cockpit links its reusable HTML overlay — the Navigator. The engine
+    // ignores `overlay`; the host fetches it (a hydrating JS module) and mounts it
+    // over the canvas. Content lives on the CDN, never in the engine.
+    b.raw("\n],\"overlay\":\"https://cdn.qubeworlds.com/overlays/navigator.js\"}");
     return b.done();
 }
 
