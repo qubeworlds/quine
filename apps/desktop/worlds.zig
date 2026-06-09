@@ -204,28 +204,34 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
     );
 
     const rings: u32 = 28;
-    const per_ring: u32 = 20;
+    const per_ring: u32 = 24; // 4 points per hexagon edge
     var zi: u32 = 0;
     while (zi < rings) : (zi += 1) {
         const fz: f32 = @floatFromInt(zi);
         const z = -fz * 2.6;
         // A gently funnelling, wavy radius so the corridor breathes.
         const rr = 3.2 + 0.7 * @sin(fz * 0.55);
-        const twist = fz * 0.22;
-        // Match the intro TeleportTunnel's look (accent #5fd4ff on near-black):
-        // one cyan-blue hue throughout — no magenta drift — with the near rings
-        // washed toward white (the intro lerps accent->white as rings approach)
-        // and the deep rings the fully saturated accent.
+        // Match the intro TeleportTunnel: HEXAGONAL rings (the nested-hex Qube
+        // "Q" logo, point-up, aligned — no twist), in its blue (#5fd4ff on
+        // near-black): one cyan-blue hue, near rings washed toward white (the
+        // intro lerps accent->white as rings approach), deep rings saturated.
         const depth = fz / @as(f32, @floatFromInt(rings - 1));
         const col = hsv(0.55 + 0.03 * depth, 0.45 + 0.5 * depth, 1.0);
         var j: u32 = 0;
         while (j < per_ring) : (j += 1) {
-            const ang = (@as(f32, @floatFromInt(j)) / @as(f32, per_ring)) * 2.0 * std.math.pi + twist;
-            const x = rr * @cos(ang);
-            const y = rr * @sin(ang);
+            // Walk the hexagon outline: edge index + fraction along that edge,
+            // vertices at 60° steps offset -90° so the hex is point-up like the
+            // logo (the same orientation hexGeometry uses in the intro).
+            const t = (@as(f32, @floatFromInt(j)) / @as(f32, per_ring)) * 6.0;
+            const e: u32 = @intFromFloat(t);
+            const f = t - @as(f32, @floatFromInt(e));
+            const a0 = @as(f32, @floatFromInt(e)) * (std.math.pi / 3.0) - std.math.pi / 2.0;
+            const a1 = a0 + std.math.pi / 3.0;
+            const x = rr * ((1.0 - f) * @cos(a0) + f * @cos(a1));
+            const y = rr * ((1.0 - f) * @sin(a0) + f * @sin(a1));
             var nb: [20]u8 = undefined;
             const nm = std.fmt.bufPrint(&nb, "t{d}_{d}", .{ zi, j }) catch "t";
-            emitPoint(&b, true, nm, x, y, z, 0.17, col);
+            emitPoint(&b, true, nm, x, y, z, 0.16, col);
         }
     }
 
