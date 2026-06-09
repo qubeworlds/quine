@@ -29,6 +29,20 @@ pub const debris = @import("debris.zig");
 /// A debris streamer bound to the SDF object (entity) it carves rubble from.
 const DebrisRig = struct { entity: core.Entity, stream: debris.Stream };
 
+/// Up to this many floating bodies per scene.
+const max_buoyancy = 8;
+
+/// A floating body's buoyancy state: the hull sample points (body-local, on the
+/// hull bottom) the engine tests against the Gerstner surface each tick, plus the
+/// per-point horizontal area and the submersion clamp.
+const BuoyancyRig = struct {
+    body: phys.BodyId,
+    params: core.scene.Buoyancy,
+    points: [][3]f32,
+    area_per_point: f32,
+    max_depth: f32,
+};
+
 test {
     _ = @import("debris.zig");
 }
@@ -47,6 +61,10 @@ pub const Binding = struct {
     body: ?phys.BodyId = null,
     /// Dynamic bodies have their Transform synced from physics each tick.
     is_dynamic: bool = false,
+    /// Also sync the body's orientation into the Transform (quaternion -> Euler).
+    /// On for a buoyant body so the boat visibly pitches and rolls on the swell;
+    /// off by default (a sphere's rotation is invisible, the dancer is kinematic).
+    sync_rotation: bool = false,
     /// Sphere collider radius (0 for non-sphere / bodiless), for skill geometry.
     radius: f32 = 0,
     /// Loaded skinned model iff this entity has `gltf` geometry.
@@ -98,6 +116,17 @@ pub const SceneRuntime = struct {
     /// Last frame debris was advanced to (to detect a loop wrap / scrub-back and
     /// clear the rubble so the solid reforms).
     debris_frame: f32 = -1,
+    /// Gerstner ocean (waves + buoyancy params), if the scene declares one. The
+    /// same wave sum drives buoyancy and the visual water grid, so the boat rides
+    /// exactly the crests it's drawn on.
+    ocean: ?core.scene.Ocean = null,
+    /// The visual water grid: its vertices are rewritten from the ocean function
+    /// each tick and the mesh revision bumped so render re-uploads them.
+    water_mesh: ?core.MeshHandle = null,
+    water_verts: []core.Vertex = &.{},
+    /// Floating bodies: a hull-point grid sampled against the surface each tick.
+    buoyancy_rigs: [max_buoyancy]BuoyancyRig = undefined,
+    buoyancy_rig_len: usize = 0,
     arena: std.heap.ArenaAllocator = undefined,
     /// Cache of static meshes loaded from an asset (e.g. an `.obj`), keyed by
     /// source name → handle. A field of 2048 instances all referencing the same
@@ -269,7 +298,114 @@ pub const SceneRuntime = struct {
             self.debris_rig_len += 1;
         }
 
+        // Gerstner ocean (data opt-in): build the visual water grid (its verts
+        // rewritten each tick) and a buoyancy rig per floating dynamic body. The
+        // same wave function (core.ocean) feeds the mesh AND the buoyancy forces.
+        if (scene_data.ocean) |oc| {
+            self.ocean = oc;
+            const res = @max(oc.resolution, 1);
+            const verts = try a.alloc(core.Vertex, core.ocean.gridVertexCount(res));
+            const indices = try a.alloc(u32, core.ocean.gridIndexCount(res));
+            core.ocean.buildIndices(res, indices);
+            core.ocean.buildVerts(verts, oc.waves, oc.level, oc.extent, res, vec4(oc.color), 0);
+            self.water_verts = verts;
+            const handle = self.world.meshes.add(.{ .vertices = verts, .indices = indices });
+            self.water_mesh = handle;
+            const water_ent = self.world.spawn();
+            self.world.set(core.Transform, water_ent, .{}); // grid is already in world space
+            self.world.set(core.MeshRef, water_ent, .{ .mesh = handle });
+            self.world.set(core.Material, water_ent, .{ .base_color = vec4(oc.color), .roughness = 0.22 });
+
+            for (scene_data.entities, 0..) |e, i| {
+                const bu = e.buoyancy orelse continue;
+                if (i >= self.bindings.len) continue;
+                if (!self.bindings[i].is_dynamic) continue;
+                const body = self.bindings[i].body orelse continue;
+                const half: [3]f32 = switch ((e.body orelse continue).collider) {
+                    .box => |b| b.half_extents,
+                    .sphere => |s| .{ s.radius, s.radius, s.radius },
+                };
+                if (self.buoyancy_rig_len >= max_buoyancy) break;
+                self.buoyancy_rigs[self.buoyancy_rig_len] = try buildBuoyancy(a, body, bu, half);
+                self.buoyancy_rig_len += 1;
+                self.bindings[i].sync_rotation = true; // so it visibly pitches/rolls
+            }
+        }
+
         self.physics.optimize();
+    }
+
+    /// Build a buoyancy rig: lay a `samples_x × samples_z` grid of sample points
+    /// across the hull BOTTOM (body-local), and precompute the horizontal area
+    /// each point stands for and the submersion clamp (the hull height).
+    fn buildBuoyancy(a: std.mem.Allocator, body: phys.BodyId, bu: core.scene.Buoyancy, half: [3]f32) !BuoyancyRig {
+        const nx = @max(bu.samples_x, 1);
+        const nz = @max(bu.samples_z, 1);
+        const pts = try a.alloc([3]f32, @as(usize, nx) * nz);
+        var idx: usize = 0;
+        var iz: u32 = 0;
+        while (iz < nz) : (iz += 1) {
+            const fz: f32 = if (nz == 1) 0 else (@as(f32, @floatFromInt(iz)) / @as(f32, @floatFromInt(nz - 1))) * 2 - 1;
+            var ix: u32 = 0;
+            while (ix < nx) : (ix += 1) {
+                const fx: f32 = if (nx == 1) 0 else (@as(f32, @floatFromInt(ix)) / @as(f32, @floatFromInt(nx - 1))) * 2 - 1;
+                pts[idx] = .{ fx * half[0], -half[1], fz * half[2] };
+                idx += 1;
+            }
+        }
+        const footprint = (2 * half[0]) * (2 * half[2]);
+        return .{
+            .body = body,
+            .params = bu,
+            .points = pts,
+            .area_per_point = footprint / @as(f32, @floatFromInt(nx * nz)),
+            .max_depth = 2 * half[1],
+        };
+    }
+
+    /// Apply buoyancy + drag for one floating body: sample each hull point against
+    /// the Gerstner surface, lift submerged points (Archimedes) along the wave
+    /// normal — vertical float plus the slope shove that makes crests push the
+    /// boat — and drag each point against the water's orbital velocity so the sea
+    /// carries the hull and bobbing is damped. Forces are applied at the points
+    /// (off-centre → torque), so the boat heaves, pitches and rolls.
+    fn applyBuoyancy(self: *SceneRuntime, oc: *const core.scene.Ocean, rig: *const BuoyancyRig, dt: f32) void {
+        const grav = -self.gravity[1]; // magnitude (gravity points -Y)
+        const pos = self.physics.bodyPosition(rig.body);
+        const rotm = quatToMat(self.physics.bodyRotation(rig.body));
+        const vlin = self.physics.bodyVelocity(rig.body);
+        const wang = self.physics.bodyAngularVelocity(rig.body);
+        const t = self.time;
+        // Light explicit angular damping (the per-point drag handles most roll/
+        // pitch; this keeps a steep sea from spinning the hull up).
+        const f = @max(0.0, 1.0 - rig.params.drag_angular * dt);
+        self.physics.setBodyAngularVelocity(rig.body, .{ wang[0] * f, wang[1] * f, wang[2] * f });
+        for (rig.points) |lp| {
+            const rp = rotm.transformPoint(m.Vec3.init(lp[0], lp[1], lp[2])); // body->world offset
+            const wx = pos[0] + rp.x;
+            const wy = pos[1] + rp.y;
+            const wz = pos[2] + rp.z;
+            const s = core.ocean.sample(oc.waves, wx, wz, t);
+            var depth = (oc.level + s.disp.y) - wy;
+            if (depth <= 0) continue; // point is out of the water
+            if (depth > rig.max_depth) depth = rig.max_depth;
+            // Archimedes: ρ·g·(submerged column ≈ depth·area). Vertical lift, plus
+            // a fraction along the surface slope (the lateral wave push).
+            const fb = oc.density * grav * depth * rig.area_per_point;
+            var fx = s.normal.x * fb * rig.params.slope_push;
+            var fy = fb;
+            var fz = s.normal.z * fb * rig.params.slope_push;
+            // Drag relative to the water's orbital velocity. Point velocity is the
+            // body's linear velocity plus ω×r.
+            const vpx = vlin[0] + (wang[1] * rp.z - wang[2] * rp.y);
+            const vpy = vlin[1] + (wang[2] * rp.x - wang[0] * rp.z);
+            const vpz = vlin[2] + (wang[0] * rp.y - wang[1] * rp.x);
+            const dl = rig.params.drag_linear * rig.area_per_point * oc.density;
+            fx -= dl * (vpx - s.velocity.x);
+            fy -= dl * (vpy - s.velocity.y);
+            fz -= dl * (vpz - s.velocity.z);
+            self.physics.addForceAtPoint(rig.body, .{ fx, fy, fz }, .{ wx, wy, wz });
+        }
     }
 
     /// Build the fedora mesh for entity `i`, sized from its parent's head joint
@@ -871,6 +1007,13 @@ pub const SceneRuntime = struct {
             }
         }
 
+        // 2.5 Buoyancy: push every floating body against the Gerstner surface
+        //     BEFORE the step (Jolt integrates the accumulated force, then clears
+        //     it). The same wave function drives the visual grid below.
+        if (self.ocean) |oc| {
+            for (self.buoyancy_rigs[0..self.buoyancy_rig_len]) |*rig| self.applyBuoyancy(&oc, rig, dt);
+        }
+
         // 3. Advance physics.
         try self.physics.step(dt);
 
@@ -881,13 +1024,25 @@ pub const SceneRuntime = struct {
         // to the scale, and relaxes it back toward rest each tick.
         self.world.tick(dt);
 
-        // 4. Sync dynamic bodies back into their Transforms for rendering.
+        // 4. Sync dynamic bodies back into their Transforms for rendering. A
+        //    buoyant body also syncs orientation (quaternion -> Euler) so the boat
+        //    visibly pitches and rolls on the swell.
         for (self.bindings) |*b| {
             if (!b.is_dynamic) continue;
             const body = b.body orelse continue;
             const p = self.physics.bodyPosition(body);
-            if (self.world.get(core.Transform, b.entity)) |t| t.position = m.Vec3.init(p[0], p[1], p[2]);
+            if (self.world.get(core.Transform, b.entity)) |t| {
+                t.position = m.Vec3.init(p[0], p[1], p[2]);
+                if (b.sync_rotation) t.rotation = eulerZYX(quatToMat(self.physics.bodyRotation(body)));
+            }
         }
+
+        // 6. Visual ocean: re-displace the water grid for the new time and bump its
+        //    mesh revision so render re-uploads the vertices next frame.
+        if (self.ocean) |oc| if (self.water_mesh) |h| {
+            core.ocean.buildVerts(self.water_verts, oc.waves, oc.level, oc.extent, @max(oc.resolution, 1), vec4(oc.color), self.time);
+            self.world.meshes.bump(h);
+        };
 
         // 5. Bone-driven gaze: aim a rigged actor's `LeftEye`/`RightEye` bones
         //    along its (eased, by the gaze system) Gaze direction, so the
@@ -1105,6 +1260,11 @@ fn rotZTo(dir: m.Vec3) m.Mat4 {
     const axis = f.cross(d).normalize();
     const ang = std.math.acos(std.math.clamp(c, -1.0, 1.0));
     return m.Quat.fromAxisAngle(axis, ang).toMat4();
+}
+
+/// Column-major rotation matrix from a Jolt body quaternion (x, y, z, w).
+fn quatToMat(q: [4]f32) m.Mat4 {
+    return (m.Quat{ .x = q[0], .y = q[1], .z = q[2], .w = q[3] }).toMat4();
 }
 
 /// Euler angles (radians, the Z-Y-X order `components.Transform.matrix` rebuilds)

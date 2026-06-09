@@ -187,6 +187,49 @@ pub const Squash = struct { rest_scale: ?Vec3 = null, value: f32 = 0, recovery: 
 /// field of characters bounce out of sync. Maps to the `Hop` component.
 pub const Hop = struct { amplitude: f32 = 0.3, speed: f32 = 3, phase: f32 = 0 };
 
+/// One Gerstner (trochoidal) wave component of an `Ocean`. The engine sums a few
+/// of these into the surface. `dir` is the XZ travel direction (normalised on
+/// use); `length` is the wavelength (m); `amplitude` the crest height (m);
+/// `steepness` the Gerstner Q (0..1, how peaked — keep Σ(Q·k·A) < 1 across the
+/// set to avoid self-intersecting loops); `speed` scales the physical deep-water
+/// phase speed `√(g·k)`.
+pub const Wave = struct {
+    dir: [2]f32 = .{ 1, 0 },
+    length: f32 = 10,
+    amplitude: f32 = 0.4,
+    steepness: f32 = 0.6,
+    speed: f32 = 1,
+};
+
+/// A Gerstner ocean — a closed-form, deterministic wave surface. Its waves are
+/// summed on the CPU both to drive buoyancy (in `core`) and to displace the
+/// visual water grid, so the boat rides exactly the crests you see. `level` is
+/// the still-water Y; `extent`/`resolution` size the visual grid (a square of
+/// side `2·extent` centred on the origin, `resolution` cells per side);
+/// `density` (kg/m³) sets buoyant force.
+pub const Ocean = struct {
+    level: f32 = 0,
+    extent: f32 = 30,
+    resolution: u32 = 64,
+    density: f32 = 1000,
+    color: Rgba = .{ 0.10, 0.30, 0.42, 1 },
+    waves: []const Wave = &.{},
+};
+
+/// Buoyancy for a floating body: the engine samples a `samples_x × samples_z`
+/// grid of points over the hull bottom each tick, applies an Archimedes force
+/// per submerged point (so the body heaves, pitches and rolls), plus drag
+/// against the water's motion (so waves carry it). Needs a `dynamic` `body`.
+pub const Buoyancy = struct {
+    drag_linear: f32 = 0.9,
+    drag_angular: f32 = 1.6,
+    /// Fraction of buoyant force redirected along the wave's surface slope — the
+    /// lateral shove that makes crests push the boat (0 = pure vertical).
+    slope_push: f32 = 0.5,
+    samples_x: u32 = 3,
+    samples_z: u32 = 5,
+};
+
 pub const CameraController = union(enum) {
     orbit: struct { target: Vec3 = .{ 0, 0, 0 }, distance: f32 = 5, yaw: f32 = 0, pitch: f32 = 0 },
 };
@@ -208,6 +251,7 @@ pub const Entity = struct {
     spin: ?Spin = null,
     squash: ?Squash = null,
     hop: ?Hop = null,
+    buoyancy: ?Buoyancy = null,
     camera: ?Camera = null,
     /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
     /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
@@ -222,6 +266,8 @@ pub const Scene = struct {
     name: []const u8,
     script: ?Script = null,
     gravity: Vec3 = .{ 0, -9.81, 0 },
+    /// Gerstner ocean (waves + buoyancy params). Null for a dry scene.
+    ocean: ?Ocean = null,
     entities: []const Entity,
     /// Authored keyframe animation: fps, length, and the tracks the engine plays
     /// back each tick. Null for a static scene.
@@ -252,6 +298,7 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
     if (o.get("gravity")) |g| scene.gravity = try asVec3(g);
     if (o.get("script")) |s| scene.script = try parseScript(arena, s);
     if (o.get("timeline")) |t| scene.timeline = try parseTimeline(arena, t);
+    if (o.get("ocean")) |x| scene.ocean = try parseOcean(arena, x);
 
     const ents_v = o.get("entities") orelse return error.InvalidScene;
     if (ents_v != .array) return error.InvalidScene;
@@ -358,6 +405,7 @@ fn parseEntity(v: Value) !Entity {
     }
     if (o.get("squash")) |x| e.squash = try parseSquash(x);
     if (o.get("hop")) |x| e.hop = try parseHop(x);
+    if (o.get("buoyancy")) |x| e.buoyancy = try parseBuoyancy(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
     if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
@@ -585,6 +633,46 @@ fn parseHop(v: Value) !Hop {
     return h;
 }
 
+fn parseOcean(arena: std.mem.Allocator, v: Value) !Ocean {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var oc = Ocean{};
+    if (o.get("level")) |x| oc.level = try asF32(x);
+    if (o.get("extent")) |x| oc.extent = try asF32(x);
+    if (o.get("resolution")) |x| oc.resolution = try asU32(x);
+    if (o.get("density")) |x| oc.density = try asF32(x);
+    if (o.get("color")) |x| oc.color = try asRgba(x);
+    if (o.get("waves")) |wv| {
+        if (wv != .array) return error.InvalidScene;
+        const waves = try arena.alloc(Wave, wv.array.items.len);
+        for (wv.array.items, 0..) |wvi, i| {
+            if (wvi != .object) return error.InvalidScene;
+            const wo = wvi.object;
+            var w = Wave{};
+            if (wo.get("dir")) |x| w.dir = try asVec2(x);
+            if (wo.get("length")) |x| w.length = try asF32(x);
+            if (wo.get("amplitude")) |x| w.amplitude = try asF32(x);
+            if (wo.get("steepness")) |x| w.steepness = try asF32(x);
+            if (wo.get("speed")) |x| w.speed = try asF32(x);
+            waves[i] = w;
+        }
+        oc.waves = waves;
+    }
+    return oc;
+}
+
+fn parseBuoyancy(v: Value) !Buoyancy {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var b = Buoyancy{};
+    if (o.get("dragLinear")) |x| b.drag_linear = try asF32(x);
+    if (o.get("dragAngular")) |x| b.drag_angular = try asF32(x);
+    if (o.get("slopePush")) |x| b.slope_push = try asF32(x);
+    if (o.get("samplesX")) |x| b.samples_x = try asU32(x);
+    if (o.get("samplesZ")) |x| b.samples_z = try asU32(x);
+    return b;
+}
+
 fn parseCamera(v: Value) !Camera {
     if (v != .object) return error.InvalidScene;
     const o = v.object;
@@ -628,6 +716,10 @@ fn asU32(v: Value) !u32 {
         .integer => |i| @intCast(i),
         else => error.InvalidScene,
     };
+}
+fn asVec2(v: Value) ![2]f32 {
+    if (v != .array or v.array.items.len != 2) return error.InvalidScene;
+    return .{ try asF32(v.array.items[0]), try asF32(v.array.items[1]) };
 }
 fn asVec3(v: Value) !Vec3 {
     if (v != .array or v.array.items.len != 3) return error.InvalidScene;

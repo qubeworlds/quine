@@ -438,6 +438,14 @@ fn loadScene() void {
                         App.stage.scrub_time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
                         App.stage.update(0) catch {};
                     }
+                    // QUINE_THUMB_TICKS=<n>: advance the sim n fixed steps before
+                    // capture, so a physics scene (e.g. a boat settling on the
+                    // ocean swell) is shown in motion, not at its t=0 pose.
+                    if (std.c.getenv("QUINE_THUMB_TICKS")) |nv| {
+                        const ticks = std.fmt.parseInt(u32, std.mem.span(nv), 10) catch 0;
+                        var k: u32 = 0;
+                        while (k < ticks) : (k += 1) App.stage.update(1.0 / 60.0) catch {};
+                    }
                     return;
                 }
             }

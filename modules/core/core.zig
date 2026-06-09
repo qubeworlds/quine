@@ -131,7 +131,12 @@ test {
     _ = @import("marching_cubes.zig");
     _ = @import("png.zig");
     _ = @import("obj.zig");
+    _ = @import("ocean.zig");
 }
+
+/// Gerstner ocean: the closed-form wave surface that feeds both buoyancy (core)
+/// and the visual water grid. See `ocean.zig`.
+pub const ocean = @import("ocean.zig");
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.

@@ -108,6 +108,12 @@ pub const MeshRegistry = struct {
         return self.revs[@intFromEnum(handle)];
     }
 
+    /// Bump a mesh's revision after its vertices were rewritten in place (e.g. the
+    /// animated water grid), so render re-uploads the new geometry next frame.
+    pub fn bump(self: *MeshRegistry, handle: MeshHandle) void {
+        self.revs[@intFromEnum(handle)] +%= 1;
+    }
+
     /// Recolour a mesh in place: overwrite every vertex colour and bump the
     /// revision so render re-uploads it. The vertex store is mutable memory the
     /// owner allocated; the `const` on `MeshData.vertices` is only an API default

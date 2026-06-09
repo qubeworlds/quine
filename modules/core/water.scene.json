@@ -1,38 +1,47 @@
 {
   "schemaVersion": 1,
   "name": "water",
-  "assets": [
-    { "name": "boat.glb", "url": "boat.glb" }
-  ],
+  "gravity": [0, -9.81, 0],
+  "ocean": {
+    "level": 0,
+    "extent": 28,
+    "resolution": 72,
+    "density": 1000,
+    "color": [0.09, 0.30, 0.45, 1],
+    "waves": [
+      { "dir": [1, 0.25], "length": 14, "amplitude": 0.42, "steepness": 0.62, "speed": 1.0 },
+      { "dir": [0.7, -1], "length": 8, "amplitude": 0.22, "steepness": 0.7, "speed": 1.1 },
+      { "dir": [-0.4, 0.5], "length": 4.5, "amplitude": 0.10, "steepness": 0.8, "speed": 1.25 },
+      { "dir": [1, 0.8], "length": 2.4, "amplitude": 0.045, "steepness": 0.9, "speed": 1.4 }
+    ]
+  },
   "entities": [
     {
       "name": "boat",
-      "transform": {
-        "position": [0, 0, 0],
-        "rotation": [0, 0, 0],
-        "scale": [1, 1, 1]
+      "transform": { "position": [0, 0.6, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "geometry": { "kind": "gltf", "source": "boat.glb" },
+      "material": { "color": [0.62, 0.42, 0.24, 1], "roughness": 0.8 },
+      "body": {
+        "motion": "dynamic",
+        "collider": { "kind": "box", "halfExtents": [0.7, 0.28, 1.62] },
+        "mass": 160,
+        "restitution": 0.0,
+        "friction": 0.6
       },
-      "geometry": {
-        "kind": "gltf",
-        "source": "boat.glb"
-      },
-      "material": {
-        "color": [0.62, 0.42, 0.24, 1],
-        "roughness": 0.85
-      }
+      "buoyancy": { "dragLinear": 0.5, "dragAngular": 2.0, "slopePush": 0.6, "samplesX": 3, "samplesZ": 5 }
     },
     {
       "name": "camera",
       "camera": {
-        "fovY": 0.9,
+        "fovY": 0.85,
         "near": 0.05,
-        "far": 200,
+        "far": 400,
         "controller": {
           "kind": "orbit",
-          "target": [0, 0, 0],
-          "distance": 5.5,
+          "target": [0, 0.1, 0],
+          "distance": 7.5,
           "yaw": 0.7,
-          "pitch": 0.32
+          "pitch": 0.26
         }
       }
     }

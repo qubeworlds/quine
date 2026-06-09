@@ -357,6 +357,20 @@ pub const World = struct {
         self.bi().activate(id);
     }
 
+    /// Body angular velocity (rad/s) — buoyancy reads it to compute a hull
+    /// sample point's velocity (linear + ω×r) for drag.
+    pub fn bodyAngularVelocity(self: *World, id: BodyId) [3]f32 {
+        return self.bi().getAngularVelocity(id);
+    }
+
+    /// Accumulate a force at a world-space point onto a body for the next `step`
+    /// (Jolt resets it after the step). Off-centre points generate torque, so
+    /// per-hull-point buoyancy makes a boat heave, pitch and roll. Wakes the body.
+    pub fn addForceAtPoint(self: *World, id: BodyId, force: [3]f32, point: [3]f32) void {
+        self.bi().addForceAtPosition(id, force, point);
+        self.bi().activate(id);
+    }
+
     /// Strongest closing speed (m/s) recorded between two tagged bodies during
     /// the last `step`, or 0 if they didn't touch — the general contact query the
     /// scripting API's `contactImpulse` is backed by.
