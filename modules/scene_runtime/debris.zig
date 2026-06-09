@@ -305,6 +305,49 @@ pub fn cubeMesh(alloc: std.mem.Allocator, half: Vec3, color: m.Vec4) !core.MeshD
     return .{ .vertices = verts, .indices = idx };
 }
 
+fn hash01(seed: u32, i: u32) f32 {
+    var h = seed *% 374761393 +% i *% 668265263;
+    h = (h ^ (h >> 13)) *% 1274126177;
+    h = h ^ (h >> 16);
+    return @as(f32, @floatFromInt(h & 0xffff)) / 65535.0;
+}
+
+/// A flat-shaded irregular rock: an icosahedron (20 faces) whose vertices are
+/// jittered per `seed`, scaled to `half`. Debris that reads as rubble, not a box.
+pub fn rockMesh(alloc: std.mem.Allocator, half: Vec3, color: m.Vec4, seed: u32) !core.MeshData {
+    const t: f32 = 1.618034;
+    var base = [12]Vec3{
+        .{ .x = -1, .y = t, .z = 0 },  .{ .x = 1, .y = t, .z = 0 },   .{ .x = -1, .y = -t, .z = 0 }, .{ .x = 1, .y = -t, .z = 0 },
+        .{ .x = 0, .y = -1, .z = t },  .{ .x = 0, .y = 1, .z = t },   .{ .x = 0, .y = -1, .z = -t }, .{ .x = 0, .y = 1, .z = -t },
+        .{ .x = t, .y = 0, .z = -1 },  .{ .x = t, .y = 0, .z = 1 },   .{ .x = -t, .y = 0, .z = -1 }, .{ .x = -t, .y = 0, .z = 1 },
+    };
+    for (&base, 0..) |*p, i| {
+        const inv = 1.0 / p.length();
+        const j = 0.62 + 0.7 * hash01(seed, @intCast(i)); // jitter the radius per vertex
+        p.* = .{ .x = p.x * inv * j * half.x, .y = p.y * inv * j * half.y, .z = p.z * inv * j * half.z };
+    }
+    const faces = [20][3]u32{
+        .{ 0, 11, 5 }, .{ 0, 5, 1 },  .{ 0, 1, 7 },   .{ 0, 7, 10 }, .{ 0, 10, 11 },
+        .{ 1, 5, 9 },  .{ 5, 11, 4 }, .{ 11, 10, 2 }, .{ 10, 7, 6 }, .{ 7, 1, 8 },
+        .{ 3, 9, 4 },  .{ 3, 4, 2 },  .{ 3, 2, 6 },   .{ 3, 6, 8 },  .{ 3, 8, 9 },
+        .{ 4, 9, 5 },  .{ 2, 4, 11 }, .{ 6, 2, 10 },  .{ 8, 6, 7 },  .{ 9, 8, 1 },
+    };
+    const verts = try alloc.alloc(core.Vertex, 60);
+    const idx = try alloc.alloc(u32, 60);
+    for (faces, 0..) |f, fi| {
+        const a = base[f[0]];
+        const b = base[f[1]];
+        const c = base[f[2]];
+        const nrm = b.sub(a).cross(c.sub(a)).normalize();
+        const tri = [3]Vec3{ a, b, c };
+        inline for (0..3) |k| {
+            verts[fi * 3 + k] = .{ .position = tri[k], .normal = nrm, .color = color };
+            idx[fi * 3 + k] = @intCast(fi * 3 + k);
+        }
+    }
+    return .{ .vertices = verts, .indices = idx };
+}
+
 // =============================================================================
 // Live streaming: spawn debris over time as the drill clears cells
 // =============================================================================
@@ -412,42 +455,53 @@ pub const Stream = struct {
                     if (pts.items.len < self.opts.min_points) continue; // not cleared yet
                     self.shattered[ci] = true;
 
-                    // One shared small-cube mesh for all rubble (one GPU buffer).
-                    const chunk_half = self.voxel * 0.85;
-                    if (self.cube_mesh == null) {
-                        const cm = try cubeMesh(mesh_alloc, Vec3.splat(chunk_half), col);
-                        self.cube_mesh = world.meshes.add(cm);
-                    }
-
-                    // Shatter the cell into many small chunks (a downsample of the
-                    // removed voxels), each its own falling body — real rubble.
-                    const per_cell: usize = 14;
+                    // Shatter the cell into a FEW big, irregular rock chunks — each
+                    // its own rock mesh (jittered icosahedron) + falling body. Thrown
+                    // BACKWARD out the bore (toward the drill's entry) and spun so they
+                    // tumble in flight and roll on the floor. Reads as rubble, not boxes.
+                    const per_cell: usize = 5;
                     const stepn = @max(@as(usize, 1), pts.items.len / per_cell);
                     var idx: usize = 0;
                     while (idx < pts.items.len) : (idx += stepn) {
                         if (self.pieces.items.len >= self.opts.max_bodies) break;
                         const pv = pts.items[idx];
                         const c = Vec3{ .x = pv[0], .y = pv[1], .z = pv[2] };
+                        const seed: u32 = @as(u32, @intCast(ci)) *% 131 +% @as(u32, @intCast(idx));
+                        // Big, size-varied chunk (per-axis jitter for irregular rubble).
+                        const base = self.voxel * 1.6;
+                        const half = Vec3{
+                            .x = base * (0.7 + 0.7 * hash01(seed, 1)),
+                            .y = base * (0.7 + 0.7 * hash01(seed, 2)),
+                            .z = base * (0.7 + 0.7 * hash01(seed, 3)),
+                        };
                         const id = physics.createBody(.{
                             .motion = .dynamic,
-                            .shape = .{ .box = .{ .half_extents = .{ chunk_half, chunk_half, chunk_half } } },
+                            .shape = .{ .box = .{ .half_extents = .{ half.x, half.y, half.z } } },
                             .position = .{ c.x, c.y, c.z },
                             .mass = self.opts.mass,
                             .restitution = self.opts.restitution,
                             .friction = self.opts.friction,
                             .tag = self.opts.tag,
                         }) catch continue;
-                        // Throw outward from the bore axis with a little per-chunk spread.
+                        // Backward out the bore (-Z) + lift + lateral fan.
                         const out = c.sub(wall_center);
-                        const jx: f32 = @floatFromInt(@as(i32, @intCast(idx % 5)) - 2);
+                        const sp = self.opts.spread;
                         physics.setBodyVelocity(id, .{
-                            out.x * 0.9 + jx * self.opts.spread,
-                            0.4 * self.opts.throw_speed,
-                            self.opts.throw_speed + out.z * 0.4,
+                            out.x * 0.8 + (hash01(seed, 4) - 0.5) * 2.0 * sp,
+                            0.5 * self.opts.throw_speed + hash01(seed, 5) * sp,
+                            -self.opts.throw_speed - hash01(seed, 6) * sp,
                         });
+                        // Tumble: random spin so they roll, not slide.
+                        const spin: f32 = 9.0;
+                        physics.setBodyAngularVelocity(id, .{
+                            (hash01(seed, 7) - 0.5) * spin,
+                            (hash01(seed, 8) - 0.5) * spin,
+                            (hash01(seed, 9) - 0.5) * spin,
+                        });
+                        const mesh = world.meshes.add(try rockMesh(mesh_alloc, half, col, seed));
                         const ent = world.spawn();
                         world.set(core.Transform, ent, .{ .position = c });
-                        world.set(core.MeshRef, ent, .{ .mesh = self.cube_mesh.? });
+                        world.set(core.MeshRef, ent, .{ .mesh = mesh });
                         world.set(core.Material, ent, .{ .base_color = col });
                         try self.pieces.append(mesh_alloc, .{ .entity = ent, .body = id });
                     }

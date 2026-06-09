@@ -232,6 +232,12 @@ void main() {
 
     vec3 col = lit + ambient + emissive.rgb;
 
+    // Camera-coaxial fill ("headlight"): the surface you're looking at always
+    // catches some light, so a body viewed from its key-shadowed side still reads
+    // (e.g. the drill scene's front face / its rubble).
+    float fill = max(dot(n, normalize(v + vec3(0.0, 0.3, 0.0))), 0.0);
+    col += diffuse_color * fill * 0.35;
+
     // Preview staging: a soft fill from the opposite side to open up the shadow
     // terminator, and a cool rim to separate the body from the studio backdrop.
     if (preview) {

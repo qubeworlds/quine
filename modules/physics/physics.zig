@@ -350,6 +350,13 @@ pub const World = struct {
         self.bi().activate(id);
     }
 
+    /// Set a dynamic body's angular velocity (rad/s) and wake it — so debris
+    /// chunks tumble in flight and roll on landing instead of sliding flat.
+    pub fn setBodyAngularVelocity(self: *World, id: BodyId, w: [3]f32) void {
+        self.bi().setAngularVelocity(id, w);
+        self.bi().activate(id);
+    }
+
     /// Strongest closing speed (m/s) recorded between two tagged bodies during
     /// the last `step`, or 0 if they didn't touch — the general contact query the
     /// scripting API's `contactImpulse` is backed by.

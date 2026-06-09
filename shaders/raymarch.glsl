@@ -161,7 +161,10 @@ void main() {
     vec3 v = normalize(ro - p);
     vec3 h = normalize(l + v);
     float spec = pow(max(dot(n, h), 0.0), 32.0) * diff;
-    vec3 col = base * (amb + diff * 0.9) + vec3(spec * 0.35);
+    // Camera-coaxial fill ("headlight"): the surface you're looking at always
+    // catches light, so an object viewed from its key-shadowed side still reads.
+    float fill = max(dot(n, normalize(v + vec3(0.0, 0.3, 0.0))), 0.0);
+    vec3 col = base * (amb + diff * 0.85 + fill * 0.55) + vec3(spec * 0.35);
 
     frag_color = vec4(min(col, vec3(1.0)), 1.0);
 }
