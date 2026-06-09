@@ -49,24 +49,24 @@ put engine/quine-webgl2.wasm zig-out/web/quine-webgl2.wasm application/wasm
 put engine/quine-webgpu.js   zig-out/web/quine-webgpu.js   text/javascript
 put engine/quine-webgpu.wasm zig-out/web/quine-webgpu.wasm application/wasm
 
-# 3. Shared example assets → /assets/. Meshes (the engine carries none), plus the
-#    keepie-uppie example scene + skill the /docs/eyes + editor demos load. These
-#    double as public engine examples in the docs.
-echo "==> Uploading shared assets to /assets/"
-put assets/bunny.obj      assets/bunny.obj                       text/plain
-put assets/head.glb       assets/head.glb                        model/gltf-binary
-put assets/CesiumMan.glb  assets/CesiumMan.glb                   model/gltf-binary
-put assets/scene.json     modules/core/keepie-uppie.scene.json   application/json
-put assets/skill.js       modules/script/keepie-uppie.skill.js   text/javascript
-
-# 3b. Example scenes → /examples/<name>/scene.json. Standalone, data-only scenes
-#     the engine loads like any other (the Frame's worlds + transitions). These
-#     double as public engine examples in the docs. terrain references no meshes;
-#     rabbits references bunny.obj from /assets/.
-echo "==> Uploading example scenes to /examples/"
+# 3. Scenes → scenes/<name>/ — each a SELF-CONTAINED folder: the scene file plus
+#    the meshes it references, co-located. The engine carries no meshes; a scene's
+#    `assets` manifest links each one RELATIVE to the scene, so a scene folder
+#    moves/cleans up as a unit. (The Navigator overlay + the world index.json are
+#    published from the `world` repo, alongside the scenes that link them.)
+echo "==> Uploading scenes to scenes/<name>/"
 for s in cockpit tunnel rabbits terrain; do
-  put "examples/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
+  put "scenes/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
 done
+# rabbits' shared mesh, co-located in its folder:
+put scenes/rabbits/bunny.obj assets/bunny.obj text/plain
+# the editor's keepie-uppie demo scene + skill + its meshes (CesiumMan + rpm):
+put scenes/keepie-uppie/scene.json    modules/core/keepie-uppie.scene.json  application/json
+put scenes/keepie-uppie/skill.js      modules/script/keepie-uppie.skill.js  text/javascript
+put scenes/keepie-uppie/CesiumMan.glb assets/CesiumMan.glb                  model/gltf-binary
+put scenes/keepie-uppie/rpm.glb       assets/rpm-head.glb                   model/gltf-binary
+# the /docs/eyes demo's avatar mesh:
+put scenes/eyes/rpm.glb               assets/rpm-head.glb                   model/gltf-binary
 
 # 4. Open CORS so the one CDN serves every app (qubeworlds.com, editor, play, …).
 #    Public, read-only assets — a wildcard GET origin is intentional.
