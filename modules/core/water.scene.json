@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "name": "water",
+  "assets": [
+    { "name": "boat.glb", "url": "boat.glb" }
+  ],
+  "entities": [
+    {
+      "name": "boat",
+      "transform": {
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      "geometry": {
+        "kind": "gltf",
+        "source": "boat.glb"
+      },
+      "material": {
+        "color": [0.62, 0.42, 0.24, 1],
+        "roughness": 0.85
+      }
+    },
+    {
+      "name": "camera",
+      "camera": {
+        "fovY": 0.9,
+        "near": 0.05,
+        "far": 200,
+        "controller": {
+          "kind": "orbit",
+          "target": [0, 0, 0],
+          "distance": 5.5,
+          "yaw": 0.7,
+          "pitch": 0.32
+        }
+      }
+    }
+  ],
+  "overlay": "navigator.js"
+}

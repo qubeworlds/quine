@@ -82,6 +82,10 @@ put scenes/eyes/rpm.glb               assets/rpm-head.glb                   mode
 # the destructible-SDF drill demo: wall + drill, both kind:"sdf" (N SDF objects),
 # keyframe-bored with flying debris. Pure data, no assets.
 put scenes/drill/scene.json           modules/core/drill.scene.json         application/json
+# the water demo: a boat prop at the origin. A skin-less glTF, loaded via the
+# engine's static-glTF path; static authored scene + its co-located mesh.
+put scenes/water/scene.json           modules/core/water.scene.json         application/json
+put scenes/water/boat.glb             assets/boat.glb                       model/gltf-binary
 
 # 4. Open CORS so the one CDN serves every app (qubeworlds.com, editor, play, …).
 #    Public, read-only assets — a wildcard GET origin is intentional.

@@ -144,18 +144,19 @@ pub const SceneRuntime = struct {
             if (e.geometry) |g| if (g == .sdf) {
                 self.world.addSdf(ent, g.sdf);
             };
-            // Static mesh asset (`.obj`): load once, share the handle across every
-            // instance (one GPU upload), drawn by the normal opaque mesh path — the
-            // many-distinct-characters field (e.g. thousands of Stanford bunnies).
-            // No skeleton, so it skips the skinned-binding path below.
-            if (e.geometry) |g| if (g == .gltf and std.mem.endsWith(u8, g.gltf.source, ".obj")) {
+            // Static mesh asset (an `.obj`, or a skin-less glTF prop like a boat):
+            // load once, share the handle across every instance (one GPU upload),
+            // drawn by the normal opaque mesh path — the many-distinct-characters
+            // field (e.g. thousands of Stanford bunnies). No skeleton, so it skips
+            // the skinned-binding path below.
+            if (e.geometry) |g| if (g == .gltf and staticGeom(a, assets, g.gltf.source)) {
                 const handle = try self.staticMesh(a, assets, g.gltf.source);
                 self.world.set(core.MeshRef, ent, .{ .mesh = handle });
             };
-            // glTF geometry: resolve the source bytes, load the skinned model
-            // (into the arena, freed with the runtime), scale it, and set up the
-            // scratch pose + head joint for animation and parenting.
-            if (e.geometry) |g| if (g == .gltf and !std.mem.endsWith(u8, g.gltf.source, ".obj")) {
+            // Skinned glTF geometry: resolve the source bytes, load the skinned
+            // model (into the arena, freed with the runtime), scale it, and set up
+            // the scratch pose + head joint for animation and parenting.
+            if (e.geometry) |g| if (g == .gltf and !staticGeom(a, assets, g.gltf.source)) {
                 const bytes = resolve(assets, g.gltf.source) orelse return error.AssetNotFound;
                 bnd.model = try core.loadModel(a, bytes);
                 if (g.gltf.height_meters) |target_h| try self.applyHeight(a, ent, &bnd.model.?, target_h);
@@ -707,10 +708,26 @@ pub const SceneRuntime = struct {
     fn staticMesh(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, src: []const u8) !core.MeshHandle {
         if (self.static_meshes.get(src)) |h| return h;
         const bytes = resolve(assets, src) orelse return error.AssetNotFound;
-        const mesh = try core.loadObjMesh(a, bytes);
+        // `.obj` → Wavefront loader; otherwise a skin-less `.glb` prop → the
+        // transform-baking static-glTF loader (routed here by `staticGeom`).
+        const mesh = if (std.mem.endsWith(u8, src, ".obj"))
+            try core.loadObjMesh(a, bytes)
+        else
+            try core.loadStaticGltf(a, bytes);
         const handle = self.world.meshes.add(mesh);
         try self.static_meshes.put(a, try a.dupe(u8, src), handle);
         return handle;
+    }
+
+    /// Does a `gltf` geometry source resolve to a static (skeleton-free) mesh?
+    /// True for an `.obj`, or a `.glb` that declares no skin (a prop, not a
+    /// character). Skinned glTFs go through the model loader instead. A source
+    /// whose bytes aren't provided reads as non-static so the skinned path
+    /// surfaces a clean `AssetNotFound`.
+    fn staticGeom(a: std.mem.Allocator, assets: []const Asset, src: []const u8) bool {
+        if (std.mem.endsWith(u8, src, ".obj")) return true;
+        const bytes = resolve(assets, src) orelse return false;
+        return !core.gltfHasSkins(a, bytes);
     }
 
     fn buildMesh(self: *SceneRuntime, a: std.mem.Allocator, ent: core.Entity, e: core.scene.Entity) !void {

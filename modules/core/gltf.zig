@@ -212,6 +212,111 @@ pub fn loadStaticMesh(allocator: std.mem.Allocator, glb: []const u8) !assets.Mes
     return try extractMesh(allocator, root.get("accessors").?.array, root.get("bufferViews").?.array, c.bin, prim);
 }
 
+/// True iff the glb declares at least one skin — i.e. it's a skinned/animated
+/// model (a character) rather than a static prop. Lets the scene runtime choose
+/// the static vs. skinned loader up front, instead of trying the skinned one
+/// (which assumes a skin) and faulting on a prop. Parse failures read as "no
+/// skin" so the caller falls through to the static path / a clean asset error.
+pub fn hasSkins(allocator: std.mem.Allocator, glb: []const u8) bool {
+    const c = split(glb) catch return false;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, c.json, .{}) catch return false;
+    defer parsed.deinit();
+    const skins = parsed.value.object.get("skins") orelse return false;
+    return skins == .array and skins.array.items.len > 0;
+}
+
+/// Recursively resolve a node's world matrix (parent_world * local), memoised.
+fn worldOf(local: []const m.Mat4, parent: []const i32, world: []m.Mat4, done: []bool, i: usize) m.Mat4 {
+    if (done[i]) return world[i];
+    const p = parent[i];
+    const w = if (p < 0) local[i] else worldOf(local, parent, world, done, @intCast(p)).mul(local[i]);
+    world[i] = w;
+    done[i] = true;
+    return w;
+}
+
+/// Load a skin-less glTF as ONE static mesh: merge every primitive of every
+/// node and BAKE each node's world transform into the vertices. Real-world
+/// props author a node scale/rotation (the Poly Pizza boat sits under a node
+/// scaled ×100, with sub-mm raw positions), and may split across primitives —
+/// `loadStaticMesh` reads raw positions from the first primitive only, so it
+/// would mis-size or drop geometry. This walks the hierarchy like `loadModel`
+/// but keeps the result static. Used for `gltf` scene geometry whose asset has
+/// no skin (see `hasSkins`).
+pub fn loadStaticScene(allocator: std.mem.Allocator, glb: []const u8) !assets.MeshData {
+    const c = try split(glb);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, c.json, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const accessors = root.get("accessors").?.array;
+    const buffer_views = root.get("bufferViews").?.array;
+    const meshes = root.get("meshes").?.array;
+    const nodes_json = (root.get("nodes") orelse return error.Unsupported).array;
+    const bin = c.bin;
+
+    // Per-node local matrix (from a baked `matrix` or a TRS triple) + parent link.
+    const n = nodes_json.items.len;
+    const local = try allocator.alloc(m.Mat4, n);
+    defer allocator.free(local);
+    const parent = try allocator.alloc(i32, n);
+    defer allocator.free(parent);
+    const world = try allocator.alloc(m.Mat4, n);
+    defer allocator.free(world);
+    const done = try allocator.alloc(bool, n);
+    defer allocator.free(done);
+    @memset(parent, -1);
+    @memset(done, false);
+
+    for (nodes_json.items, 0..) |nv, i| {
+        const o = nv.object;
+        if (o.get("matrix")) |mv| {
+            for (0..16) |k| local[i].m[k] = jfloat(mv.array.items[k]);
+        } else {
+            const t = if (o.get("translation")) |v| m.Vec3{ .x = jfloat(v.array.items[0]), .y = jfloat(v.array.items[1]), .z = jfloat(v.array.items[2]) } else m.Vec3{};
+            const r = if (o.get("rotation")) |v| m.Quat{ .x = jfloat(v.array.items[0]), .y = jfloat(v.array.items[1]), .z = jfloat(v.array.items[2]), .w = jfloat(v.array.items[3]) } else m.Quat{ .x = 0, .y = 0, .z = 0, .w = 1 };
+            const s = if (o.get("scale")) |v| m.Vec3{ .x = jfloat(v.array.items[0]), .y = jfloat(v.array.items[1]), .z = jfloat(v.array.items[2]) } else m.Vec3.splat(1);
+            local[i] = m.Mat4.fromTRS(t, r, s);
+        }
+    }
+    for (nodes_json.items, 0..) |nv, i| {
+        if (nv.object.get("children")) |cv| for (cv.array.items) |ch| {
+            parent[jint(ch)] = @intCast(i);
+        };
+    }
+    for (0..n) |i| _ = worldOf(local, parent, world, done, i);
+
+    var verts: std.ArrayListUnmanaged(assets.Vertex) = .empty;
+    errdefer verts.deinit(allocator);
+    var indices: std.ArrayListUnmanaged(u32) = .empty;
+    errdefer indices.deinit(allocator);
+
+    for (nodes_json.items, 0..) |nv, ni| {
+        const mesh_idx = nv.object.get("mesh") orelse continue;
+        const wm = world[ni];
+        for ((meshes.items[jint(mesh_idx)].object.get("primitives").?.array).items) |pv| {
+            const md = try extractMesh(allocator, accessors, buffer_views, bin, pv.object);
+            defer allocator.free(md.vertices);
+            defer allocator.free(md.indices);
+            const base: u32 = @intCast(verts.items.len);
+            for (md.vertices) |vtx| {
+                var w = vtx;
+                w.position = wm.transformPoint(vtx.position);
+                // Direction transform (upper 3×3) + renormalise — exact for the
+                // uniform scales props use; close enough otherwise.
+                const nx = wm.m[0] * vtx.normal.x + wm.m[4] * vtx.normal.y + wm.m[8] * vtx.normal.z;
+                const ny = wm.m[1] * vtx.normal.x + wm.m[5] * vtx.normal.y + wm.m[9] * vtx.normal.z;
+                const nz = wm.m[2] * vtx.normal.x + wm.m[6] * vtx.normal.y + wm.m[10] * vtx.normal.z;
+                const len = @sqrt(nx * nx + ny * ny + nz * nz);
+                if (len > 1e-6) w.normal = .{ .x = nx / len, .y = ny / len, .z = nz / len };
+                try verts.append(allocator, w);
+            }
+            for (md.indices) |idx| try indices.append(allocator, base + idx);
+        }
+    }
+    if (verts.items.len == 0 or indices.items.len == 0) return error.Unsupported;
+    return .{ .vertices = try verts.toOwnedSlice(allocator), .indices = try indices.toOwnedSlice(allocator) };
+}
+
 /// Parse geometry + skeleton + animation clips into a `Model`.
 pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
     const c = try split(glb);

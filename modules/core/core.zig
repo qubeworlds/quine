@@ -137,6 +137,15 @@ test {
 /// Allocator-backed; the returned MeshData lives until freed or process exit.
 pub const loadGlbMesh = gltf.loadStaticMesh;
 
+/// Load a skin-less glTF as one static mesh, merging all primitives and baking
+/// node world transforms (the right path for props like a boat — see
+/// `gltf.loadStaticScene`). Allocator-backed.
+pub const loadStaticGltf = gltf.loadStaticScene;
+
+/// True iff a glTF declares a skin (a character) vs. a static prop — lets the
+/// scene runtime pick the skinned vs. static loader. See `gltf.hasSkins`.
+pub const gltfHasSkins = gltf.hasSkins;
+
 /// Load a static mesh from a Wavefront OBJ (positions + triangles; smooth
 /// normals computed, frame normalised to unit height). Allocator-backed — the
 /// scene runtime loads a model once and shares the handle across instances.
