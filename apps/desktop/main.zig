@@ -87,6 +87,11 @@ const App = struct {
     var renderer: render.Renderer = .{};
     var queue: core.RenderQueue = .{};
     var accumulator: f64 = 0;
+    /// Whether the fixed-step sim is advancing. The engine does NOT auto-run on
+    /// web: it boots idle (an empty stage) and starts when a scene is loaded /
+    /// the host calls `quine_set_running`, so the sim clock starts clean instead
+    /// of free-running through boot. Native windowed/embedded scenes run on load.
+    var running: bool = false;
     var instance: [1]render.SkinnedInstance = undefined;
     var palette: [render.max_joints]m.Mat4 = undefined;
 
@@ -199,6 +204,16 @@ export fn quine_set_autoplay(on: i32) void {
 }
 export fn quine_set_hud(on: i32) void {
     App.hud_visible = on != 0;
+}
+/// Start/stop advancing the simulation. The engine does NOT free-run the sim on
+/// web — it boots idle and the host (which knows when boot/reveal is complete)
+/// starts it, so a freshly built scene begins ticking from a clean clock instead
+/// of inheriting the boot/tunnel backlog. Loading a scene also starts it; the
+/// host can use this to pause until the canvas is revealed. Resets the step
+/// accumulator so there's no catch-up burst on resume.
+export fn quine_set_running(on: i32) void {
+    App.running = on != 0;
+    App.accumulator = 0;
 }
 
 /// Read a whole file via libc into an allocator-owned buffer (native paths).
@@ -487,11 +502,13 @@ fn reloadScene(json: []const u8) void {
         buildStage(empty_scene) catch {};
         return;
     };
-    // Start the new scene's clock clean: drop the fixed-step backlog the BUILD
-    // frame accrued (parsing, glTF load, physics setup — a real hitch). Otherwise
-    // the first frame drains it as a burst of catch-up ticks that fast-forwards
-    // the freshly-spawned scene — e.g. slamming the boat's stiff buoyancy so it
-    // tunnels through before the first visible frame (the cold-load race).
+    // Start the new scene running on a clean clock: drop the fixed-step backlog
+    // the BUILD frame accrued (parsing, glTF load, physics setup — a real hitch).
+    // Otherwise the first frame drains it as a burst of catch-up ticks that
+    // fast-forwards the freshly-spawned scene — e.g. slamming the boat's stiff
+    // buoyancy so it tunnels through before the first visible frame (the cold-load
+    // race). The host can still pause/resume via `quine_set_running`.
+    App.running = true;
     App.accumulator = 0;
     App.js.rebind(&App.stage);
 }
@@ -500,6 +517,12 @@ fn reloadScene(json: []const u8) void {
 /// load the behaviour skill into it.
 fn loadSceneFrom(json: []const u8) void {
     buildStage(json) catch return;
+    // Run iff the scene has content: native (embedded scene) and the headless
+    // thumb run; the web EMPTY boot stage stays idle until the host injects a
+    // scene (reloadScene) or calls `quine_set_running` — the engine never
+    // free-runs the sim through boot.
+    App.running = App.stage.bindings.len > 0;
+    App.accumulator = 0;
     App.js.init(&App.stage) catch return;
     // Skill: native embeds it; on web the host INJECTS it via
     // quine_enqueue({type:"skill"}) after boot — the engine never reads window.
@@ -785,9 +808,12 @@ export fn frame() void {
     // a tab refocus, a GC pause) the sim advances a bounded amount instead of
     // bursting many catch-up ticks, which would fast-forward / destabilise a
     // freshly built scene rather than letting it settle one tick at a time.
-    App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
+    // Only while running — the engine boots idle and the host (or a scene load)
+    // starts it, so the sim doesn't free-run through boot (see `quine_set_running`).
+    if (App.running)
+        App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
     var ticks: u32 = 0;
-    while (App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
+    while (App.running and App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
         App.stage.update(@floatCast(fixed_dt)) catch {};
         App.world_tick += 1; // advance the shared world clock, one per fixed step
         App.accumulator -= fixed_dt;
