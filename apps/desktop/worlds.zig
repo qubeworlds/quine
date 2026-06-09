@@ -186,10 +186,14 @@ pub fn cockpitJson(a: std.mem.Allocator) []const u8 {
 // Time tunnel — the transition between the cockpit and a world
 // =============================================================================
 
-/// The time-tunnel scene: rings of glowing points receding down -Z, twisting and
-/// pulsing into a vortex. The app flies the camera forward through it during the
-/// transition (see `frame.zig`). Deterministic; the baked camera sits mid-tunnel
-/// so a static thumbnail still reads as a tunnel.
+/// The time-tunnel scene, styled after the intro TeleportTunnel (the nested-hex
+/// Qube "Q" logo): HEXAGONAL outlines of small glowing points receding down -Z
+/// in the intro's cyan-blue (#5fd4ff on near-black), near rings washed toward
+/// white (the intro's accent->white lerp on approach), deep rings fading into
+/// the dark like its fog. Every point is parented to a "rig" entity a timeline
+/// flies toward +Z, so the tunnel streams past the (static) camera on ANY host
+/// that plays the timeline — the web swap shows real flight, not a still. The
+/// native Frame app additionally flies the camera itself (see `frame.zig`).
 pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
     var b = Buf{ .a = a };
     b.raw(
@@ -200,23 +204,24 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
     // Camera baked mid-tunnel (the app overrides it each frame while flying).
     b.raw(
         \\{"name":"camera","camera":{"fovY":1.4,"near":0.05,"far":200,
-        \\ "controller":{"kind":"orbit","target":[0,0,-26],"distance":1.0,"yaw":0.0,"pitch":0.0}}}
+        \\ "controller":{"kind":"orbit","target":[0,0,-26],"distance":1.0,"yaw":0.0,"pitch":0.0}}},
+        \\{"name":"rig","transform":{"position":[0,0,0]}}
     );
 
     const rings: u32 = 28;
-    const per_ring: u32 = 24; // 4 points per hexagon edge
+    const per_ring: u32 = 36; // 6 points per hexagon edge — reads as a thin outline
     var zi: u32 = 0;
     while (zi < rings) : (zi += 1) {
         const fz: f32 = @floatFromInt(zi);
         const z = -fz * 2.6;
         // A gently funnelling, wavy radius so the corridor breathes.
         const rr = 3.2 + 0.7 * @sin(fz * 0.55);
-        // Match the intro TeleportTunnel: HEXAGONAL rings (the nested-hex Qube
-        // "Q" logo, point-up, aligned — no twist), in its blue (#5fd4ff on
-        // near-black): one cyan-blue hue, near rings washed toward white (the
-        // intro lerps accent->white as rings approach), deep rings saturated.
+        // Point-up hexes (the logo orientation), aligned — no twist. Colour
+        // grades white-cyan (near) -> saturated accent, and the VALUE falls off
+        // with depth so the far corridor fades into the near-black background,
+        // standing in for the intro's fog.
         const depth = fz / @as(f32, @floatFromInt(rings - 1));
-        const col = hsv(0.55 + 0.03 * depth, 0.45 + 0.5 * depth, 1.0);
+        const col = hsv(0.55 + 0.03 * depth, 0.45 + 0.5 * depth, 1.0 - 0.68 * depth);
         var j: u32 = 0;
         while (j < per_ring) : (j += 1) {
             // Walk the hexagon outline: edge index + fraction along that edge,
@@ -231,11 +236,37 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
             const y = rr * ((1.0 - f) * @sin(a0) + f * @sin(a1));
             var nb: [20]u8 = undefined;
             const nm = std.fmt.bufPrint(&nb, "t{d}_{d}", .{ zi, j }) catch "t";
-            emitPoint(&b, true, nm, x, y, z, 0.16, col);
+            // Each point rides the rig: parenting adds the rig's (timeline-flown)
+            // position to the point's offset each tick. The transform doubles as
+            // the t=0 pose so the first frame is right before the first tick.
+            b.raw(",\n");
+            b.print(
+                \\{{"name":"{s}","transform":{{"position":[{d:.3},{d:.3},{d:.3}]}},
+            , .{ nm, x, y, z });
+            b.print(
+                \\"parent":{{"entity":"rig","offset":[{d:.3},{d:.3},{d:.3}]}},
+            , .{ x, y, z });
+            b.print(
+                \\"geometry":{{"kind":"sphere","radius":0.105,"rings":6,"segments":8}},
+            , .{});
+            b.print(
+                \\"material":{{"color":[{d:.3},{d:.3},{d:.3},1],"emissive":[{d:.3},{d:.3},{d:.3}]}}}}
+            , .{ col[0], col[1], col[2], col[0], col[1], col[2] });
         }
     }
 
-    b.raw("\n],\"assets\":[]}"); // pure primitives — no assets to fetch
+    // Fly the rig toward +Z so the rings stream past the camera — ~3 ring
+    // spacings per second, the intro's brisk glide. 8 s one-way is far longer
+    // than the ~1.3 s a swap shows; each swap replays from t=0 (the sim clock
+    // starts clean on scene build).
+    b.raw(
+        \\
+        \\],"assets":[],
+        \\"timeline":{"fps":30,"durationFrames":240,"tracks":[
+        \\ {"target":"rig","path":"transform.position.z","keyframes":[
+        \\  {"frame":0,"value":0,"interp":"linear"},{"frame":240,"value":64,"interp":"linear"}]}
+        \\]}}
+    );
     return b.done();
 }
 
