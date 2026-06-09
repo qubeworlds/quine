@@ -69,6 +69,12 @@ const is_web = builtin.os.tag == .emscripten;
 const scene_json = if (is_web) "" else @embedFile("scene.json");
 const skill_js = if (is_web) "" else @embedFile("skill.js");
 
+// Web boots a valid EMPTY stage (no entities, default camera) and waits to be
+// fed. DEPENDENCY INJECTION: the engine never reads its scene/skill/assets/config
+// from the host — the host injects them via quine_provide_asset + quine_enqueue
+// + quine_set_*. The engine reaches for nothing (no files, no window).
+const empty_scene = "{\"schemaVersion\":1,\"name\":\"\",\"entities\":[]}";
+
 const App = struct {
     /// The loaded, running scene: ECS world + Jolt physics + meshes + models,
     /// advanced each tick (animation, parenting, physics, the JS skill).
@@ -86,8 +92,9 @@ const App = struct {
 
     var hud_visible: bool = false; // closed on boot; Tab toggles it, host can opt in
     /// Free-run the loaded scene's timeline at wall-clock when the host opts in
-    /// (window.QUINE_AUTOPLAY / env QUINE_AUTOPLAY) — so a scene's animation plays
-    /// on its own without an editor host scrubbing it. Generic; scene-agnostic.
+    /// (injected via quine_set_autoplay on web / env QUINE_AUTOPLAY native) — so a
+    /// scene's animation plays on its own without an editor host scrubbing it.
+    /// Generic; scene-agnostic.
     var autoplay: bool = false;
     var fps_achieved: f64 = 0;
     var fps_requested: f64 = 0;
@@ -181,6 +188,17 @@ export fn quine_provide_asset(name_ptr: [*:0]const u8, data_ptr: [*]const u8, le
         }
     }
     App.assets.append(a, .{ .name = name, .bytes = bytes }) catch {};
+}
+
+/// Host-injected runtime config (DEPENDENCY INJECTION) — the host sets these via
+/// `Module.ccall`; the engine never reads window. `quine_set_autoplay` free-runs
+/// the scene's timeline at wall rate (a lone scene animating on its own);
+/// `quine_set_hud` toggles the debug overlay.
+export fn quine_set_autoplay(on: i32) void {
+    App.autoplay = on != 0;
+}
+export fn quine_set_hud(on: i32) void {
+    App.hud_visible = on != 0;
 }
 
 /// Read a whole file via libc into an allocator-owned buffer (native paths).
@@ -386,14 +404,11 @@ export fn init() void {
             } else |_| {}
         }
     }
-    if (builtin.os.tag == .emscripten) {
-        // HUD is opt-in: closed on boot, shown only if the host sets QUINE_HUD=true.
-        App.hud_visible = emscripten_run_script_int("(window.QUINE_HUD===true)?1:0") != 0;
-        App.autoplay = emscripten_run_script_int("(window.QUINE_AUTOPLAY===true)?1:0") != 0;
-    } else {
+    // DEPENDENCY INJECTION: on web the host injects runtime config via ccall
+    // (quine_set_hud / quine_set_autoplay) — the engine never reads window. HUD is
+    // closed on boot. Native takes autoplay from the env harness.
+    if (!is_web) {
         App.autoplay = std.c.getenv("QUINE_AUTOPLAY") != null;
-    }
-    if (builtin.os.tag != .emscripten) {
         std.debug.print("quine: render backend = {s}\n", .{render.backendName()});
     }
 }
@@ -433,11 +448,11 @@ fn loadScene() void {
         return;
     }
     if (is_web) {
-        // The editor (host) fetches the bundled scene + sets it on window before
-        // booting us. If it isn't there yet, boot empty — checkHotReload picks up
-        // the first push.
-        const json = std.mem.span(emscripten_run_script_string("(window.QUINE_SCENE_JSON||'')"));
-        if (json.len > 0) loadSceneFrom(json);
+        // DEPENDENCY INJECTION: boot an EMPTY, valid stage (JS runtime + ECS live,
+        // default camera). The host then INJECTS the scene, skill, and assets via
+        // quine_provide_asset + quine_enqueue({type:"scene"|"skill"}). The engine
+        // never reads window.QUINE_SCENE_JSON — it is fed, it does not fetch.
+        loadSceneFrom(empty_scene);
         return;
     }
     loadSceneFrom(scene_json);
@@ -465,13 +480,9 @@ fn reloadScene(json: []const u8) void {
 fn loadSceneFrom(json: []const u8) void {
     buildStage(json) catch return;
     App.js.init(&App.stage) catch return;
-    // Skill: web reads the host-provided source (bundled asset); native embedded.
-    if (is_web) {
-        const skill = std.mem.span(emscripten_run_script_string("(window.QUINE_SKILL_CODE||'')"));
-        if (skill.len > 0) App.js.loadSkill(skill) catch {};
-    } else {
-        App.js.loadSkill(skill_js) catch return;
-    }
+    // Skill: native embeds it; on web the host INJECTS it via
+    // quine_enqueue({type:"skill"}) after boot — the engine never reads window.
+    if (!is_web) App.js.loadSkill(skill_js) catch return;
 }
 
 /// Build the running scene from data and wire up the render specifics (upload the
@@ -941,9 +952,6 @@ export fn event(ev: [*c]const sapp.Event) void {
     }
     input.dispatch(ev, &key_bindings);
 }
-
-extern fn emscripten_run_script_int(script_src: [*:0]const u8) c_int;
-extern fn emscripten_run_script_string(script_src: [*:0]const u8) [*:0]const u8;
 
 // --- native headless thumbnail mode -----------------------------------------
 // Set QUINE_THUMB=1 (+ QUINE_THUMB_{R,G,B,METAL,ROUGH}) and the engine renders a
