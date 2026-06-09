@@ -1,5 +1,40 @@
 # TODO — tomorrow & near-term
 
+## Next scene: `water` — a small boat in a wild sea
+
+A new example scene, **`water`**, added to the Navigator (a `water` tile +
+`scenes/water/scene.json` on the CDN; live at `/scene?s=water`). Story: a small
+boat riding a **wild, stormy sea** — the boat pitches/rolls on the swell, spray
+flies, a wake trails behind it.
+
+Tech to investigate (the ocean is the hard part — it's a moving, data-driven
+surface, so decide which side of core→render it lives on):
+
+- **Ocean surface — FFT vs Gerstner.** Gerstner (a sum of trochoidal waves) is
+  cheap, data-authorable (per-wave amplitude/wavelength/direction/steepness in the
+  scene JSON), and gives sharp wild crests — good first cut, evaluable in `core`
+  for buoyancy. **FFT** (Tessendorf / a Phillips spectrum) is the realistic open
+  ocean but needs a GPU compute/IFFT pass — bigger lift, render-side. Start
+  Gerstner (CPU-evaluable height field → buoyancy + a tessellated mesh the render
+  displaces), keep an FFT upgrade path.
+- **Buoyancy / boat dynamics.** Sample the wave height (+ normal) at a few hull
+  points each tick and apply Jolt forces — the boat floats, pitches, rolls on the
+  swell. Deterministic (Gerstner is a closed-form function of position + time), so
+  it stays in `core`.
+- **Foam** — crest/whitecap foam where wave steepness (Jacobian/Gerstner folding)
+  is high, plus foam trailing the wake; a foam mask the shader composites.
+- **Wakes** — the boat's bow/stern wake (a displacement + foam trail bound to the
+  boat's path). Investigate a screen-space or a parametric trail.
+- **Particles** — spray/splash where the hull slams the water + wind-blown spray
+  off the crests. Needs a (first) particle system — emitters, GPU-instanced
+  quads/points, lifetime, gravity/wind. Likely the first reusable particle
+  component (scene-data-driven: emitter rate/spread/lifetime/forces).
+
+Keep the rule: the **ocean params + boat + emitters are scene DATA**; the engine
+renders/sims what it's handed (no baked "water" content). Foam/wake/particles are
+generic capabilities a scene configures, like `sdf`/`debris` for the drill.
+
+
 Where we are: a **data-driven** scene (the normalized JSON the `world` zod schema
 emits) loaded into an ECS world with real Jolt physics (native + web), behaviour
 **skills** interpreted in QuickJS, and the keepie-uppie actor heading the ball
