@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "name": "water",
   "gravity": [0, -9.81, 0],
+  "assets": [
+    { "name": "boat.glb", "url": "boat.glb" }
+  ],
   "ocean": {
     "level": 0,
     "extent": 28,
