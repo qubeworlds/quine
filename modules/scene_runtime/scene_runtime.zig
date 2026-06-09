@@ -32,6 +32,18 @@ const DebrisRig = struct { entity: core.Entity, stream: debris.Stream };
 /// Up to this many floating bodies per scene.
 const max_buoyancy = 8;
 
+/// TEMP diagnostic: trace scene build + the first ticks to printErr (visible in
+/// the /scene log, which window.onerror cross-origin masking does NOT hide).
+/// Writes straight to fd 2 (emscripten flushes stderr to Module.printErr on a
+/// newline) — `std.debug.print` pulls process/signal code that won't compile for
+/// wasm32-emscripten, so format into a buffer and write that.
+var waterdbg_n: u32 = 0;
+fn dbgTrace(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = std.c.write(2, s.ptr, s.len);
+}
+
 /// A floating body's buoyancy state: the hull sample points (body-local, on the
 /// hull bottom) the engine tests against the Gerstner surface each tick, plus the
 /// per-point horizontal area and the submersion clamp.
@@ -218,6 +230,7 @@ pub const SceneRuntime = struct {
                 },
             });
             bindings[i] = bnd;
+            dbgTrace("[waterdbg] bound '{s}' dyn={} body={} mesh={}\n", .{ e.name, bnd.is_dynamic, bnd.body != null, e.geometry != null });
         }
         // Reserve binding slots for eye sub-entities: each fitted `eyes` entity
         // expands into 2 eyes × 5 parts = 10 child draws, appended after the
@@ -335,6 +348,7 @@ pub const SceneRuntime = struct {
         }
 
         self.physics.optimize();
+        dbgTrace("[waterdbg] init ok: {} bindings, ocean={}, buoyancy_rigs={}\n", .{ self.bindings.len, self.ocean != null, self.buoyancy_rig_len });
     }
 
     /// Build a buoyancy rig: lay a `samples_x × samples_z` grid of sample points
@@ -922,6 +936,8 @@ pub const SceneRuntime = struct {
     /// sync dynamic bodies back into their Transforms for rendering. The skill
     /// (QuickJS pre/post hooks) will interleave around the physics step later.
     pub fn update(self: *SceneRuntime, dt: f32) !void {
+        const trace = waterdbg_n < 3;
+        if (trace) dbgTrace("[waterdbg] update {} begin\n", .{waterdbg_n});
         self.time += dt;
 
         // 0. Keyframe playback: sample the timeline at the current frame and write
@@ -1017,7 +1033,9 @@ pub const SceneRuntime = struct {
         }
 
         // 3. Advance physics.
+        if (trace) dbgTrace("[waterdbg] update {} pre-step\n", .{waterdbg_n});
         try self.physics.step(dt);
+        if (trace) dbgTrace("[waterdbg] update {} post-step\n", .{waterdbg_n});
 
         // 3.5 Skill post-step: react to the contacts the step produced.
         if (self.post_step) |f| f(self, dt);
@@ -1055,6 +1073,8 @@ pub const SceneRuntime = struct {
                 if (self.world.get(core.Gaze, b.entity)) |gz| aimEyeBones(model, pose, gz.dir);
             };
         }
+        if (trace) dbgTrace("[waterdbg] update {} end\n", .{waterdbg_n});
+        waterdbg_n +%= 1;
     }
 
     /// Resolve a scene entity name to its binding, or null.
