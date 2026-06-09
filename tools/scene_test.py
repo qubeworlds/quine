@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 
 CDN = os.environ.get("QUINE_CDN", "https://cdn.qubeworlds.com")
@@ -55,8 +56,10 @@ def run_scene(name: str) -> bool:
     print(f"\n=== {name} ===")
     with tempfile.TemporaryDirectory() as td:
         # 1. Fetch the scene from the CDN (the same published scene the web loads).
+        #    A scene lives in its own folder with its assets: scenes/<name>/.
+        scene_url = f"{CDN}/scenes/{name}/scene.json"
         try:
-            scene_bytes = fetch(f"{CDN}/examples/{name}/scene.json")
+            scene_bytes = fetch(scene_url)
         except Exception as e:
             print(f"  FAIL: scene fetch: {e}")
             return False
@@ -74,10 +77,12 @@ def run_scene(name: str) -> bool:
             if not aname or not aurl:
                 print(f"  FAIL: bad asset entry {a}")
                 return False
+            # The asset URL is relative to the scene file's own location.
+            resolved = urllib.parse.urljoin(scene_url, aurl)
             try:
-                data = fetch(aurl)
+                data = fetch(resolved)
             except Exception as e:
-                print(f"  FAIL: asset NOT AVAILABLE  {aname} <- {aurl}: {e}")
+                print(f"  FAIL: asset NOT AVAILABLE  {aname} <- {resolved}: {e}")
                 return False
             p = os.path.join(td, aname.replace("/", "_"))
             with open(p, "wb") as f:

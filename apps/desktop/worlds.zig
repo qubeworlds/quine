@@ -173,10 +173,12 @@ pub fn cockpitJson(a: std.mem.Allocator) []const u8 {
     }
 
     // The cockpit declares its `assets` manifest (none — pure primitives) and
-    // links its reusable HTML overlay (the Navigator). The engine ignores both;
-    // the host reads `assets` (to fetch + feed the engine) and `overlay` (to mount
-    // it). Content lives on the CDN, never in the engine.
-    b.raw("\n],\"assets\":[],\"overlay\":\"https://cdn.qubeworlds.com/overlays/navigator.js\"}");
+    // links its HTML overlay (the Navigator), RELATIVE to the scene file — so the
+    // overlay lives in the scene's own folder alongside it (`scenes/cockpit/`), and
+    // the whole scene moves/cleans up as one self-contained unit. The engine
+    // ignores both; the host reads `assets` (to feed the engine) and `overlay` (to
+    // mount it), resolving each against the scene's URL.
+    b.raw("\n],\"assets\":[],\"overlay\":\"navigator.js\"}");
     return b.done();
 }
 
@@ -295,10 +297,11 @@ pub fn rabbitsJson(a: std.mem.Allocator) []const u8 {
         }
     }
 
-    // The rabbits world's `assets` manifest: the one mesh every bunny shares,
-    // pinned to its CDN URL — that's how the scene decides which bunny the engine
-    // renders. The host fetches it and feeds the engine before the scene builds.
-    b.raw("\n],\"assets\":[{\"name\":\"bunny.obj\",\"url\":\"https://cdn.qubeworlds.com/assets/bunny.obj\"}]}");
+    // The rabbits world's `assets` manifest: the one mesh every bunny shares. The
+    // URL is RELATIVE to the scene file's own location (so the scene + its assets
+    // live together in one folder, `scenes/rabbits/`, and move/clean up as a unit).
+    // The host resolves it against the scene URL, fetches it, and feeds the engine.
+    b.raw("\n],\"assets\":[{\"name\":\"bunny.obj\",\"url\":\"bunny.obj\"}]}");
     return b.done();
 }
 
