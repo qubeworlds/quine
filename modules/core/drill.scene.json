@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "name": "drill",
+  "gravity": [0, -9.81, 0],
+  "entities": [
+    {
+      "name": "wall",
+      "geometry": {
+        "kind": "sdf",
+        "nodes": [
+          { "prim": "box", "op": "union", "center": [0, 1.1, 0], "half": [1.5, 1.1, 0.3], "color": [0.46, 0.42, 0.4] },
+          { "prim": "sphere", "op": "subtract", "center": [0, 1.1, -1.0], "radius": 0.45, "k": 0.06 }
+        ],
+        "debris": { "voxel": 0.13, "mass": 0.35, "throwSpeed": 2.6, "spread": 0.7, "maxChunks": 160 }
+      }
+    },
+    {
+      "name": "drill",
+      "geometry": {
+        "kind": "sdf",
+        "nodes": [
+          { "prim": "cone", "op": "union", "center": [0, 1.1, -1.5], "half": [0.35, 0.35, 0.5], "radius": 0.35, "color": [0.62, 0.63, 0.7] }
+        ]
+      }
+    },
+    {
+      "name": "ground",
+      "transform": { "position": [0, -0.5, 0] },
+      "body": { "motion": "static", "collider": { "kind": "box", "halfExtents": [50, 0.5, 50] }, "restitution": 0.1, "friction": 0.7 }
+    },
+    {
+      "name": "camera",
+      "camera": {
+        "fovY": 0.95,
+        "near": 0.05,
+        "far": 100,
+        "controller": { "kind": "orbit", "target": [0, 1.0, 0], "distance": 4.6, "yaw": 0.7, "pitch": 0.22 }
+      }
+    }
+  ],
+  "timeline": {
+    "fps": 30,
+    "durationFrames": 260,
+    "tracks": [
+      {
+        "target": "wall",
+        "path": "geometry.nodes.1.center.z",
+        "keyframes": [
+          { "frame": 0, "value": -1.0, "interp": "linear" },
+          { "frame": 190, "value": 0.4, "interp": "linear" },
+          { "frame": 260, "value": 0.4, "interp": "linear" }
+        ]
+      },
+      {
+        "target": "drill",
+        "path": "geometry.nodes.0.center.z",
+        "keyframes": [
+          { "frame": 0, "value": -1.5, "interp": "linear" },
+          { "frame": 190, "value": -0.1, "interp": "linear" },
+          { "frame": 260, "value": -0.1, "interp": "linear" }
+        ]
+      }
+    ]
+  }
+}

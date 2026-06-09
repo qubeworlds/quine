@@ -88,6 +88,11 @@ pub const sdf_scene = @import("sdf_scene.zig");
 pub const SdfScene = sdf_scene.SdfScene;
 pub const SdfNode = sdf_scene.Node;
 
+/// How many SDF objects a world can hold (one per `kind:"sdf"` entity).
+pub const max_sdf = 8;
+/// An SDF object plus the entity that owns it (for per-entity timeline/debris).
+pub const SdfEntry = struct { entity: Entity, scene: SdfScene };
+
 /// Keyframe animation: the authored timeline (tracks of bezier/linear/hold
 /// curves) the runtime plays back each tick onto component / SDF-node fields.
 pub const keyframe = @import("keyframe.zig");
@@ -188,9 +193,11 @@ pub const World = struct {
     /// CPU-side geometry, referenced from entities by `MeshRef` handles.
     meshes: MeshRegistry = .{},
 
-    /// Optional SDF/CSG scene the render layer raymarches (and the mesher will
-    /// polygonise for collision). Null for pure-mesh worlds.
-    sdf_scene: ?SdfScene = null,
+    /// SDF/CSG objects the render layer raymarches (and the mesher polygonises for
+    /// collision/debris) — one per entity whose geometry is `kind:"sdf"`. The engine
+    /// composites N independent objects (a wall, a drill, …), not a single field.
+    sdf: [max_sdf]SdfEntry = undefined,
+    sdf_len: usize = 0,
 
     /// Create a world in its initial, deterministic state: a spinning triangle
     /// viewed by a camera pulled back along +Z.
@@ -235,6 +242,24 @@ pub const World = struct {
     /// the handle is stale.
     pub fn get(self: *World, comptime T: type, e: Entity) ?*T {
         return self.reg.get(T, e);
+    }
+
+    /// Register an SDF object owned by entity `e` (a `kind:"sdf"` geometry).
+    pub fn addSdf(self: *World, e: Entity, s: SdfScene) void {
+        if (self.sdf_len >= max_sdf) return;
+        self.sdf[self.sdf_len] = .{ .entity = e, .scene = s };
+        self.sdf_len += 1;
+    }
+    /// The live SDF objects (entity + scene), in build order.
+    pub fn sdfList(self: *World) []SdfEntry {
+        return self.sdf[0..self.sdf_len];
+    }
+    /// The SDF scene owned by entity `e`, or null — for per-entity timeline edits.
+    pub fn sdfFor(self: *World, e: Entity) ?*SdfScene {
+        for (self.sdf[0..self.sdf_len]) |*it| {
+            if (it.entity.index == e.index and it.entity.generation == e.generation) return &it.scene;
+        }
+        return null;
     }
 
     /// Attach (or overwrite) `e`'s `T` component.
@@ -325,9 +350,9 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
                         world.set(MeshRef, ent, .{ .mesh = world.meshes.add(assets.triangle_mesh) });
                     }
                 },
-                // An SDF/CSG scene is pure data — store it on the world for the
-                // render layer to raymarch (no allocator, no GPU).
-                .sdf => |s| world.sdf_scene = s,
+                // An SDF/CSG object is pure data — register it (with its owning
+                // entity) for the render layer to raymarch (no allocator, no GPU).
+                .sdf => |s| world.addSdf(ent, s),
                 else => {},
             }
         }

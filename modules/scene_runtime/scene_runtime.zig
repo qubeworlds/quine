@@ -26,6 +26,9 @@ const m = @import("math");
 /// here because it bridges `core` (the SDF + cache) and `physics` (Jolt).
 pub const debris = @import("debris.zig");
 
+/// A debris streamer bound to the SDF object (entity) it carves rubble from.
+const DebrisRig = struct { entity: core.Entity, stream: debris.Stream };
+
 test {
     _ = @import("debris.zig");
 }
@@ -90,7 +93,8 @@ pub const SceneRuntime = struct {
     /// Generic debris streamer, present when the scene's SDF opts in (`debris`
     /// spec). Turns material the keyframed carve removes from the solid into Jolt
     /// bodies. Behavior only — all tuning + the chunk colour come from the scene.
-    debris_stream: ?debris.Stream = null,
+    debris_rigs: [core.max_sdf]DebrisRig = undefined,
+    debris_rig_len: usize = 0,
     /// Last frame debris was advanced to (to detect a loop wrap / scrub-back and
     /// clear the rubble so the solid reforms).
     debris_frame: f32 = -1,
@@ -135,10 +139,10 @@ pub const SceneRuntime = struct {
                 };
                 bnd.body = try self.physics.createBody(spec);
             }
-            // SDF/CSG geometry: pure data — store it on the world for the render
-            // layer to raymarch (and the destructible-wall debris to read).
+            // SDF/CSG geometry: pure data — register it (with its owning entity) for
+            // the render layer to raymarch (and the destructible-wall debris to read).
             if (e.geometry) |g| if (g == .sdf) {
-                self.world.sdf_scene = g.sdf;
+                self.world.addSdf(ent, g.sdf);
             };
             // Static mesh asset (`.obj`): load once, share the handle across every
             // instance (one GPU upload), drawn by the normal opaque mesh path — the
@@ -249,16 +253,20 @@ pub const SceneRuntime = struct {
             try self.buildNose(a, &self.bindings[i], g.nose);
         }
 
-        // Debris (data opt-in): stand up the generic streamer for the SDF solid.
-        // All tuning comes from the scene's `debris` spec — none baked here.
-        if (self.world.sdf_scene) |*sc| if (sc.debris) |dbr| {
-            self.debris_stream = debris.Stream.init(a, sc, dbr.voxel, .{
+        // Debris (data opt-in): one generic streamer per SDF object that opted in
+        // via its `debris` spec. All tuning comes from the scene — none baked here.
+        for (self.world.sdfList()) |*entry| {
+            const dbr = entry.scene.debris orelse continue;
+            if (self.debris_rig_len >= core.max_sdf) break;
+            const st = debris.Stream.init(a, &entry.scene, dbr.voxel, .{
                 .mass = dbr.mass,
                 .throw_speed = dbr.throw_speed,
                 .spread = dbr.spread,
                 .max_bodies = dbr.max_chunks,
-            }) catch null;
-        };
+            }) catch continue;
+            self.debris_rigs[self.debris_rig_len] = .{ .entity = entry.entity, .stream = st };
+            self.debris_rig_len += 1;
+        }
 
         self.physics.optimize();
     }
@@ -769,13 +777,17 @@ pub const SceneRuntime = struct {
         // 0.5 Debris: as the keyframed carve clears cells of the SDF solid, shed
         //     them as Jolt bodies (generic; the scene's `debris` spec opted in).
         //     A loop wrap / scrub-back reforms the solid, so clear the rubble.
-        if (self.debris_stream) |*st| if (self.world.sdf_scene) |*sc| {
-            const frame = self.timelineFrame() orelse 0;
-            if (frame + 0.001 < self.debris_frame) st.reset(self.arena.allocator(), &self.world, &self.physics);
-            self.debris_frame = frame;
-            _ = st.update(self.arena.allocator(), &self.world, &self.physics, sc, 6) catch 0;
-            st.sync(&self.world, &self.physics);
-        };
+        if (self.debris_rig_len > 0) {
+            const dframe = self.timelineFrame() orelse 0;
+            const wrapped = dframe + 0.001 < self.debris_frame;
+            for (self.debris_rigs[0..self.debris_rig_len]) |*rig| {
+                const sc = self.world.sdfFor(rig.entity) orelse continue;
+                if (wrapped) rig.stream.reset(self.arena.allocator(), &self.world, &self.physics);
+                _ = rig.stream.update(self.arena.allocator(), &self.world, &self.physics, sc, 6) catch 0;
+                rig.stream.sync(&self.world, &self.physics);
+            }
+            self.debris_frame = dframe;
+        }
 
         // 1. Sample each model's animation into its pose.
         for (self.bindings) |*b| {
@@ -954,7 +966,9 @@ pub const SceneRuntime = struct {
             const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return;
             const idx = std.fmt.parseInt(usize, rest[0..dot], 10) catch return;
             const field = rest[dot + 1 ..];
-            if (self.world.sdf_scene) |*sc| {
+            // Resolve the track's target entity to ITS SDF object (per-entity now).
+            const sbnd = self.find(target) orelse return;
+            if (self.world.sdfFor(sbnd.entity)) |sc| {
                 if (idx >= sc.len) return;
                 const n = &sc.nodes[idx];
                 if (std.mem.eql(u8, field, "radius")) n.radius = v else if (std.mem.eql(u8, field, "k")) n.k = v else if (setVec3(&n.center, field, "center", v)) {} else if (setVec3(&n.half, field, "half", v)) {} else _ = setVec3(&n.color, field, "color", v);

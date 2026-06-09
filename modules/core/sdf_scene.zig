@@ -30,6 +30,9 @@ pub const Prim = enum(u8) {
     sphere,
     box,
     round_box,
+    /// Capped cone along +Z: sharp apex at center+half.z, base radius `radius`
+    /// at center-half.z. (A drill point.)
+    cone,
 };
 
 pub const Op = enum(u8) {
@@ -175,6 +178,7 @@ pub fn nodeAabb(n: Node) Aabb {
         .sphere => Vec3.splat(n.radius),
         .box => n.half,
         .round_box => n.half.add(Vec3.splat(n.radius)),
+        .cone => .{ .x = n.radius, .y = n.radius, .z = n.half.z },
     };
     const pad = ext.add(Vec3.splat(n.k));
     return .{ .min = n.center.sub(pad), .max = n.center.add(pad) };
@@ -194,7 +198,24 @@ fn primDist(n: Node, p: Vec3) f32 {
         .sphere => q.length() - n.radius,
         .box => sdBox(q, n.half),
         .round_box => sdBox(q, n.half) - n.radius,
+        .cone => sdConeZ(q, n.half.z, n.radius),
     };
+}
+
+/// Capped cone along +Z (apex at +half.z, base radius `r` at -half.z) — mirrors
+/// the raymarch shader's sdConeZ so collision/debris match the rendered surface.
+fn sdConeZ(p: Vec3, ha: f32, r: f32) f32 {
+    const qx = @sqrt(p.x * p.x + p.y * p.y);
+    const qy = p.z;
+    const k2x = r;
+    const k2y = 2.0 * ha;
+    const cax = qx - @min(qx, if (qy < 0) r else 0.0);
+    const cay = @abs(qy) - ha;
+    const t = std.math.clamp(((r - qx) * k2x + (-ha - qy) * k2y) / (k2x * k2x + k2y * k2y), 0.0, 1.0);
+    const cbx = qx - r + k2x * t;
+    const cby = qy + ha + k2y * t;
+    const s: f32 = if (cbx < 0 and cay < 0) -1.0 else 1.0;
+    return s * @sqrt(@min(cax * cax + cay * cay, cbx * cbx + cby * cby));
 }
 
 fn sdBox(q: Vec3, b: Vec3) f32 {

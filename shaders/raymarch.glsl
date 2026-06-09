@@ -7,10 +7,12 @@
 // fragment shader reconstructs a camera ray per pixel and marches `mapScene`.
 //
 // Node packing (3 vec4 per node, MAX_NODES nodes):
-//   a = (center.x, center.y, center.z, prim + 8*op)   prim:0 sphere 1 box 2 round_box
-//   b = (half.x,   half.y,   half.z,   radius)        radius: sphere r / round_box rounding
+//   a = (center.x, center.y, center.z, prim + 8*op + 64*new_object)
+//       prim: 0 sphere 1 box 2 round_box 3 cone   op: 0 union 1 smooth-union 2 subtract
+//       new_object: 1 starts an independent SDF object ("meshlet"); the scene is N
+//       such objects packed back-to-back, composited by nearest hit (not unioned).
+//   b = (half.x,   half.y,   half.z,   radius)        radius: sphere r / round_box rounding / cone base r
 //   c = (color.r,  color.g,  color.b,  k)             k: smooth-blend factor
-// op: 0 union, 1 smooth-union, 2 subtract.
 
 @vs raymarch_vs
 out vec2 ndc;
@@ -43,39 +45,59 @@ float sdBox(vec3 q, vec3 b) {
     return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
 }
 
-// returns vec4(distance, color.rgb)
+// Capped cone along +Z: sharp apex at q.z=+h.z, base radius `r` at q.z=-h.z.
+// A drill bit's point. (IQ capped-cone, r1=0 top, r2=r bottom, axis Z.)
+float sdConeZ(vec3 p, float ha, float r) {
+    vec2 q = vec2(length(p.xy), p.z);
+    vec2 k1 = vec2(r, -ha);
+    vec2 k2 = vec2(r, 2.0 * ha);
+    vec2 ca = vec2(q.x - min(q.x, (q.y < 0.0) ? r : 0.0), abs(q.y) - ha);
+    vec2 cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0);
+    float s = (cb.x < 0.0 && ca.y < 0.0) ? -1.0 : 1.0;
+    return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+
+// returns vec4(distance, color.rgb). The node buffer is N independent objects
+// (each begun by a `new_object` node); we fold within an object, then take the
+// NEAREST object — so the wall, the drill, etc. composite as separate solids.
 vec4 mapScene(vec3 p) {
-    float d = 1e9;
-    vec3 col = vec3(0.80, 0.80, 0.85);
+    float dTot = 1e9; vec3 colTot = vec3(0.80, 0.80, 0.85);
+    float dSub = 1e9; vec3 colSub = vec3(0.80, 0.80, 0.85);
     int count = int(cam_up.w);
     for (int i = 0; i < MAX_NODES; i++) {
         if (i >= count) break;
         vec4 a = nodes[i * 3 + 0];
         vec4 b = nodes[i * 3 + 1];
         vec4 c = nodes[i * 3 + 2];
-        int prim = int(mod(a.w, 8.0));
-        int op = int(floor(a.w / 8.0));
+        bool newObj = (a.w >= 64.0) || (i == 0);
+        float wm = mod(a.w, 64.0);
+        int prim = int(mod(wm, 8.0));
+        int op = int(floor(wm / 8.0));
         float k = c.w;
         vec3 q = p - a.xyz;
         float di;
         if (prim == 0) di = length(q) - b.w;
         else if (prim == 1) di = sdBox(q, b.xyz);
-        else di = sdBox(q, b.xyz) - b.w;
+        else if (prim == 2) di = sdBox(q, b.xyz) - b.w;
+        else di = sdConeZ(q, b.z, b.w);
 
-        if (op == 0) {
-            if (di < d) { d = di; col = c.rgb; }
+        if (newObj) {
+            if (dSub < dTot) { dTot = dSub; colTot = colSub; } // close the previous object
+            dSub = di; colSub = c.rgb;                          // begin a new object
+        } else if (op == 0) {
+            if (di < dSub) { dSub = di; colSub = c.rgb; }
         } else if (op == 1) {
-            float h = clamp(0.5 + 0.5 * (di - d) / max(k, 1e-5), 0.0, 1.0);
-            d = mix(di, d, h) - k * h * (1.0 - h);
-            col = mix(c.rgb, col, h);
+            float h = clamp(0.5 + 0.5 * (di - dSub) / max(k, 1e-5), 0.0, 1.0);
+            dSub = mix(di, dSub, h) - k * h * (1.0 - h);
+            colSub = mix(c.rgb, colSub, h);
         } else {
-            // smooth subtract: smax(d, -di, k) = -smin(-d, di, k)
-            float h = clamp(0.5 + 0.5 * (di + d) / max(k, 1e-5), 0.0, 1.0);
-            float sm = mix(di, -d, h) - k * h * (1.0 - h);
-            d = -sm;
+            // smooth subtract: smax(dSub, -di, k)
+            float h = clamp(0.5 + 0.5 * (di + dSub) / max(k, 1e-5), 0.0, 1.0);
+            dSub = -(mix(di, -dSub, h) - k * h * (1.0 - h));
         }
     }
-    return vec4(d, col);
+    if (dSub < dTot) { dTot = dSub; colTot = colSub; }
+    return vec4(dTot, colTot);
 }
 
 vec3 calcNormal(vec3 p) {

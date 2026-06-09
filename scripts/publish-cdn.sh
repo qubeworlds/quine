@@ -76,6 +76,9 @@ put scenes/keepie-uppie/CesiumMan.glb assets/CesiumMan.glb                  mode
 put scenes/keepie-uppie/rpm.glb       assets/rpm-head.glb                   model/gltf-binary
 # the /docs/eyes demo's avatar mesh:
 put scenes/eyes/rpm.glb               assets/rpm-head.glb                   model/gltf-binary
+# the destructible-SDF drill demo: wall + drill, both kind:"sdf" (N SDF objects),
+# keyframe-bored with flying debris. Pure data, no assets.
+put scenes/drill/scene.json           modules/core/drill.scene.json         application/json
 
 # 4. Open CORS so the one CDN serves every app (qubeworlds.com, editor, play, …).
 #    Public, read-only assets — a wildcard GET origin is intentional.

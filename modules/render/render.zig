@@ -455,9 +455,9 @@ pub const Renderer = struct {
             sg.draw(0, 3, 1);
         }
 
-        // SDF/CSG scene (if any): sphere-traced as a fullscreen pass. Drawn before
+        // SDF/CSG objects (if any): sphere-traced as a fullscreen pass. Drawn before
         // the meshes/grid so they can composite on top (v1 targets SDF-only).
-        if (queue.sdf) |s| if (!probe) self.drawSdf(s, queue, aspect);
+        if (queue.sdf.len > 0 and !probe) self.drawSdf(queue.sdf, queue, aspect);
 
         // World-space reference grid first (model = identity, just view+proj).
         if (self.draw_grid and !probe) {
@@ -652,9 +652,13 @@ pub const Renderer = struct {
     /// derived from the queue's view matrix (its 3×3 rows are right/up/-forward in
     /// world space), so no matrix inverse is needed and it is backend-independent.
     /// Node params are packed into the uniform array the raymarch shader decodes.
-    fn drawSdf(self: *Renderer, sdf: *const core.SdfScene, queue: *const core.RenderQueue, aspect: f32) void {
+    /// Raymarch every SDF object in the frame in ONE fullscreen pass. The objects
+    /// are packed back-to-back into the node buffer; each object's first node is
+    /// flagged `new_object` (+64) so the shader composites them by nearest hit
+    /// (independent solids), not a single union. Up to MAX_NODES (32) nodes total.
+    fn drawSdf(self: *Renderer, sdf: []const core.SdfEntry, queue: *const core.RenderQueue, aspect: f32) void {
+        const max_nodes = 32;
         const vm = queue.view.m; // column-major: m[col*4 + row]
-        // Rows of the upper-left 3×3: right = (m0,m4,m8), up = (m1,m5,m9), -fwd = (m2,m6,m10).
         const right = [3]f32{ vm[0], vm[4], vm[8] };
         const up = [3]f32{ vm[1], vm[5], vm[9] };
         const fwd = [3]f32{ -vm[2], -vm[6], -vm[10] };
@@ -663,20 +667,31 @@ pub const Renderer = struct {
         var p: shd_rm.RmParams = std.mem.zeroes(shd_rm.RmParams);
         p.cam_eye = .{ queue.eye.x, queue.eye.y, queue.eye.z, tan_half };
         p.cam_right = .{ right[0], right[1], right[2], aspect };
-        p.cam_up = .{ up[0], up[1], up[2], @floatFromInt(sdf.len) };
         p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], 0 };
 
-        // Scene AABB for the shader's empty-space skip (ray-box clip).
-        const bb = sdf.bounds();
-        p.scene_min = .{ bb.min.x, bb.min.y, bb.min.z, 0 };
-        p.scene_max = .{ bb.max.x, bb.max.y, bb.max.z, 0 };
-
-        for (sdf.nodes[0..sdf.len], 0..) |n, i| {
-            const prim_op: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op));
-            p.nodes[i * 3 + 0] = .{ n.center.x, n.center.y, n.center.z, prim_op };
-            p.nodes[i * 3 + 1] = .{ n.half.x, n.half.y, n.half.z, n.radius };
-            p.nodes[i * 3 + 2] = .{ n.color.x, n.color.y, n.color.z, n.k };
+        var lo = m.Vec3.splat(std.math.inf(f32));
+        var hi = m.Vec3.splat(-std.math.inf(f32));
+        var count: usize = 0;
+        for (sdf) |entry| {
+            const s = &entry.scene;
+            const bb = s.bounds(); // union of this object's additive nodes
+            lo = .{ .x = @min(lo.x, bb.min.x), .y = @min(lo.y, bb.min.y), .z = @min(lo.z, bb.min.z) };
+            hi = .{ .x = @max(hi.x, bb.max.x), .y = @max(hi.y, bb.max.y), .z = @max(hi.z, bb.max.z) };
+            for (s.nodes[0..s.len], 0..) |n, j| {
+                if (count >= max_nodes) break;
+                const new_obj: u32 = if (j == 0) 64 else 0;
+                const tag: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op) + new_obj);
+                p.nodes[count * 3 + 0] = .{ n.center.x, n.center.y, n.center.z, tag };
+                p.nodes[count * 3 + 1] = .{ n.half.x, n.half.y, n.half.z, n.radius };
+                p.nodes[count * 3 + 2] = .{ n.color.x, n.color.y, n.color.z, n.k };
+                count += 1;
+            }
         }
+        if (count == 0) return;
+        p.cam_up = .{ up[0], up[1], up[2], @floatFromInt(count) };
+        // Combined AABB for the shader's empty-space ray-box skip.
+        p.scene_min = .{ lo.x, lo.y, lo.z, 0 };
+        p.scene_max = .{ hi.x, hi.y, hi.z, 0 };
 
         sg.applyPipeline(self.raymarch_pip);
         sg.applyUniforms(shd_rm.UB_rm_params, sg.asRange(&p));

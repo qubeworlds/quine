@@ -563,9 +563,9 @@ test "live stream: debris appear over time as the drill bores, then settle on th
     });
 
     var world = core.World{};
-    world.sdf_scene = core.carvedWall();
+    var sdf = core.carvedWall();
 
-    var stream = try Stream.init(alloc, &world.sdf_scene.?, 0.08, .{});
+    var stream = try Stream.init(alloc, &sdf, 0.08, .{});
     defer stream.deinit(alloc);
 
     // The stream sheds cleared cells a few at a time (capped per update), so
@@ -574,7 +574,7 @@ test "live stream: debris appear over time as the drill bores, then settle on th
     var prev: usize = 0;
     var grew = false;
     for (0..300) |_| {
-        _ = try stream.update(alloc, &world, &physics, &world.sdf_scene.?, 2);
+        _ = try stream.update(alloc, &world, &physics, &sdf, 2);
         if (stream.pieces.items.len > prev) grew = true;
         prev = stream.pieces.items.len;
         try physics.step(dt);

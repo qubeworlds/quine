@@ -499,6 +499,7 @@ fn parsePrim(s: []const u8) !sdf_scene.Prim {
     if (std.mem.eql(u8, s, "sphere")) return .sphere;
     if (std.mem.eql(u8, s, "box")) return .box;
     if (std.mem.eql(u8, s, "round_box")) return .round_box;
+    if (std.mem.eql(u8, s, "cone")) return .cone;
     return error.InvalidScene;
 }
 
