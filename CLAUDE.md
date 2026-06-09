@@ -23,6 +23,50 @@ If you add a feature, decide which side of this boundary it belongs on before
 writing code. Simulation logic goes in `core`; anything touching sokol/GPU goes
 in `render` or the app.
 
+## The engine knows NOTHING about content or examples (read this twice)
+
+The engine wasm is a **content-agnostic runtime**. It renders **only the scene it
+is handed** (the geometry/components in a scene's `entities`) and the meshes the
+host provides at runtime via `quine_provide_asset`. That is the whole job.
+
+**The engine MUST NOT contain — ever — any of:**
+
+- example worlds or their scene data (no "cockpit", "rabbits", "terrain" baked in);
+- **scene generators** (the engine does not author content);
+- world lists, menus, **navigation**, titles, tile/selection UI;
+- **HTML/UI overlays** of any kind, or knowledge that overlays exist.
+
+If you are adding an example's name, a menu, a world list, or drawing a UI label
+in `modules/render` or `apps/desktop`, **stop — it is content, not engine.** It
+belongs to the host/product (the `world` repo) and the CDN, not the wasm. There
+is no `tiles` const, no `drawFrameUi`, no per-example branch in the engine.
+
+**How content actually reaches the screen:**
+
+1. **Scenes are data** — JSON on the CDN (`cdn.qubeworlds.com/examples/<name>/scene.json`).
+   The engine loads one and renders its `entities`. Unknown fields are ignored
+   (forward-compatible).
+2. **A scene links its HTML overlay** — an optional `"overlay": "<url>"` field in
+   the scene file, pointing at a **reusable** overlay resource (HTML/DOM, e.g. a
+   navigator menu). The **engine ignores `overlay` entirely** — it never reads it.
+3. **The host/viewer renders BOTH** — it shows the engine's 3D scene in the
+   `<canvas>` **and** mounts the scene's linked HTML overlay on top, then
+   composites. The overlay is a **hydrated** HTML component (an Astro/Svelte
+   island — server-rendered markup that hydrates client-side over the canvas),
+   NOT an iframe. The scene-preview / `engine-test` viewer (in the `world` repo)
+   does exactly this: engine scene + linked, hydrated overlay. Menus, world
+   selectors, navigation are **overlays + metadata**, authored by users, never
+   engine code.
+
+A consequence: rendering bugs that come from baking a second UI/render path into
+the engine simply cannot happen when the engine stays a single, content-agnostic
+scene renderer and the overlay is plain DOM.
+
+The procedural scene **generators** that emit the example JSON
+(`apps/desktop/worlds.zig` via `zig build dump-scenes`) are a **build-time content
+tool**, NOT part of the engine wasm — the app must not `@import` them. They write
+scene files for the CDN; the engine never sees them.
+
 ## Toolchain
 
 - Zig is pinned to **0.16.0** (`build.zig.zon` `minimum_zig_version`). sokol-zig

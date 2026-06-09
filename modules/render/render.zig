@@ -80,24 +80,6 @@ pub const HudInfo = struct {
     dropped: u32 = 0,
 };
 
-/// Which Navigator screen the Frame overlay is showing.
-pub const FrameMode = enum { intro, cockpit, tunnel, world };
-
-/// The Frame's on-screen UI (the cockpit Navigator / title card), drawn as a
-/// debug-text overlay over the rendered scene. The app owns the state and the
-/// tile list; render just lays out the glyphs. Tile names are passed as plain
-/// slices so the render layer needs no app/world import.
-pub const FrameUi = struct {
-    mode: FrameMode,
-    title: []const u8,
-    tile_titles: []const []const u8 = &.{},
-    tile_subtitles: []const []const u8 = &.{},
-    selected: usize = 0,
-    width: i32 = 0,
-    height: i32 = 0,
-    dpi_scale: f32 = 1,
-};
-
 /// A translation gizmo to draw at `origin`, with three axis handles of world
 /// length `length`. `active_axis` highlights one handle: -1 none, 0=X, 1=Y,
 /// 2=Z. Supplied by the app (which owns selection + interaction); render just
@@ -457,7 +439,6 @@ pub const Renderer = struct {
         skinned: ?SkinnedScene,
         gizmo: ?GizmoInfo,
         hud: ?HudInfo,
-        frame_ui: ?FrameUi,
     ) void {
         const view_proj = viewProj(queue, aspect);
         const eye4 = [4]f32{ queue.eye.x, queue.eye.y, queue.eye.z, 1 };
@@ -533,7 +514,6 @@ pub const Renderer = struct {
 
         if (!probe) {
             if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
-            if (frame_ui) |info| drawFrameUi(info);
             if (hud) |info| drawHud(info);
         }
 
@@ -731,57 +711,6 @@ pub const Renderer = struct {
         sdtx.draw();
     }
 
-    /// Render the Frame's Navigator overlay (title card + world tiles) centred
-    /// over the scene. Pure text via the debug-text font, so it composites on top
-    /// of the starfield / tunnel / world without its own pipeline.
-    fn drawFrameUi(info: FrameUi) void {
-        const scale = 2.0 * info.dpi_scale;
-        const cw = @as(f32, @floatFromInt(info.width)) / scale;
-        const ch = @as(f32, @floatFromInt(info.height)) / scale;
-        sdtx.canvas(cw, ch);
-        sdtx.origin(0, 0);
-        sdtx.font(0);
-        const cols = cw / 8.0; // one glyph cell is 8 canvas px wide
-        const rows = ch / 8.0;
-
-        // Title, a few cells down from the top.
-        printCentered(cols, 2.5, 0x66, 0xCC, 0xFF, info.title);
-
-        switch (info.mode) {
-            .intro => {
-                printCentered(cols, 4.0, 0x88, 0x99, 0xAA, "a window onto the worlds");
-                printCentered(cols, rows - 4.0, 0xFF, 0xFF, 0xFF, "press ENTER to begin");
-            },
-            .tunnel => {
-                printCentered(cols, rows * 0.5, 0x88, 0xCC, 0xFF, "entering the time tunnel...");
-            },
-            .cockpit => {
-                printCentered(cols, 4.0, 0x88, 0x99, 0xAA, "NAVIGATOR - choose a world to fly to");
-                // World tiles, one per row, centred; the selected one is marked.
-                const base_row = 6.5;
-                for (info.tile_titles, 0..) |title, i| {
-                    const row = base_row + @as(f32, @floatFromInt(i)) * 2.0;
-                    const selected = i == info.selected;
-                    var buf: [96]u8 = undefined;
-                    const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ if (selected) ">" else " ", title }) catch title;
-                    if (selected)
-                        printCentered(cols, row, 0xFF, 0xE0, 0x66, line)
-                    else
-                        printCentered(cols, row, 0x99, 0xAA, 0xBB, line);
-                }
-                // Subtitle of the highlighted tile.
-                if (info.selected < info.tile_subtitles.len) {
-                    printCentered(cols, base_row + @as(f32, @floatFromInt(info.tile_titles.len)) * 2.0 + 1.0, 0x77, 0x88, 0x99, info.tile_subtitles[info.selected]);
-                }
-                printCentered(cols, rows - 3.0, 0xCC, 0xCC, 0xCC, "[up/down] choose   [enter] fly");
-            },
-            .world => {
-                printCentered(cols, rows - 3.0, 0xAA, 0xAA, 0xAA, "[backspace] return to the Navigator");
-            },
-        }
-        sdtx.draw();
-    }
-
     /// Tear down sokol-gfx. Call from sokol-app's cleanup callback.
     pub fn shutdown(self: *Renderer) void {
         _ = self;
@@ -827,16 +756,6 @@ fn buildGridVertices() [grid_vertex_count]core.Vertex {
         n += 4;
     }
     return v;
-}
-
-/// Print `text` horizontally centred on the debug-text canvas at cell row `row`.
-/// `cols` is the canvas width in character cells; positions are in cells.
-fn printCentered(cols: f32, row: f32, r: u8, g: u8, b: u8, text: []const u8) void {
-    const len: f32 = @floatFromInt(text.len);
-    const x = @max((cols - len) * 0.5, 0.0);
-    sdtx.pos(x, row);
-    sdtx.color3b(r, g, b);
-    sdtx.print("{s}", .{text});
 }
 
 /// Human-readable name of the active GPU backend, for startup logging.
