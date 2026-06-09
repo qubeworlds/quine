@@ -393,9 +393,13 @@ pub fn terrainJson(a: std.mem.Allocator) []const u8 {
         }
     }
 
-    // A route across the walkable terrain (precomputed waypoints, grid coords).
+    // A route along the walkable valley (precomputed, grid coords). Every step is
+    // to an ADJACENT low cell, so the straight leg between two waypoints never cuts
+    // across a hill, and an out-and-back patrol keeps the loop's closing leg short
+    // (no teleport across the map). The agent therefore stays on the navmesh.
     const route = [_][2]u32{
-        .{ 1, 1 }, .{ 3, 2 }, .{ 4, 5 }, .{ 6, 6 }, .{ 8, 8 }, .{ 10, 9 }, .{ 10, 10 },
+        .{ 1, 6 }, .{ 2, 6 }, .{ 3, 7 }, .{ 4, 8 }, .{ 5, 9 }, .{ 6, 10 }, .{ 7, 9 }, .{ 8, 9 }, .{ 8, 10 }, .{ 7, 11 },
+        .{ 8, 10 }, .{ 8, 9 }, .{ 7, 9 }, .{ 6, 10 }, .{ 5, 9 }, .{ 4, 8 }, .{ 3, 7 }, .{ 2, 6 },
     };
 
     // Waypoint markers: small magenta beacons along the route.
