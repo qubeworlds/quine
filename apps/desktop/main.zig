@@ -23,6 +23,8 @@ const script = @import("script");
 const input = @import("input.zig");
 const gizmo = @import("gizmo.zig");
 const orbit = @import("orbit.zig");
+const frame_mod = @import("frame.zig");
+const worlds = @import("worlds.zig");
 const build_options = @import("build_options");
 
 /// What a pointer drag is currently doing.
@@ -45,10 +47,32 @@ fn wasmPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 const key_bindings = [_]input.Binding{
     .{ .key = .ESCAPE, .action = sapp.requestQuit },
     .{ .key = .TAB, .action = toggleHud },
+    // The Frame navigator: Enter advances (intro -> tunnel -> cockpit -> world);
+    // arrows pick a world tile in the cockpit; Backspace flies back.
+    .{ .key = .ENTER, .action = frameEnter },
+    .{ .key = .SPACE, .action = frameEnter }, // Space also confirms (handy on laptops)
+    .{ .key = .UP, .action = framePrev },
+    .{ .key = .DOWN, .action = frameNext },
+    .{ .key = .LEFT, .action = framePrev },
+    .{ .key = .RIGHT, .action = frameNext },
+    .{ .key = .BACKSPACE, .action = frameBack },
 };
 
 fn toggleHud() void {
     App.hud_visible = !App.hud_visible;
+}
+
+fn frameEnter() void {
+    if (App.frame_active) App.frame.onEnter();
+}
+fn frameBack() void {
+    if (App.frame_active) App.frame.onBack();
+}
+fn frameNext() void {
+    if (App.frame_active) App.frame.navNext();
+}
+fn framePrev() void {
+    if (App.frame_active) App.frame.navPrev();
 }
 
 /// Fixed simulation step: 60 Hz. Deterministic and decoupled from render rate.
@@ -94,6 +118,15 @@ const App = struct {
 
     var orbit_cam: orbit.Orbit = .{};
     var camera: ?core.Entity = null;
+
+    /// The Frame navigator (the cockpit/time-tunnel/world experience). Active
+    /// only for the standalone native app — never web (the editor host drives
+    /// scenes) or headless thumbnails (which render one requested scene).
+    var frame: frame_mod.Frame = .{};
+    var frame_active: bool = false;
+    /// Whether a Frame scene has been built yet (first load vs. a swap that must
+    /// tear down the previous stage first).
+    var frame_inited: bool = false;
 
     var giz: gizmo.Gizmo = .{};
     var pointer_down: bool = false;
@@ -364,8 +397,68 @@ export fn init() void {
 /// Load the scene from data into a SceneRuntime, attach the JS skill, and set up
 /// the render specifics (upload the actor's skinned mesh; init the orbit camera
 /// from the scene's camera controller). On failure we leave an empty stage.
+/// Build (or rebuild) one of the Frame's generated scenes. On the first call it
+/// builds the stage; on a later swap it tears the previous stage down first
+/// (the rebuilt meshes reuse handle indices, so the GPU cache is invalidated
+/// too). No JS skill — the Frame scenes are pure data (hop + timeline).
+fn applyFrameScene(json: []const u8) void {
+    if (App.frame_inited) {
+        App.stage.deinit();
+        App.renderer.invalidateMeshes();
+    }
+    buildStage(json) catch return;
+    App.frame_inited = true;
+}
+
+/// Generate + apply the Frame scene for `sc` (the selected tile for `.world`).
+fn loadFrameScene(sc: frame_mod.Scene) void {
+    const a = std.heap.c_allocator;
+    const json = switch (sc) {
+        .cockpit => worlds.cockpitJson(a),
+        .tunnel => worlds.tunnelJson(a),
+        .world => worlds.worldJson(a, App.frame.selected),
+    };
+    defer a.free(json);
+    applyFrameScene(json);
+}
+
+/// Map a `QUINE_FRAME=<name>` value to a generated scene JSON, for headless
+/// thumbnails of the Frame's screens. Returns null for an unknown name.
+fn frameThumbJson(a: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "cockpit") or std.mem.eql(u8, name, "intro")) return worlds.cockpitJson(a);
+    if (std.mem.eql(u8, name, "tunnel")) return worlds.tunnelJson(a);
+    if (std.mem.eql(u8, name, "rabbits")) return worlds.worldJson(a, 0);
+    if (std.mem.eql(u8, name, "terrain")) return worlds.worldJson(a, 1);
+    return null;
+}
+
 fn loadScene() void {
     if (thumb_cfg) |t| {
+        // Headless Frame capture: QUINE_FRAME=<cockpit|tunnel|rabbits|terrain>
+        // renders that generated scene (optionally advanced by QUINE_THUMB_T to
+        // show the agent mid-walk), so the Frame's screens are verifiable offscreen.
+        if (std.c.getenv("QUINE_FRAME")) |fv| {
+            const a = std.heap.c_allocator;
+            if (frameThumbJson(a, std.mem.span(fv))) |json| {
+                defer a.free(json);
+                buildStage(json) catch return;
+                App.frame_inited = true;
+                // QUINE_FRAME_UI=1 also draws the live Navigator overlay (the
+                // title card + tiles) over the captured frame, so the on-screen UI
+                // is verifiable offscreen too.
+                if (std.c.getenv("QUINE_FRAME_UI") != null) {
+                    const name = std.mem.span(fv);
+                    App.frame_active = true;
+                    App.frame.state = if (std.mem.eql(u8, name, "cockpit")) .cockpit else if (std.mem.eql(u8, name, "tunnel")) .tunnel else if (std.mem.eql(u8, name, "rabbits") or std.mem.eql(u8, name, "terrain")) .world else .intro;
+                    App.frame.selected = if (std.mem.eql(u8, name, "terrain")) 1 else 0;
+                }
+                if (std.c.getenv("QUINE_THUMB_T")) |tv| {
+                    App.stage.scrub_time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
+                    App.stage.update(0) catch {};
+                }
+                return;
+            }
+        }
         if (t.scene) |path| {
             // Headless single-frame capture of an arbitrary scene file (libc IO,
             // matching captureThumb). Falls back to the material sphere on error.
@@ -404,7 +497,11 @@ fn loadScene() void {
         if (json.len > 0) loadSceneFrom(json);
         return;
     }
-    loadSceneFrom(scene_json);
+    // Native standalone: boot into the Frame — the cockpit looking out into
+    // space, with the Navigator. Enter starts the time tunnel (see frame.zig).
+    App.frame_active = true;
+    App.frame = .{ .state = .intro };
+    loadFrameScene(.cockpit);
 }
 
 /// Tear down the running scene and rebuild it from new scene JSON (web
@@ -706,6 +803,19 @@ export fn frame() void {
         }
     }
 
+    // Frame navigator: advance the state machine, then apply any scene it now
+    // wants loaded (a tunnel start, or arriving in the cockpit/a world) before
+    // this frame ticks. In a world, drive the scene's timeline at wall-rate so
+    // the agent walk auto-plays/loops (the editor host isn't here to scrub it).
+    if (App.frame_active) {
+        App.frame.update(@floatCast(frame_dt));
+        if (App.frame.load) |sc| {
+            App.frame.load = null;
+            loadFrameScene(sc);
+        }
+        if (App.frame.state == .world) App.stage.scrub_time = App.stage.time;
+    }
+
     // Drain the fixed-step accumulator: each step advances the scene (animation,
     // the JS skill via pre/post hooks, physics) by one deterministic tick.
     App.accumulator += frame_dt;
@@ -758,7 +868,21 @@ export fn frame() void {
     // camera.controller.* tracks (unless the user is actively orbiting), then
     // write it into the camera Transform. The orbit cam is app/editor input, so
     // animating it here is just another input source — core stays untouched.
-    if (!user_camera and App.drag_mode != .orbit) applyCameraTimeline();
+    if (App.frame_active) {
+        // The Frame choreographs the camera in every state but a world: drifting
+        // across the starfield (intro/cockpit) and diving through the rings
+        // (tunnel). In a world the scene's camera + user orbit drive instead.
+        if (App.frame.camera()) |c| {
+            App.orbit_cam.target = .{ .x = c.tx, .y = c.ty, .z = c.tz };
+            App.orbit_cam.distance = c.dist;
+            App.orbit_cam.yaw = c.yaw;
+            App.orbit_cam.pitch = c.pitch;
+        } else if (App.drag_mode != .orbit) {
+            applyCameraTimeline();
+        }
+    } else {
+        if (!user_camera and App.drag_mode != .orbit) applyCameraTimeline();
+    }
     if (App.camera) |cam| App.orbit_cam.apply(&App.stage.world, cam);
 
     var gizmo_info: ?render.GizmoInfo = null;
@@ -807,7 +931,30 @@ export fn frame() void {
         .msg_tick = App.tick_gate.last,
         .dropped = App.tick_gate.dropped,
     } else null;
-    App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud);
+    // The Frame's Navigator overlay (title card + world tiles), drawn on top.
+    var tile_titles: [worlds.tiles.len][]const u8 = undefined;
+    var tile_subtitles: [worlds.tiles.len][]const u8 = undefined;
+    inline for (worlds.tiles, 0..) |t, i| {
+        tile_titles[i] = t.title;
+        tile_subtitles[i] = t.subtitle;
+    }
+    const frame_ui: ?render.FrameUi = if (App.frame_active) .{
+        .mode = switch (App.frame.state) {
+            .intro => .intro,
+            .cockpit => .cockpit,
+            .tunnel => .tunnel,
+            .world => .world,
+        },
+        .title = "QUBEWORLDS",
+        .tile_titles = &tile_titles,
+        .tile_subtitles = &tile_subtitles,
+        .selected = App.frame.selected,
+        .width = sapp.width(),
+        .height = sapp.height(),
+        .dpi_scale = dpi,
+    } else null;
+
+    App.renderer.draw(&App.queue, &App.stage.world.meshes, aspect, skinned, gizmo_info, hud, frame_ui);
 
     // Thumbnail mode: let a few frames render (GL/material settle), then read the
     // framebuffer back to a PPM and quit.

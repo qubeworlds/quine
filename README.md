@@ -151,6 +151,42 @@ quine: render backend = Metal (macOS)
   Linux sysroot containing those X11/GL libraries (sokol links them by name);
   the simplest path is to build Linux on Linux (e.g. a CI runner).
 
+## The Frame — cockpit, time tunnel & the Navigator
+
+The standalone native app (`zig build run`) boots into **the Frame**: a cockpit
+looking out into space — stars and galaxies. Press **Enter** and the **time
+tunnel** carries you to the **Navigator**, which lists the worlds you can fly to
+as tiles. Choose one (**↑/↓**) and press **Enter** to fly the tunnel into it;
+**Backspace** flies back to the Navigator.
+
+Two worlds ship as tiles today:
+
+- **Rabbits** — a field of hopping Stanford bunnies (the existing instanced-mesh
+  example, generated natively).
+- **Terrain · Navmesh** — a rolling low-poly terrain with a translucent navmesh
+  laid over the walkable tiles and an agent that walks a route across it.
+
+These will become user-authored world experiences fetched from the Continuum;
+for now each is generated as ordinary scene JSON in `apps/desktop/worlds.zig`
+(deterministic, so a given world is reproducible) and run by the same data-driven
+`SceneRuntime` as every other scene — the Frame adds **no new engine concepts**.
+The navigator state machine lives in `apps/desktop/frame.zig` (pure app logic,
+unit-tested by `zig build test`).
+
+The cockpit/tunnel choreography is camera-only; the engine core stays untouched.
+Each screen is verifiable **headless** (Xvfb + software GL) via the thumbnail
+path — `QUINE_FRAME=<cockpit|tunnel|rabbits|terrain>` renders that scene, and
+adding `QUINE_FRAME_UI=1` overlays the live Navigator:
+
+```sh
+QUINE_THUMB=1 QUINE_FRAME=tunnel QUINE_THUMB_OUT=/tmp/tunnel.ppm \
+  QUINE_THUMB_SIZE=720 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+  xvfb-run -a ./zig-out/bin/quine
+```
+
+(The Frame is native-only: on web the `world` editor host drives scenes
+directly, and headless thumbnails render one requested scene.)
+
 ## Shaders
 
 `shaders/triangle.glsl` is the single shader source. `zig build` invokes

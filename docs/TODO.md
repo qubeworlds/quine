@@ -253,10 +253,14 @@ the follow camera and the bounce sound.
 
 ## 5. Navmesh example
 
-- [ ] **Build a Navmesh example.** A scene that bakes a navigation mesh over the
-      ground/obstacles and has an actor path-find across it — exercising
-      pathfinding as a data-driven scene behaviour (like the destructible-SDF
-      debris: engine = mechanism, the scene supplies the geometry + agent).
+- [~] **Build a Navmesh example.** A first, *visual* cut ships as the Frame's
+      **Terrain · Navmesh** world tile (`apps/desktop/worlds.zig`): a rolling
+      terrain, a translucent navmesh over the walkable tiles, and an agent that
+      walks a route across it on a looping timeline — the data-driven "engine =
+      mechanism, the scene supplies the geometry + agent" shape. Still TODO: the
+      *engine* piece — actually **baking** the navmesh from the static geometry
+      and running **A\*** over it (the route + walkable set are precomputed scene
+      data for now), re-baked when SDF terrain is destroyed (§13 / roadmap).
 
 ## 6. Meshlets composition example
 
