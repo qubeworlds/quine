@@ -430,7 +430,10 @@ export fn init() void {
     if (thumb_cfg) |t| {
         App.hud_visible = false; // clean material render: no HUD, no grid
         App.renderer.draw_grid = false;
-        App.renderer.preview = true; // studio backdrop + staging lights
+        // Studio backdrop + staging lights for MATERIAL thumbnails only — a
+        // scene capture renders with the scene's own lighting/sky, exactly as
+        // the real app would (otherwise scene-lighting snapshots lie).
+        App.renderer.preview = t.scene == null;
         if (t.scene == null) {
             // Material-thumbnail dimples: spherical for the ball, triplanar for the
             // golf-ball fedora (opt-in). A scene capture renders the scene as-is.
@@ -620,6 +623,12 @@ fn buildStage(json: []const u8) !void {
     const scene_data = try core.parseScene(arena.allocator(), json);
 
     try App.stage.init(alloc, scene_data, App.assets.items);
+
+    // Upload the runtime's decoded scene textures (material.texture assets)
+    // into the render layer's per-entity slots. Slot 0 stays the 1x1 white.
+    for (App.stage.textures[1..], 1..) |maybe_tex, slot| {
+        if (maybe_tex) |tex| App.renderer.uploadStaticTexture(@intCast(slot), tex);
+    }
 
     // Optional: a material-preview / asset scene has no skinned actor.
     App.dancer = App.stage.find("dancer");

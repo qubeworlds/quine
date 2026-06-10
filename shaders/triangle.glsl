@@ -360,9 +360,19 @@ void main() {
 @end
 
 @fs bg_fs
+// bg_params.zenith.w = 1 selects the scene-Environment sky gradient (colours
+// arrive pre-exposed/tonemapped); 0 keeps the legacy studio backdrop.
+layout(binding=0) uniform bg_params {
+    vec4 bg_zenith;
+    vec4 bg_horizon;
+};
 in vec2 uv;
 out vec4 frag_color;
 void main() {
+    if (bg_zenith.w > 0.5) {
+        frag_color = vec4(mix(bg_horizon.rgb, bg_zenith.rgb, clamp(uv.y, 0.0, 1.0)), 1.0);
+        return;
+    }
     float vert = smoothstep(-0.1, 0.8, uv.y);
     vec3 col = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095), vert);
     float d = distance(uv, vec2(0.5, 0.56));

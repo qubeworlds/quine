@@ -74,6 +74,13 @@ SDF nodes additionally accept `"marble": true` — procedural world-space marble
 veining over the node's `color` in the raymarch shader (render-only; the CPU
 dist/mesher path ignores it).
 
+Mesh materials additionally accept `"texture": "<name>"` — a PNG from the
+scene's `assets` manifest, decoded into the runtime's CPU texture registry
+(`SceneRuntime.textures`, slots 1–7; the app uploads each slot) and sampled as
+the base colour (× `color`). Procedural spheres carry a lat/long UV unwrap.
+Mesh-only scenes with an Environment draw the sky gradient as a backdrop pass
+(SDF scenes draw it in the raymarch miss path).
+
 ## 3. `post` — tonemap / exposure / bloom, on the camera entity
 
 ```json

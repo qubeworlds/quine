@@ -180,7 +180,10 @@ pub fn uvSphere(
         while (s <= segments) : (s += 1) {
             const theta = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * 2.0 * std.math.pi;
             const n = m.Vec3.init(ring_r * @cos(theta), y, ring_r * @sin(theta));
-            verts[vi] = .{ .position = n.scale(radius), .normal = n, .color = color };
+            // Lat/long UV unwrap, so a scene-declared base-colour texture maps.
+            const u_tex = @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments));
+            const v_tex = @as(f32, @floatFromInt(r)) / @as(f32, @floatFromInt(rings));
+            verts[vi] = .{ .position = n.scale(radius), .normal = n, .color = color, .uv = .{ u_tex, v_tex } };
             vi += 1;
         }
     }

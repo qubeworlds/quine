@@ -85,6 +85,9 @@ pub const Binding = struct {
     head_bind_inv: m.Mat4 = m.Mat4.identity,
 };
 
+/// Per-runtime texture-slot capacity (mirrors the render layer's table).
+pub const max_textures = 8;
+
 pub const SceneRuntime = struct {
     world: core.World = .{},
     physics: phys.World = undefined,
@@ -101,6 +104,11 @@ pub const SceneRuntime = struct {
     /// Authored keyframe animation, played back each tick onto component / SDF
     /// fields. Deep-copied at init (scene_data needn't outlive init).
     timeline: ?core.Timeline = null,
+    /// CPU texture registry (TODO.md §1): decoded scene textures by slot.
+    /// Slot 0 is reserved (the renderer's 1x1 white); the app reads this after
+    /// init and uploads each slot to the render layer's static texture table.
+    textures: [max_textures]?core.Texture = @splat(null),
+    texture_names: [max_textures]?[]const u8 = @splat(null),
     /// Dedicated arena for a *live* timeline (the editor pushing edits): reset on
     /// each `setTimeline` so repeated pushes don't grow memory. Null until first.
     tl_arena: ?std.heap.ArenaAllocator = null,
@@ -217,6 +225,14 @@ pub const SceneRuntime = struct {
                     .basketball => .basketball,
                 },
             });
+            // Scene-declared base-colour texture: decode the PNG asset into the
+            // runtime's CPU registry (render-free — the APP uploads the slots,
+            // keeping core->render one-way) and point this mesh at its slot.
+            if (e.material) |mat| if (mat.texture) |tname| {
+                if (self.textureSlot(a, assets, tname)) |slot| {
+                    if (self.world.get(core.MeshRef, ent)) |mr| mr.texture = slot;
+                }
+            };
             // Lights / environment / post (docs/lights-and-tones.md): plain data
             // components the extractor hands to the render layer each frame.
             if (e.light) |l| self.world.set(core.Light, ent, .{
@@ -1231,6 +1247,24 @@ pub const SceneRuntime = struct {
             const f = path["post.".len..];
             if (std.mem.eql(u8, f, "exposure")) po.exposure = v else if (std.mem.eql(u8, f, "bloom.intensity")) po.bloom_intensity = v else if (std.mem.eql(u8, f, "bloom.threshold")) po.bloom_threshold = v;
         }
+    }
+
+    /// Find-or-decode a scene texture asset into the CPU registry; returns its
+    /// slot (1..max_textures-1), or null if the asset is missing/undecodable or
+    /// the table is full. Repeated names share one slot (and one decode).
+    fn textureSlot(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, name: []const u8) ?u32 {
+        var slot: usize = 1;
+        while (slot < max_textures) : (slot += 1) {
+            if (self.texture_names[slot]) |n| {
+                if (std.mem.eql(u8, n, name)) return @intCast(slot);
+            } else break;
+        }
+        if (slot >= max_textures) return null;
+        const bytes = resolve(assets, name) orelse return null;
+        const tex = core.png.decode(a, bytes) catch return null;
+        self.textures[slot] = tex;
+        self.texture_names[slot] = a.dupe(u8, name) catch return null;
+        return @intCast(slot);
     }
 
     /// Closing-speed impulse recorded between two named bodies last step, or 0.

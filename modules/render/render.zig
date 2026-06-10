@@ -139,6 +139,21 @@ const legacy_lights: shd.FsLights = blk: {
     break :blk l;
 };
 
+/// Exposure + (optional) ACES applied to one sky endpoint on the CPU — the
+/// background is a two-stop gradient, so grading the endpoints is equivalent.
+fn skyColor(c: m.Vec3, exposure: f32, tonemap: bool) m.Vec3 {
+    var v = c.scale(exposure);
+    if (tonemap) {
+        v = .{ .x = aces1(v.x), .y = aces1(v.y), .z = aces1(v.z) };
+    } else {
+        v = .{ .x = @min(v.x, 1), .y = @min(v.y, 1), .z = @min(v.z, 1) };
+    }
+    return v;
+}
+fn aces1(x: f32) f32 {
+    return std.math.clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
 /// Build the per-frame lighting uniform from the extracted queue (the scene's
 /// sun/points/environment/post, docs/lights-and-tones.md). Identical packing
 /// feeds both triangle.glsl's `fs_lights` and raymarch.glsl's `rm_params`.
@@ -686,10 +701,24 @@ pub const Renderer = struct {
             sg.beginPass(.{ .action = action, .swapchain = swap });
         }
 
-        // Preview backdrop fills the frame first (vertex-less fullscreen tri:
-        // the shader builds positions from gl_VertexIndex, so no bindings).
-        if (self.preview and !probe) {
+        // Backdrop fills the frame first (vertex-less fullscreen tri: the
+        // shader builds positions from gl_VertexIndex, so no bindings). The
+        // material preview uses the legacy studio gradient; a mesh-only scene
+        // with an Environment gets its sky here (SDF scenes draw the sky in
+        // the raymarch miss path instead).
+        const want_sky = queue.has_env and queue.sdf.len == 0;
+        if ((self.preview or want_sky) and !probe) {
             sg.applyPipeline(self.bg_pip);
+            var bgp = std.mem.zeroes(shd.BgParams);
+            if (want_sky and !self.preview) {
+                const ex = @max(queue.post.exposure, 0);
+                const tm = queue.post.tonemap == .aces;
+                const z = skyColor(queue.env.sky_zenith, ex, tm);
+                const h = skyColor(queue.env.sky_horizon, ex, tm);
+                bgp.bg_zenith = .{ z.x, z.y, z.z, 1 };
+                bgp.bg_horizon = .{ h.x, h.y, h.z, 0 };
+            }
+            sg.applyUniforms(shd.UB_bg_params, sg.asRange(&bgp));
             sg.draw(0, 3, 1);
         }
 

@@ -153,6 +153,10 @@ pub const Material = struct {
     roughness: f32 = 0.5,
     emissive: Vec3 = .{ 0, 0, 0 },
     surface: Surface = .plain,
+    /// Optional base-colour image: the name of a PNG in the scene's `assets`
+    /// manifest. The runtime decodes it into its CPU texture registry and the
+    /// app uploads it to a per-entity texture slot (multiplies `color`).
+    texture: ?[]const u8 = null,
 };
 
 /// A clip referenced by index or name.
@@ -427,6 +431,7 @@ fn parseEntity(v: Value) !Entity {
             const s = try asStr(sv);
             mat.surface = if (std.mem.eql(u8, s, "dimpled")) .dimpled else if (std.mem.eql(u8, s, "basketball")) .basketball else .plain;
         }
+        if (mo.get("texture")) |tv| mat.texture = try asStr(tv);
         e.material = mat;
     }
     if (o.get("animation")) |x| e.animation = try parseAnimation(x);
