@@ -32,6 +32,9 @@ pub const max_joints = 64;
 /// textures, indexed by `MeshRef.texture`). Slot 0 is a permanent 1×1 white.
 pub const max_static_tex = 8;
 
+/// Sun shadow-map resolution (square).
+pub const shadow_size = 1024;
+
 /// One skinned instance: where to place it and which palette (phase) to use.
 pub const SkinnedInstance = struct {
     model: m.Mat4,
@@ -231,6 +234,17 @@ pub const Renderer = struct {
     bright_pip: sg.Pipeline = .{},
     blur_pip: sg.Pipeline = .{},
     comp_pip: sg.Pipeline = .{},
+    /// Sun shadow map: mesh casters rasterized from the sun into a fixed-size
+    /// RGBA8 target (16-bit packed depth — samples on the WebGL2 floor where
+    /// depth-texture reads aren't portable). SDF stone self-shadows in the
+    /// raymarch shader; this map adds mesh-onto-mesh and mesh-onto-SDF shadows.
+    shadow_img: sg.Image = .{},
+    shadow_depth_img: sg.Image = .{},
+    shadow_att: sg.View = .{},
+    shadow_tex_view: sg.View = .{},
+    shadow_depth_att: sg.View = .{},
+    shadow_smp: sg.Sampler = .{},
+    shadow_pip: sg.Pipeline = .{},
     /// G-buffer probe mode for offscreen tooling: 0 = normal render, 1 = UV,
     /// 2 = world position, 3 = world normal. When non-zero the skinned mesh
     /// outputs that channel as colour and the scene chrome (backdrop, grid,
@@ -418,6 +432,38 @@ pub const Renderer = struct {
             .label = "bloom-composite-pipeline",
         });
 
+        // Sun shadow map target + depth-only-ish writer pipeline (packs depth
+        // into RG of RGBA8). Fixed 1024^2; FRONT culling reduces acne on the
+        // simple convex casters.
+        self.shadow_img = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = shadow_size, .height = shadow_size, .pixel_format = .RGBA8, .label = "sun-shadow-map" });
+        self.shadow_depth_img = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = shadow_size, .height = shadow_size, .pixel_format = .DEPTH_STENCIL, .label = "sun-shadow-depth" });
+        self.shadow_att = sg.makeView(.{ .color_attachment = .{ .image = self.shadow_img } });
+        self.shadow_tex_view = sg.makeView(.{ .texture = .{ .image = self.shadow_img } });
+        self.shadow_depth_att = sg.makeView(.{ .depth_stencil_attachment = .{ .image = self.shadow_depth_img } });
+        self.shadow_smp = sg.makeSampler(.{
+            .min_filter = .NEAREST,
+            .mag_filter = .NEAREST,
+            .wrap_u = .CLAMP_TO_EDGE,
+            .wrap_v = .CLAMP_TO_EDGE,
+            .label = "shadow-sampler",
+        });
+        var shadow_layout = sg.VertexLayoutState{};
+        shadow_layout.buffers[0].stride = @sizeOf(core.Vertex);
+        shadow_layout.attrs[shd.ATTR_shadow_position].format = .FLOAT3;
+        self.shadow_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd.shadowShaderDesc(sg.queryBackend())),
+            .layout = shadow_layout,
+            .depth = .{ .pixel_format = .DEPTH_STENCIL, .compare = .LESS_EQUAL, .write_enabled = true },
+            .colors = init: {
+                var c: [8]sg.ColorTargetState = @splat(.{});
+                c[0] = .{ .pixel_format = .RGBA8 };
+                break :init c;
+            },
+            .cull_mode = .FRONT,
+            .index_type = .UINT32,
+            .label = "shadow-pipeline",
+        });
+
         // Debug-text overlay (the HUD). The Amstrad CPC font has a clean,
         // complete ASCII set (incl. lowercase), which reads better than the
         // default 8x8 fonts.
@@ -512,6 +558,60 @@ pub const Renderer = struct {
     /// matches the runtime GPU backend: WebGPU/Metal/D3D11 use z in [0, 1],
     /// while OpenGL/WebGL2 use [-1, 1]. `aspect` is the viewport width/height,
     /// owned by the app.
+    /// Rasterize the sun shadow map: an ortho ([0,1]-z) view down the sun
+    /// direction, sized to the frame's content (SDF bounds + mesh positions),
+    /// drawing every non-emissive mesh item as a caster. Returns the
+    /// world->sun-clip matrix the receivers project with.
+    fn drawShadowPass(self: *Renderer, queue: *const core.RenderQueue, meshes: *const core.MeshRegistry) m.Mat4 {
+        // Content bounds: union of the SDF objects' AABBs and the draw items'
+        // positions (padded — item extents aren't tracked per-item).
+        var lo = m.Vec3.splat(std.math.inf(f32));
+        var hi = m.Vec3.splat(-std.math.inf(f32));
+        for (queue.sdf) |entry| {
+            const bb = entry.scene.bounds();
+            lo = .{ .x = @min(lo.x, bb.min.x), .y = @min(lo.y, bb.min.y), .z = @min(lo.z, bb.min.z) };
+            hi = .{ .x = @max(hi.x, bb.max.x), .y = @max(hi.y, bb.max.y), .z = @max(hi.z, bb.max.z) };
+        }
+        for (queue.slice()) |item| {
+            const px = item.model.m[12];
+            const py = item.model.m[13];
+            const pz = item.model.m[14];
+            lo = .{ .x = @min(lo.x, px - 1), .y = @min(lo.y, py - 1), .z = @min(lo.z, pz - 1) };
+            hi = .{ .x = @max(hi.x, px + 1), .y = @max(hi.y, py + 1), .z = @max(hi.z, pz + 1) };
+        }
+        if (lo.x > hi.x) return m.Mat4.identity; // nothing to cast
+
+        const center = lo.add(hi).scale(0.5);
+        const radius = @max(hi.sub(lo).length() * 0.5, 1.0);
+        const dir = queue.sun.direction.normalize();
+        const eye = center.sub(dir.scale(radius * 2.0));
+        const up: m.Vec3 = if (@abs(dir.y) > 0.95) .{ .x = 1, .y = 0, .z = 0 } else .{ .x = 0, .y = 1, .z = 0 };
+        const light_vp = m.Mat4.orthoZeroToOne(-radius, radius, -radius, radius, 0.1, radius * 4.0)
+            .mul(m.Mat4.lookAt(eye, center, up));
+
+        var pass = sg.Pass{};
+        pass.action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{ .r = 1, .g = 1, .b = 1, .a = 1 } }; // far
+        pass.attachments.colors[0] = self.shadow_att;
+        pass.attachments.depth_stencil = self.shadow_depth_att;
+        sg.beginPass(pass);
+        sg.applyPipeline(self.shadow_pip);
+        for (queue.slice()) |item| {
+            // Emissive props (the sun disc, lantern glass) are light sources,
+            // not occluders — skip them as casters.
+            if (@max(item.material.emissive.x, @max(item.material.emissive.y, item.material.emissive.z)) > 0.5) continue;
+            const gm = self.cache.resolve(meshes, item.mesh);
+            var bind = sg.Bindings{};
+            bind.vertex_buffers[0] = gm.vbuf;
+            if (gm.indexed) bind.index_buffer = gm.ibuf;
+            sg.applyBindings(bind);
+            const sp = shd.ShadowVsParams{ .light_mvp = light_vp.mul(item.model).m };
+            sg.applyUniforms(shd.UB_shadow_vs_params, sg.asRange(&sp));
+            if (gm.indexed) sg.draw(0, gm.index_count, 1) else sg.draw(0, gm.vertex_count, 1);
+        }
+        sg.endPass();
+        return light_vp;
+    }
+
     /// A pass into one offscreen colour view: clear-less (DONTCARE) load.
     fn colorPass(dst: sg.View, depth: sg.View) sg.Pass {
         var pass = sg.Pass{};
@@ -564,6 +664,14 @@ pub const Renderer = struct {
 
         var action = self.pass_action;
         if (probe) action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+        // Sun shadow pass: when the scene's sun casts shadows, rasterize the
+        // mesh casters from the sun BEFORE the scene pass. Returns the
+        // world->sun-clip matrix the receivers sample with (null = no shadows).
+        const shadow_mvp: ?m.Mat4 = if (!probe and queue.sun.intensity > 0 and queue.sun.cast_shadows)
+            self.drawShadowPass(queue, meshes)
+        else
+            null;
+
         // Bloom path: render the whole scene into an offscreen target instead
         // of the swapchain, then run the bright/blur/composite chain below.
         const swap = sglue.swapchain();
@@ -587,7 +695,7 @@ pub const Renderer = struct {
 
         // SDF/CSG objects (if any): sphere-traced as a fullscreen pass. Drawn before
         // the meshes/grid so they can composite on top (v1 targets SDF-only).
-        if (queue.sdf.len > 0 and !probe) self.drawSdf(queue.sdf, queue, aspect);
+        if (queue.sdf.len > 0 and !probe) self.drawSdf(queue.sdf, queue, aspect, shadow_mvp);
 
         // World-space reference grid first (model = identity, just view+proj).
         if (self.draw_grid and !probe) {
@@ -596,6 +704,8 @@ pub const Renderer = struct {
             bind.vertex_buffers[0] = self.grid_vbuf;
             bind.views[shd.VIEW_tex] = self.white_view;
             bind.samplers[shd.SMP_smp] = self.skinned_smp;
+            bind.views[shd.VIEW_shadow_tex] = self.white_view;
+            bind.samplers[shd.SMP_shadow_smp] = self.shadow_smp;
             sg.applyBindings(bind);
             const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
@@ -606,7 +716,11 @@ pub const Renderer = struct {
 
         sg.applyPipeline(self.pip);
         // Scene lighting, once per pipeline (uniform until the next pipeline).
-        const lights = lightParams(queue);
+        var lights = lightParams(queue);
+        if (shadow_mvp) |smat| {
+            lights.sun_shadow_mvp = smat.m;
+            lights.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(shadow_size)), 0.0022, 0 };
+        }
         sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&lights));
 
         for (queue.slice()) |item| {
@@ -618,6 +732,8 @@ pub const Renderer = struct {
             if (gm.indexed) bind.index_buffer = gm.ibuf;
             bind.views[shd.VIEW_tex] = self.static_views[@min(item.texture, max_static_tex - 1)];
             bind.samplers[shd.SMP_smp] = self.skinned_smp;
+            bind.views[shd.VIEW_shadow_tex] = if (shadow_mvp != null) self.shadow_tex_view else self.white_view;
+            bind.samplers[shd.SMP_shadow_smp] = self.shadow_smp;
             sg.applyBindings(bind);
 
             const params = shd.VsParams{
@@ -748,6 +864,8 @@ pub const Renderer = struct {
             if (gm.indexed) bind.index_buffer = gm.ibuf;
             bind.views[shd.VIEW_tex] = self.white_view; // transparent parts carry no atlas
             bind.samplers[shd.SMP_smp] = self.skinned_smp;
+            bind.views[shd.VIEW_shadow_tex] = self.white_view;
+            bind.samplers[shd.SMP_shadow_smp] = self.shadow_smp;
             sg.applyBindings(bind);
 
             const params = shd.VsParams{
@@ -829,6 +947,8 @@ pub const Renderer = struct {
         bind.vertex_buffers[0] = self.gizmo_vbuf;
         bind.views[shd.VIEW_tex] = self.white_view;
         bind.samplers[shd.SMP_smp] = self.skinned_smp;
+        bind.views[shd.VIEW_shadow_tex] = self.white_view;
+        bind.samplers[shd.SMP_shadow_smp] = self.shadow_smp;
         sg.applyBindings(bind);
         const params = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
         sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
@@ -844,7 +964,7 @@ pub const Renderer = struct {
     /// are packed back-to-back into the node buffer; each object's first node is
     /// flagged `new_object` (+64) so the shader composites them by nearest hit
     /// (independent solids), not a single union. Up to MAX_NODES (32) nodes total.
-    fn drawSdf(self: *Renderer, sdf: []const core.SdfEntry, queue: *const core.RenderQueue, aspect: f32) void {
+    fn drawSdf(self: *Renderer, sdf: []const core.SdfEntry, queue: *const core.RenderQueue, aspect: f32, shadow_mvp: ?m.Mat4) void {
         const max_nodes = 32;
         const vm = queue.view.m; // column-major: m[col*4 + row]
         const right = [3]f32{ vm[0], vm[4], vm[8] };
@@ -864,6 +984,10 @@ pub const Renderer = struct {
 
         // Scene lighting — same packing as the mesh shader's fs_lights block.
         const lights = lightParams(queue);
+        if (shadow_mvp) |smat| {
+            p.sun_shadow_mvp = smat.m;
+            p.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(shadow_size)), 0.0022, 0 };
+        }
         p.sun_dir_int = lights.sun_dir_int;
         p.sun_color = lights.sun_color;
         p.ambient_ci = lights.ambient_ci;
@@ -903,6 +1027,10 @@ pub const Renderer = struct {
         p.scene_max = .{ hi.x, hi.y, hi.z, 0 };
 
         sg.applyPipeline(self.raymarch_pip);
+        var bind = sg.Bindings{};
+        bind.views[shd_rm.VIEW_shadow_tex] = if (shadow_mvp != null) self.shadow_tex_view else self.white_view;
+        bind.samplers[shd_rm.SMP_shadow_smp] = self.shadow_smp;
+        sg.applyBindings(bind);
         sg.applyUniforms(shd_rm.UB_rm_params, sg.asRange(&p));
         sg.draw(0, 3, 1);
     }

@@ -292,6 +292,21 @@ pub const Mat4 = extern struct {
         return r;
     }
 
+    /// Right-handed orthographic projection with a [0, 1] clip z volume.
+    /// Used for the sun shadow map: the same matrix projects on the write and
+    /// the read side, so the depth comparison is backend-convention-free.
+    pub fn orthoZeroToOne(l: f32, r_: f32, bo: f32, t: f32, near: f32, far: f32) Mat4 {
+        var r = Mat4{ .m = .{0} ** 16 };
+        r.m[0] = 2.0 / (r_ - l);
+        r.m[5] = 2.0 / (t - bo);
+        r.m[10] = 1.0 / (near - far);
+        r.m[12] = (l + r_) / (l - r_);
+        r.m[13] = (bo + t) / (bo - t);
+        r.m[14] = near / (near - far);
+        r.m[15] = 1;
+        return r;
+    }
+
     /// Right-handed look-at view matrix.
     pub fn lookAt(eye: Vec3, center: Vec3, up: Vec3) Mat4 {
         const f = center.sub(eye).normalize();

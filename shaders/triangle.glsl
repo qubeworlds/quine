@@ -62,7 +62,36 @@ layout(binding=2) uniform fs_lights {
     vec4 sky_horizon;  // rgb sky horizon, w = tonemap (0 none, 1 aces)
     vec4 point_pos[MAX_POINT_LIGHTS]; // xyz world position, w = range
     vec4 point_col[MAX_POINT_LIGHTS]; // rgb colour, w = intensity (0 = unused slot)
+    mat4 sun_shadow_mvp; // world -> sun clip ([0,1] z), both write + read side
+    vec4 shadow_params;  // x = enabled, y = shadow-map texel size, z = depth bias
 };
+// The sun shadow map: 16-bit depth packed into RG of an RGBA8 target (works
+// on the WebGL2 floor — no depth-texture sampling needed). NEAREST sampler:
+// packed channels must not be filtered.
+layout(binding=1) uniform texture2D shadow_tex;
+layout(binding=1) uniform sampler shadow_smp;
+
+float shadowDepth(vec2 uv) {
+    vec2 enc = texture(sampler2D(shadow_tex, shadow_smp), uv).rg;
+    return enc.x + enc.y * (1.0 / 255.0);
+}
+
+// 0 = fully shadowed, 1 = lit. 4-tap PCF around the projected point.
+float sunShadow(vec3 wp) {
+    if (shadow_params.x < 0.5) return 1.0;
+    vec4 clip = sun_shadow_mvp * vec4(wp, 1.0);
+    vec3 ndc = clip.xyz / max(clip.w, 1e-6);
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return 1.0;
+    float d = ndc.z - shadow_params.z; // receiver depth, biased
+    float tx = shadow_params.y;
+    float lit = 0.0;
+    lit += d <= shadowDepth(uv + vec2(-0.5, -0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(uv + vec2(0.5, -0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(uv + vec2(-0.5, 0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(uv + vec2(0.5, 0.5) * tx) ? 1.0 : 0.0;
+    return lit * 0.25;
+}
 
 in vec3 world_normal;
 in vec3 view_dir;
@@ -250,7 +279,8 @@ void main() {
     vec3 f = f_schlick(v_o_h, f0);
     vec3 spec = d * vis * f;
     vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
-    vec3 lit = (kd * diffuse_color + spec) * n_o_l * key_rgb;
+    float shadow = has_sun ? sunShadow(world_pos) : 1.0;
+    vec3 lit = (kd * diffuse_color + spec) * (n_o_l * shadow) * key_rgb;
 
     // Ambient from the environment: diffuse irradiance along N + a reflection
     // along R (roughness-aware Fresnel). This is what makes metals look metallic.
@@ -341,5 +371,32 @@ void main() {
 }
 @end
 
+// Sun shadow-map writer: rasterize casters from the sun, pack the [0,1]
+// ortho-clip depth into RG of an RGBA8 target.
+@vs shadow_vs
+layout(binding=0) uniform shadow_vs_params {
+    mat4 light_mvp;
+};
+in vec3 position;
+out float lz;
+void main() {
+    vec4 clip = light_mvp * vec4(position, 1.0);
+    gl_Position = clip;
+    lz = clip.z; // [0,1] by construction (orthoZeroToOne)
+}
+@end
+
+@fs shadow_fs
+in float lz;
+out vec4 frag_color;
+void main() {
+    float d = clamp(lz, 0.0, 1.0);
+    float hi = floor(d * 255.0) / 255.0;
+    float lo = fract(d * 255.0);
+    frag_color = vec4(hi, lo, 0.0, 1.0);
+}
+@end
+
 @program triangle vs fs
 @program bg bg_vs bg_fs
+@program shadow shadow_vs shadow_fs

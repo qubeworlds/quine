@@ -48,7 +48,34 @@ layout(binding=0) uniform rm_params {
     vec4 point_pos[MAX_POINT_LIGHTS]; // xyz world position, w = range
     vec4 point_col[MAX_POINT_LIGHTS]; // rgb colour, w = intensity
     vec4 nodes[MAX_NODES * 3];
+    mat4 sun_shadow_mvp; // world -> sun clip ([0,1] z); shadow_params.x gates
+    vec4 shadow_params;  // x = enabled, y = texel size, z = depth bias
 };
+// The sun shadow map (mesh casters onto the SDF stone) — 16-bit depth packed
+// into RG of an RGBA8 target, NEAREST-sampled.
+layout(binding=0) uniform texture2D shadow_tex;
+layout(binding=0) uniform sampler shadow_smp;
+
+float shadowDepth(vec2 suv) {
+    vec2 enc = texture(sampler2D(shadow_tex, shadow_smp), suv).rg;
+    return enc.x + enc.y * (1.0 / 255.0);
+}
+
+float meshShadow(vec3 wp) {
+    if (shadow_params.x < 0.5) return 1.0;
+    vec4 clip = sun_shadow_mvp * vec4(wp, 1.0);
+    vec3 sndc = clip.xyz / max(clip.w, 1e-6);
+    vec2 suv = sndc.xy * 0.5 + 0.5;
+    if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0) return 1.0;
+    float d = sndc.z - shadow_params.z;
+    float tx = shadow_params.y;
+    float lit = 0.0;
+    lit += d <= shadowDepth(suv + vec2(-0.5, -0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(suv + vec2(0.5, -0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(suv + vec2(-0.5, 0.5) * tx) ? 1.0 : 0.0;
+    lit += d <= shadowDepth(suv + vec2(0.5, 0.5) * tx) ? 1.0 : 0.0;
+    return lit * 0.25;
+}
 
 in vec2 ndc;
 out vec4 frag_color;
@@ -269,7 +296,7 @@ void main() {
     vec3 key_rgb = has_sun ? sun_color.rgb * sun_dir_int.w : vec3(0.85);
     float diff = max(dot(n, l), 0.0);
     float shadow = 1.0;
-    if (has_sun && diff > 0.0) shadow = softShadow(p + n * 0.02, l, 40.0);
+    if (has_sun && diff > 0.0) shadow = min(softShadow(p + n * 0.02, l, 40.0), meshShadow(p));
     // Ambient: the data sky × ambient tint/intensity when present (×2 maps
     // intensity 0.5 to full sky radiance), else the legacy hemispheric term.
     vec3 amb = has_env
