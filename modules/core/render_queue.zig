@@ -135,12 +135,20 @@ fn viewFromTransform(t: Transform) m.Mat4 {
 
 test "extract places a single mesh and the camera intrinsics" {
     const testing = std.testing;
-    var prev = World.init();
-    var cur = World.init();
+    // Two Worlds (~2.7 MiB each) + a RenderQueue overflow the test thread's
+    // stack as locals on smaller-ulimit machines — heap them.
+    const prev = try testing.allocator.create(World);
+    defer testing.allocator.destroy(prev);
+    prev.* = World.init();
+    const cur = try testing.allocator.create(World);
+    defer testing.allocator.destroy(cur);
+    cur.* = World.init();
     cur.tick(1.0 / 60.0);
 
-    var q: RenderQueue = .{};
-    extract(&prev, &cur, 0.5, &q);
+    const q = try testing.allocator.create(RenderQueue);
+    defer testing.allocator.destroy(q);
+    q.* = .{};
+    extract(prev, cur, 0.5, q);
 
     // The scaffold scene has exactly one drawable (the triangle).
     try testing.expectEqual(@as(usize, 1), q.len);

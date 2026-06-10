@@ -152,6 +152,30 @@ const App = struct {
     /// Gates inbound frames by their tick: anything not strictly newer than the
     /// last accepted is "too late" and dropped (see core.TickGate).
     var tick_gate: core.TickGate = .{};
+
+    // --- host-injected EngineConfig (see core.config / docs/engine-config.md) ---
+    // The host injects one config document before start (quine_set_config) and
+    // can patch it live ({type:"config"} frames). Decoded working state below;
+    // sections absent from a document leave these untouched.
+    /// Count of applied config documents (0 = running on built-in defaults).
+    var config_generation: u32 = 0;
+    /// session.permissions gate: may the local user edit the scene (gizmo drag)?
+    /// Permissive until a session section arrives — a bare mount (no identity,
+    /// e.g. local dev or the /scene harness) stays fully interactive.
+    var can_edit: bool = true;
+    /// preferences.gizmo: is the editing chrome WANTED? Separate from
+    /// `can_edit` (permission decides MAY edit, this decides shown) — a
+    /// permitted editor can still mount a clean viewer. Gizmo = both true.
+    var gizmo_pref: bool = true;
+    /// preferences.reducedMotion — recorded for render/quality decisions.
+    var reduced_motion: bool = false;
+    /// Boot facts recorded from runtime/capabilities/build. Diagnostics + future
+    /// quality tiers; the engine never branches content on them.
+    var platform: core.config.Platform = .unknown;
+    var device_class: core.config.DeviceClass = .unknown;
+    var gpu: core.config.Gpu = .unknown;
+    var max_memory_mb: u32 = 0;
+    var protocol_version: u32 = 1;
 };
 
 /// Push one inbound message frame (a JSON envelope `{"type":...}`) from the
@@ -205,6 +229,49 @@ export fn quine_set_autoplay(on: i32) void {
 export fn quine_set_hud(on: i32) void {
     App.hud_visible = on != 0;
 }
+/// Apply one parsed EngineConfig document to the running state. Only the
+/// sections present change anything (patch semantics), and inside
+/// `preferences` each knob is tri-state, so a one-field patch flips exactly
+/// that field. Shared by the boot injection (`quine_set_config`), the live
+/// `{type:"config"}` message frame, and the native QUINE_CONFIG_FILE harness.
+fn applyConfig(cfg: core.config.Config) void {
+    if (cfg.build) |b| App.protocol_version = b.protocol_version;
+    if (cfg.session) |s| {
+        // The identity strings are the HOST's concern (it owns the network);
+        // what the engine acts on is the permission gate for local edits.
+        App.can_edit = core.config.hasPermission(s.permissions, "scene.edit");
+    }
+    if (cfg.preferences) |p| {
+        if (p.hud) |on| App.hud_visible = on;
+        if (p.autoplay) |on| App.autoplay = on;
+        if (p.reduced_motion) |on| App.reduced_motion = on;
+        if (p.grid) |on| App.renderer.draw_grid = on;
+        if (p.gizmo) |on| App.gizmo_pref = on;
+    }
+    if (cfg.runtime) |r| {
+        App.platform = r.platform;
+        App.device_class = r.device_class;
+        App.max_memory_mb = r.max_memory_mb;
+    }
+    if (cfg.capabilities) |c| App.gpu = c.gpu;
+    App.config_generation +%= 1;
+}
+
+/// Host-injected engine configuration (DEPENDENCY INJECTION): the host builds
+/// one EngineConfig JSON document (schema: docs/engine-config.md) and hands it
+/// over — at boot, BEFORE the scene is injected, and again any time something
+/// changes (a full document or a partial patch; absent sections are left
+/// alone). Live updates can also ride the ordered message channel as
+/// `{type:"config", config:{…}}` frames. Called from JS via
+/// `Module.ccall("quine_set_config", null, ["string"], [json])`. A malformed
+/// document is dropped whole — config never half-applies.
+export fn quine_set_config(json: [*:0]const u8) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena.deinit();
+    const cfg = core.config.parse(arena.allocator(), std.mem.span(json)) catch return;
+    applyConfig(cfg);
+}
+
 /// Start/stop advancing the simulation. The engine does NOT free-run the sim on
 /// web — it boots idle and the host (which knows when boot/reveal is complete)
 /// starts it, so a freshly built scene begins ticking from a clean clock instead
@@ -420,11 +487,24 @@ export fn init() void {
         }
     }
     // DEPENDENCY INJECTION: on web the host injects runtime config via ccall
-    // (quine_set_hud / quine_set_autoplay) — the engine never reads window. HUD is
-    // closed on boot. Native takes autoplay from the env harness.
+    // (quine_set_config / quine_set_hud / quine_set_autoplay) — the engine never
+    // reads window. HUD is closed on boot. Native takes autoplay from the env
+    // harness.
     if (!is_web) {
         App.autoplay = std.c.getenv("QUINE_AUTOPLAY") != null;
         std.debug.print("quine: render backend = {s}\n", .{render.backendName()});
+    }
+    // Native counterpart of the web host's `quine_set_config`: the harness
+    // writes one EngineConfig JSON document and points us at it. Applied LAST
+    // so an explicit config wins over the legacy single-flag env toggles.
+    if (std.c.getenv("QUINE_CONFIG_FILE")) |p| {
+        const a = std.heap.c_allocator;
+        if (readFileBytes(a, std.mem.span(p))) |bytes| {
+            defer a.free(bytes);
+            var arena = std.heap.ArenaAllocator.init(a);
+            defer arena.deinit();
+            if (core.config.parse(arena.allocator(), bytes)) |cfg| applyConfig(cfg) else |_| {}
+        }
     }
 }
 
@@ -722,6 +802,14 @@ fn dispatchMessage(raw: []const u8) void {
             .bool => |b| user_camera = b,
             else => {},
         };
+    } else if (std.mem.eql(u8, tv.string, "config")) {
+        // Live EngineConfig update on the ordered message channel — the same
+        // document/patch shape `quine_set_config` takes, wrapped so it can ride
+        // the room WebSocket in order with scene edits (and be tick-gated).
+        // Shape: {type:"config", config:{ …EngineConfig sections… }}
+        const cv = v.object.get("config") orelse return;
+        const cfg = core.config.parseValue(arena.allocator(), cv) catch return;
+        applyConfig(cfg);
     } else if (std.mem.eql(u8, tv.string, "texture")) {
         // Live base-colour swap for the skinned avatar (the fit editor pushes a
         // warped atlas as a base64 PNG). Decode -> upload; no scene reload, so the
@@ -826,8 +914,14 @@ export fn frame() void {
     const threshold = 18.0 * dpi;
 
     // Pointer interaction: a press on a gizmo handle drags the actor; a press on
-    // empty space orbits the camera.
-    const sel_tf: ?*core.Transform = if (App.giz.selected) |s| App.stage.world.get(core.Transform, s) else null;
+    // empty space orbits the camera. The gizmo is an EDIT — without the
+    // `scene.edit` permission (session.permissions in the injected config), or
+    // with the `preferences.gizmo` chrome turned off, the gizmo neither draws
+    // nor grabs, and every press orbits.
+    const sel_tf: ?*core.Transform = if (App.can_edit and App.gizmo_pref)
+        (if (App.giz.selected) |s| App.stage.world.get(core.Transform, s) else null)
+    else
+        null;
 
     if (App.pointer_down and !App.prev_pointer_down) {
         var axis: ?gizmo.Axis = null;
