@@ -564,8 +564,15 @@ test "measureJointBounds finds a head-sized region on CesiumMan" {
 }
 
 test "tick is deterministic and advances time" {
-    var a = World.init();
-    var b = World.init();
+    // Two Worlds (~2.7 MiB each) + two RenderQueues (~0.9 MiB each) overflow
+    // the test thread's stack as locals on smaller-ulimit machines — heap them.
+    const alloc = std.testing.allocator;
+    const a = try alloc.create(World);
+    defer alloc.destroy(a);
+    a.* = World.init();
+    const b = try alloc.create(World);
+    defer alloc.destroy(b);
+    b.* = World.init();
     const dt: f64 = 1.0 / 60.0;
     for (0..120) |_| {
         a.tick(dt);
@@ -575,10 +582,14 @@ test "tick is deterministic and advances time" {
     try std.testing.expectApproxEqAbs(@as(f64, 2.0), a.time, 1e-9);
 
     // Two independently-advanced worlds extract to identical render queues.
-    var qa: RenderQueue = .{};
-    var qb: RenderQueue = .{};
-    extract(&a, &a, 1.0, &qa);
-    extract(&b, &b, 1.0, &qb);
+    const qa = try alloc.create(RenderQueue);
+    defer alloc.destroy(qa);
+    qa.* = .{};
+    const qb = try alloc.create(RenderQueue);
+    defer alloc.destroy(qb);
+    qb.* = .{};
+    extract(a, a, 1.0, qa);
+    extract(b, b, 1.0, qb);
     try std.testing.expectEqual(qa.len, qb.len);
     try std.testing.expectEqualSlices(f32, &qa.items[0].model.m, &qb.items[0].model.m);
 }
