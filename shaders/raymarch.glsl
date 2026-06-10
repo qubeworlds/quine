@@ -148,11 +148,13 @@ vec4 mapScene(vec3 p) {
 }
 
 vec3 calcNormal(vec3 p) {
-    vec2 e = vec2(0.0015, 0.0);
-    return normalize(vec3(
-        mapScene(p + e.xyy).x - mapScene(p - e.xyy).x,
-        mapScene(p + e.yxy).x - mapScene(p - e.yxy).x,
-        mapScene(p + e.yyx).x - mapScene(p - e.yyx).x));
+    // Tetrahedron sampling: 4 field evaluations instead of 6.
+    vec2 k = vec2(1.0, -1.0);
+    const float h = 0.0015;
+    return normalize(k.xyy * mapScene(p + k.xyy * h).x +
+                     k.yyx * mapScene(p + k.yyx * h).x +
+                     k.yxy * mapScene(p + k.yxy * h).x +
+                     k.xxx * mapScene(p + k.xxx * h).x);
 }
 
 // SDF soft shadow (IQ): march from the surface toward the light; the closest
@@ -160,12 +162,13 @@ vec3 calcNormal(vec3 p) {
 // no shadow map needed, the field IS the occluder.
 float softShadow(vec3 ro, vec3 rd, float maxt) {
     float res = 1.0;
-    float t = 0.03;
-    for (int i = 0; i < 48; i++) {
+    float t = 0.05;
+    for (int i = 0; i < 20; i++) {
         float h = mapScene(ro + rd * t).x;
-        if (h < 0.0008) return 0.0;
-        res = min(res, 9.0 * h / t);
-        t += clamp(h, 0.02, 0.6);
+        if (h < 0.001) return 0.0;
+        res = min(res, 8.0 * h / t);
+        if (res < 0.02) return 0.0;
+        t += clamp(h, 0.04, 1.0);
         if (t > maxt) break;
     }
     return clamp(res, 0.0, 1.0);
@@ -187,7 +190,7 @@ float vnoise(vec3 p) {
 }
 float fbm(vec3 p) {
     float v = 0.0, a = 0.5;
-    for (int i = 0; i < 4; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+    for (int i = 0; i < 3; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
     return v;
 }
 
@@ -198,7 +201,7 @@ vec3 marble(vec3 base, vec3 p) {
     float vein = sin((p.x + 0.6 * p.y + 0.8 * p.z) * 2.4 + warp * 7.0);
     float m = smoothstep(0.72, 0.98, abs(vein));
     vec3 col = mix(base, base * 0.55 + vec3(0.16, 0.15, 0.16), m); // grey veins
-    return col * (0.92 + 0.16 * fbm(p * 0.5 + 11.0));              // tonal patches
+    return col * (0.92 + 0.16 * vnoise(p * 0.6 + 11.0));           // tonal patches
 }
 
 // Night-sky star field: hashed cells over the ray direction; `amt` fades it
@@ -266,11 +269,12 @@ void main() {
     float t = t_near;
     bool hit = false;
     vec3 p = ro;
-    for (int i = 0; i < 160; i++) {
+    vec4 field = vec4(0.0);
+    for (int i = 0; i < 112; i++) {
         p = ro + rd * t;
-        float d = mapScene(p).x;
-        if (d < 0.0008) { hit = true; break; }
-        t += d;
+        field = mapScene(p);
+        if (field.x < 0.0012) { hit = true; break; }
+        t += field.x;
         if (t > t_far) break;
     }
 
@@ -286,7 +290,7 @@ void main() {
     float ndc_z = clip.z / max(clip.w, 1e-6);
     gl_FragDepth = clamp(scene_min.w > 0.5 ? ndc_z * 0.5 + 0.5 : ndc_z, 0.0, 1.0);
 
-    vec3 base = mapScene(p).yzw;
+    vec3 base = field.yzw; // colour + marble flag captured by the last march step
     if (g_marble > 0.01) base = mix(base, marble(base, p), g_marble);
     vec3 n = calcNormal(p);
     // Key light: the scene's directional sun (with an SDF soft shadow) when

@@ -1254,7 +1254,11 @@ pub fn main() void {
         // sokol "fullscreen" there makes the canvas cover the whole page and
         // swallow the surrounding UI's input, so only go fullscreen natively.
         .fullscreen = !tn and !is_web,
-        .high_dpi = !tn,
+        // Web: render at CSS pixels, not devicePixelRatio — the SDF raymarch
+        // cost scales with the framebuffer, and retina dpr-2 quadruples it
+        // (a 4K/5K Mac grinds). Revisit as an EngineConfig knob (per-scene
+        // render scale) when the raymarch gets a half-res path.
+        .high_dpi = !tn and !@import("builtin").target.cpu.arch.isWasm(),
         .icon = .{ .sokol_default = true },
         .window_title = "quine",
         .logger = .{ .func = sokol.log.func },
