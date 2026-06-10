@@ -57,6 +57,13 @@ pub const Preferences = struct {
     hud: ?bool = null,
     autoplay: ?bool = null,
     reduced_motion: ?bool = null,
+    /// Draw the ground grid lines. Editor chrome, on by default — a viewer
+    /// host turns it off for a clean presentation render.
+    grid: ?bool = null,
+    /// Draw (and allow grabbing) the transform gizmo. A PREFERENCE on top of
+    /// the `scene.edit` permission: permission decides MAY the user edit,
+    /// this decides whether the editing chrome is wanted at all.
+    gizmo: ?bool = null,
 };
 
 /// Boot facts about the host runtime. Set once at boot in practice; the engine
@@ -154,6 +161,8 @@ fn parsePreferences(v: Value) !Preferences {
     if (o.get("hud")) |x| p.hud = try asBool(x);
     if (o.get("autoplay")) |x| p.autoplay = try asBool(x);
     if (o.get("reducedMotion")) |x| p.reduced_motion = try asBool(x);
+    if (o.get("grid")) |x| p.grid = try asBool(x);
+    if (o.get("gizmo")) |x| p.gizmo = try asBool(x);
     return p;
 }
 
@@ -214,7 +223,8 @@ test "parses a full config document" {
         \\  "build": { "engineVersion": "1.4.0", "protocolVersion": 2 },
         \\  "session": { "userId": "u_1", "sessionId": "s_1", "tenantId": "t_1",
         \\               "worldId": "w_1", "permissions": ["scene.edit", "scene.view"] },
-        \\  "preferences": { "hud": true, "autoplay": false, "reducedMotion": true },
+        \\  "preferences": { "hud": true, "autoplay": false, "reducedMotion": true,
+        \\                   "grid": false, "gizmo": false },
         \\  "runtime": { "platform": "web", "deviceClass": "mid", "maxMemoryMb": 2048 },
         \\  "capabilities": { "gpu": "webgl2", "storage": true, "network": true, "microphone": false } }
     );
@@ -227,6 +237,8 @@ test "parses a full config document" {
     try std.testing.expect(!hasPermission(cfg.session.?.permissions, "scene.publish"));
     try std.testing.expectEqual(true, cfg.preferences.?.hud.?);
     try std.testing.expectEqual(false, cfg.preferences.?.autoplay.?);
+    try std.testing.expectEqual(false, cfg.preferences.?.grid.?);
+    try std.testing.expectEqual(false, cfg.preferences.?.gizmo.?);
     try std.testing.expectEqual(Platform.web, cfg.runtime.?.platform);
     try std.testing.expectEqual(DeviceClass.mid, cfg.runtime.?.device_class);
     try std.testing.expectEqual(@as(u32, 2048), cfg.runtime.?.max_memory_mb);
@@ -248,6 +260,8 @@ test "a partial document is a patch — absent sections stay null" {
     // Unset knobs inside a present section are null too (no change).
     try std.testing.expect(cfg.preferences.?.autoplay == null);
     try std.testing.expect(cfg.preferences.?.reduced_motion == null);
+    try std.testing.expect(cfg.preferences.?.grid == null);
+    try std.testing.expect(cfg.preferences.?.gizmo == null);
 }
 
 test "unknown fields and unknown enum values are tolerated" {

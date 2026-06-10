@@ -163,6 +163,10 @@ const App = struct {
     /// Permissive until a session section arrives — a bare mount (no identity,
     /// e.g. local dev or the /scene harness) stays fully interactive.
     var can_edit: bool = true;
+    /// preferences.gizmo: is the editing chrome WANTED? Separate from
+    /// `can_edit` (permission decides MAY edit, this decides shown) — a
+    /// permitted editor can still mount a clean viewer. Gizmo = both true.
+    var gizmo_pref: bool = true;
     /// preferences.reducedMotion — recorded for render/quality decisions.
     var reduced_motion: bool = false;
     /// Boot facts recorded from runtime/capabilities/build. Diagnostics + future
@@ -241,6 +245,8 @@ fn applyConfig(cfg: core.config.Config) void {
         if (p.hud) |on| App.hud_visible = on;
         if (p.autoplay) |on| App.autoplay = on;
         if (p.reduced_motion) |on| App.reduced_motion = on;
+        if (p.grid) |on| App.renderer.draw_grid = on;
+        if (p.gizmo) |on| App.gizmo_pref = on;
     }
     if (cfg.runtime) |r| {
         App.platform = r.platform;
@@ -909,9 +915,10 @@ export fn frame() void {
 
     // Pointer interaction: a press on a gizmo handle drags the actor; a press on
     // empty space orbits the camera. The gizmo is an EDIT — without the
-    // `scene.edit` permission (session.permissions in the injected config) the
-    // gizmo neither draws nor grabs, and every press orbits.
-    const sel_tf: ?*core.Transform = if (App.can_edit)
+    // `scene.edit` permission (session.permissions in the injected config), or
+    // with the `preferences.gizmo` chrome turned off, the gizmo neither draws
+    // nor grabs, and every press orbits.
+    const sel_tf: ?*core.Transform = if (App.can_edit and App.gizmo_pref)
         (if (App.giz.selected) |s| App.stage.world.get(core.Transform, s) else null)
     else
         null;

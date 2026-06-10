@@ -65,7 +65,10 @@ document — a newer host can talk to an older engine.
   "preferences": {
     "hud": false,                // debug HUD overlay
     "autoplay": true,            // free-run the scene timeline at wall rate
-    "reducedMotion": false       // a11y hint, recorded for render decisions
+    "reducedMotion": false,      // a11y hint, recorded for render decisions
+    "grid": true,                // ground grid lines (editor chrome)
+    "gizmo": true                // transform gizmo chrome; AND-ed with the
+                                 // scene.edit permission (may ≠ wants)
   },
 
   // Boot facts about the host runtime. Hints for diagnostics and future
@@ -97,6 +100,8 @@ document — a newer host can talk to an older engine.
 | `preferences.hud` | Debug HUD on/off (same state as `quine_set_hud` / Tab). |
 | `preferences.autoplay` | Wall-rate timeline free-run (same state as `quine_set_autoplay`). |
 | `preferences.reducedMotion` | Recorded (`App.reduced_motion`) for render/quality use. |
+| `preferences.grid` | Ground grid lines on/off (`renderer.draw_grid`) — clean presentation renders turn it off. |
+| `preferences.gizmo` | Transform-gizmo chrome on/off; the gizmo shows only when this AND the `scene.edit` permission hold. |
 | `build.protocolVersion`, `runtime.*`, `capabilities.gpu` | Recorded as boot facts (diagnostics, future quality tiers). |
 
 Everything else is recorded-or-ignored by design; consumers grow over time
