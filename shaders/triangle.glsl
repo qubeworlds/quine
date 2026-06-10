@@ -50,6 +50,20 @@ layout(binding=1) uniform fs_params {
     vec4 emissive;     // rgb emissive; .w = G-buffer probe (0 lit, 1 uv, 2 pos, 3 normal)
 };
 
+// Scene lighting (docs/lights-and-tones.md), applied once per pipeline. All
+// zeros except exposure=1 selects the legacy path (fixed key light, hardcoded
+// env gradient, no tonemap) so lightless scenes render exactly as before.
+#define MAX_POINT_LIGHTS 8
+layout(binding=2) uniform fs_lights {
+    vec4 sun_dir_int;  // xyz = direction the sun light travels, w = intensity (0 = legacy key)
+    vec4 sun_color;    // rgb sun colour, w = has_env (scene sky/ambient data present)
+    vec4 ambient_ci;   // rgb ambient tint, w = ambient intensity
+    vec4 sky_zenith;   // rgb sky top, w = exposure
+    vec4 sky_horizon;  // rgb sky horizon, w = tonemap (0 none, 1 aces)
+    vec4 point_pos[MAX_POINT_LIGHTS]; // xyz world position, w = range
+    vec4 point_col[MAX_POINT_LIGHTS]; // rgb colour, w = intensity (0 = unused slot)
+};
+
 in vec3 world_normal;
 in vec3 view_dir;
 in vec3 frag_local_pos;
@@ -94,6 +108,18 @@ vec3 env(vec3 d) {
     col += vec3(1.5, 1.45, 1.32) * pow(max(dot(dir, normalize(vec3(0.7, 0.8, -0.25))), 0.0), 32.0);
     col += vec3(0.40, 0.46, 0.60) * pow(max(dot(dir, normalize(vec3(-0.7, 0.2, 0.4))), 0.0), 16.0);
     return col;
+}
+
+// Data-driven sky: the scene Environment's two-stop vertical gradient, used
+// for both the ambient irradiance and the ambient specular when present.
+vec3 skyGrad(vec3 d) {
+    float t = clamp(normalize(d).y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(sky_horizon.rgb, sky_zenith.rgb, t);
+}
+
+// ACES filmic tonemap (Narkowicz fit) — the `post.tonemap:"aces"` operator.
+vec3 acesTonemap(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
 
 // Basketball seams: darken thin bands along three orthogonal great circles of
@@ -190,7 +216,13 @@ void main() {
     // For previews that flattens the body and puts a central blob on metals, so
     // the preview keys from the upper-left (3/4) — the highlight rakes across the
     // curve and the far side rolls into the fill + rim.
-    vec3 l = preview ? normalize(vec3(0.7, 0.8, -0.25)) : normalize(vec3(0.4, 0.7, 1.0));
+    // Key light: the scene's directional sun when present (colour × intensity),
+    // else the legacy camera-ish fixed key (white, unit intensity).
+    bool has_sun = sun_dir_int.w > 0.0 && !preview;
+    bool has_env = sun_color.w > 0.5 && !preview;
+    vec3 l = preview ? normalize(vec3(0.7, 0.8, -0.25))
+           : (has_sun ? normalize(-sun_dir_int.xyz) : normalize(vec3(0.4, 0.7, 1.0)));
+    vec3 key_rgb = has_sun ? sun_color.rgb * sun_dir_int.w : vec3(1.0);
     vec3 h = normalize(v + l);
 
     float n_o_v = max(dot(n, v), 1e-4);
@@ -218,7 +250,7 @@ void main() {
     vec3 f = f_schlick(v_o_h, f0);
     vec3 spec = d * vis * f;
     vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
-    vec3 lit = (kd * diffuse_color + spec) * n_o_l; // white light, unit intensity
+    vec3 lit = (kd * diffuse_color + spec) * n_o_l * key_rgb;
 
     // Ambient from the environment: diffuse irradiance along N + a reflection
     // along R (roughness-aware Fresnel). This is what makes metals look metallic.
@@ -228,15 +260,39 @@ void main() {
     // grazing, which a dimpled surface (many micro-angles) makes severe.
     vec3 f90 = mix(vec3(1.0 - rough), f0, metallic);
     vec3 f_amb = f0 + (max(f90, f0) - f0) * pow(1.0 - n_o_v, 5.0);
-    vec3 ambient = env(n) * diffuse_color + env(r) * f_amb;
+    // Ambient: the data sky gradient × ambient tint/intensity when the scene
+    // carries an Environment (×2 maps intensity 0.5 to full sky radiance),
+    // else the legacy hardcoded env.
+    vec3 amb_k = ambient_ci.rgb * (ambient_ci.w * 2.0);
+    vec3 amb_n = has_env ? skyGrad(n) * amb_k : env(n);
+    vec3 amb_r = has_env ? skyGrad(r) * amb_k : env(r);
+    vec3 ambient = amb_n * diffuse_color + amb_r * f_amb;
 
     vec3 col = lit + ambient + emissive.rgb;
 
+    // Point lights: Lambert + a small Blinn lobe, smooth quadratic falloff to
+    // zero at `range`. Unused slots have intensity 0.
+    for (int i = 0; i < MAX_POINT_LIGHTS; i++) {
+        float pint = point_col[i].w;
+        if (pint <= 0.0) continue;
+        vec3 lv = point_pos[i].xyz - world_pos;
+        float dist = length(lv);
+        float rng = max(point_pos[i].w, 1e-3);
+        if (dist >= rng) continue;
+        vec3 pl = lv / max(dist, 1e-4);
+        float att = 1.0 - dist / rng;
+        att *= att;
+        float ndl = max(dot(n, pl), 0.0);
+        float pspec = pow(max(dot(n, normalize(v + pl)), 0.0), 48.0);
+        col += (diffuse_color + f0 * pspec * 2.0) * point_col[i].rgb * (pint * att * ndl);
+    }
+
     // Camera-coaxial fill ("headlight"): the surface you're looking at always
     // catches some light, so a body viewed from its key-shadowed side still reads
-    // (e.g. the drill scene's front face / its rubble).
+    // (e.g. the drill scene's front face / its rubble). With a scene Environment
+    // the fill follows the ambient level, so night stays night.
     float fill = max(dot(n, normalize(v + vec3(0.0, 0.3, 0.0))), 0.0);
-    col += diffuse_color * fill * 0.35;
+    col += diffuse_color * fill * (has_env ? 0.35 * clamp(ambient_ci.w * 2.0, 0.0, 1.0) : 0.35);
 
     // Preview staging: a soft fill from the opposite side to open up the shadow
     // terminator, and a cool rim to separate the body from the studio backdrop.
@@ -251,7 +307,12 @@ void main() {
         col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
     }
 
-    frag_color = vec4(min(col, vec3(1.0)), color.a * base_color.a * tex_s.a);
+    // Tones: pre-tonemap exposure, then the selected operator. The legacy
+    // block carries exposure=1 / tonemap=0, so old scenes are bit-identical.
+    col *= max(sky_zenith.w, 0.0);
+    if (sky_horizon.w > 0.5) col = acesTonemap(col);
+    else col = min(col, vec3(1.0));
+    frag_color = vec4(col, color.a * base_color.a * tex_s.a);
 }
 @end
 

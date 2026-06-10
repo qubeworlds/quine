@@ -636,21 +636,21 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     b.raw(
         \\,
         \\{"name":"stonework","geometry":{"kind":"sdf","nodes":[
-        \\ {"prim":"round_box","op":"union","center":[0,-0.3,0],"half":[7.5,0.3,7.5],"color":[0.78,0.72,0.62]},
-        \\ {"prim":"round_box","op":"union","center":[0,0.12,0],"half":[2.7,0.12,2.7],"color":[0.85,0.8,0.7]},
-        \\ {"prim":"round_box","op":"union","center":[0,1.3,0],"half":[0.16,1.1,0.16],"color":[0.9,0.86,0.78]},
+        \\ {"prim":"round_box","op":"union","center":[0,-0.3,0],"half":[7.5,0.3,7.5],"radius":0.06,"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[0,0.12,0],"half":[2.7,0.12,2.7],"radius":0.06,"color":[0.85,0.8,0.7]},
+        \\ {"prim":"round_box","op":"union","center":[0,1.3,0],"half":[0.16,1.1,0.16],"radius":0.06,"color":[0.9,0.86,0.78]},
         \\ {"prim":"sphere","op":"smooth_union","center":[0,2.5,0],"radius":0.22,"k":0.15,"color":[0.95,0.9,0.8]},
-        \\ {"prim":"round_box","op":"union","center":[6,1.5,6],"half":[0.35,1.5,0.35],"color":[0.74,0.68,0.58]},
-        \\ {"prim":"round_box","op":"union","center":[6,1.5,-6],"half":[0.35,1.5,0.35],"color":[0.76,0.7,0.6]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.5,6],"half":[0.35,1.5,0.35],"color":[0.72,0.66,0.56]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.5,-6],"half":[0.35,1.5,0.35],"color":[0.78,0.72,0.62]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.6,2.2],"half":[0.35,1.6,0.35],"color":[0.75,0.69,0.59]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.6,-2.2],"half":[0.35,1.6,0.35],"color":[0.75,0.69,0.59]},
-        \\ {"prim":"round_box","op":"union","center":[-6,3.4,0],"half":[0.35,0.3,2.9],"color":[0.8,0.74,0.64]},
-        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
-        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
-        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
-        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]}
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.74,0.68,0.58]},
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.76,0.7,0.6]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.72,0.66,0.56]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,2.2],"half":[0.35,1.6,0.35],"radius":0.06,"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,-2.2],"half":[0.35,1.6,0.35],"radius":0.06,"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,3.4,0],"half":[0.35,0.3,2.9],"radius":0.06,"color":[0.8,0.74,0.64]},
+        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]}
         \\]}}
     );
 
@@ -664,7 +664,7 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
         const nm = std.fmt.bufPrint(&nb, "hour{d}", .{hi}) catch "hour";
         b.raw(",\n");
         b.print(
-            \\{{"name":"{s}","transform":{{"position":[{d:.3},0.3,{d:.3}]}},
+            \\{{"name":"{s}","transform":{{"position":[{d:.3},0.38,{d:.3}]}},
             \\ "geometry":{{"kind":"sphere","radius":{d:.3},"rings":8,"segments":10}},
             \\ "material":{{"color":[0.35,0.28,0.2,1],"metallic":0.8,"roughness":0.35}}}}
         , .{ nm, 2.2 * @sin(ang), 2.2 * @cos(ang), r });

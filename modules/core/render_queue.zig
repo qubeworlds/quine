@@ -23,6 +23,9 @@ const Transform = components.Transform;
 const MeshRef = components.MeshRef;
 const Material = components.Material;
 const Camera = components.Camera;
+const Light = components.Light;
+const Environment = components.Environment;
+const Post = components.Post;
 const SdfScene = @import("sdf_scene.zig").SdfScene;
 const SdfEntry = @import("core.zig").SdfEntry;
 
@@ -65,9 +68,33 @@ pub const RenderQueue = struct {
     /// independent objects.
     sdf: []const SdfEntry = &.{},
 
+    /// Scene lighting (docs/lights-and-tones.md). `sun` is the first
+    /// directional Light (intensity 0 = none — the shader falls back to its
+    /// legacy fixed key light); `points` are the first `max_point_lights`
+    /// point Lights with their world positions. `env` is the scene's
+    /// Environment (`has_env` false = legacy hardcoded sky/ambient), and
+    /// `post` the camera's exposure/tonemap.
+    sun: Light = .{ .intensity = 0 },
+    points: [max_point_lights]PointLight = undefined,
+    points_len: usize = 0,
+    env: Environment = .{},
+    has_env: bool = false,
+    post: Post = .{},
+
     pub fn slice(self: *const RenderQueue) []const DrawItem {
         return self.items[0..self.len];
     }
+};
+
+/// Per-frame upper bound on point lights handed to the shader (uniform-sized).
+pub const max_point_lights = 8;
+
+/// A point light resolved against its entity's transform.
+pub const PointLight = struct {
+    position: m.Vec3,
+    color: m.Vec3,
+    intensity: f32,
+    range: f32,
 };
 
 /// Build the render queue for one frame.
@@ -95,6 +122,43 @@ pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
         out.near = cam.near;
         out.far = cam.far;
     }
+
+    // Lights: the first directional Light becomes the sun; point Lights (with
+    // a Transform for their position) fill `points` up to the uniform bound.
+    out.sun = .{ .intensity = 0 };
+    out.points_len = 0;
+    var sun_found = false;
+    var light_it = cur.query(&.{Light});
+    while (light_it.next()) |e| {
+        const l = cur.get(Light, e).?.*;
+        switch (l.kind) {
+            .directional => if (!sun_found) {
+                out.sun = l;
+                sun_found = true;
+            },
+            .point => if (out.points_len < max_point_lights) {
+                const t = cur.get(Transform, e) orelse continue;
+                out.points[out.points_len] = .{
+                    .position = t.position,
+                    .color = l.color,
+                    .intensity = l.intensity,
+                    .range = l.range,
+                };
+                out.points_len += 1;
+            },
+        }
+    }
+
+    // Environment (first wins) + the camera entity's Post knobs.
+    out.has_env = false;
+    var env_it = cur.query(&.{Environment});
+    if (env_it.next()) |e| {
+        out.env = cur.get(Environment, e).?.*;
+        out.has_env = true;
+    }
+    out.post = .{};
+    var post_it = cur.query(&.{Post});
+    if (post_it.next()) |e| out.post = cur.get(Post, e).?.*;
 
     // Renderables: every entity with a Transform and a MeshRef.
     var it = cur.query(&.{ Transform, MeshRef });

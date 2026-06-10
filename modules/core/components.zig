@@ -127,3 +127,43 @@ pub const Camera = struct {
     near: f32 = 0.1,
     far: f32 = 100.0,
 };
+
+/// A scene light (see docs/lights-and-tones.md). An entity component, so the
+/// timeline animates it through the existing `{target, path}` machinery; a
+/// point light takes its position from the entity's `Transform`. Plain data —
+/// the render layer reads these from the extracted queue.
+pub const Light = struct {
+    pub const Kind = enum(u8) { directional, point };
+    kind: Kind = .directional,
+    color: m.Vec3 = m.Vec3.splat(1),
+    /// Linear multiplier; 0 = off (cheap to animate a light "out").
+    intensity: f32 = 1.0,
+    /// Directional only: where the light travels (engine normalizes).
+    direction: m.Vec3 = .{ .x = 0, .y = -1, .z = 0 },
+    /// Point only: falloff reaches zero at this distance.
+    range: f32 = 10.0,
+    /// Honored on one directional light (the key); others ignored.
+    cast_shadows: bool = false,
+};
+
+/// The scene's sky + ambient term — replaces the renderer's hardcoded sky
+/// gradient and constant ambient. One per scene (the first found wins), held
+/// as a component on a (geometry-less) entity so it is timeline-animatable.
+pub const Environment = struct {
+    /// Two-stop vertical sky gradient (the cheap env term until real IBL).
+    sky_zenith: m.Vec3 = .{ .x = 0.16, .y = 0.44, .z = 0.85 },
+    sky_horizon: m.Vec3 = .{ .x = 0.6, .y = 0.78, .z = 0.95 },
+    /// Constant ambient tint × intensity fed to the BRDF's ambient term.
+    ambient_color: m.Vec3 = m.Vec3.splat(1),
+    ambient_intensity: f32 = 0.3,
+};
+
+/// Post-processing knobs, carried on the camera entity: pre-tonemap exposure
+/// and the tonemap operator (bloom is parsed/stored but not yet rendered).
+pub const Post = struct {
+    pub const Tonemap = enum(u8) { none, aces };
+    tonemap: Tonemap = .none,
+    exposure: f32 = 1.0,
+    bloom_threshold: f32 = 1.0,
+    bloom_intensity: f32 = 0.0,
+};

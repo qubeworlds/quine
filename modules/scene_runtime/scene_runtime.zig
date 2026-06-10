@@ -217,6 +217,34 @@ pub const SceneRuntime = struct {
                     .basketball => .basketball,
                 },
             });
+            // Lights / environment / post (docs/lights-and-tones.md): plain data
+            // components the extractor hands to the render layer each frame.
+            if (e.light) |l| self.world.set(core.Light, ent, .{
+                .kind = switch (l.kind) {
+                    .directional => .directional,
+                    .point => .point,
+                },
+                .color = m.Vec3.init(l.color[0], l.color[1], l.color[2]),
+                .intensity = l.intensity,
+                .direction = m.Vec3.init(l.direction[0], l.direction[1], l.direction[2]),
+                .range = l.range,
+                .cast_shadows = l.cast_shadows,
+            });
+            if (e.environment) |env| self.world.set(core.Environment, ent, .{
+                .sky_zenith = m.Vec3.init(env.sky_zenith[0], env.sky_zenith[1], env.sky_zenith[2]),
+                .sky_horizon = m.Vec3.init(env.sky_horizon[0], env.sky_horizon[1], env.sky_horizon[2]),
+                .ambient_color = m.Vec3.init(env.ambient_color[0], env.ambient_color[1], env.ambient_color[2]),
+                .ambient_intensity = env.ambient_intensity,
+            });
+            if (e.post) |p| self.world.set(core.Post, ent, .{
+                .tonemap = switch (p.tonemap) {
+                    .none => .none,
+                    .aces => .aces,
+                },
+                .exposure = p.exposure,
+                .bloom_threshold = p.bloom_threshold,
+                .bloom_intensity = p.bloom_intensity,
+            });
             bindings[i] = bnd;
         }
         // Reserve binding slots for eye sub-entities: each fitted `eyes` entity
@@ -1183,6 +1211,22 @@ pub const SceneRuntime = struct {
             _ = setVec3(&sp.velocity, path["spin.".len..], "velocity", v);
         } else if (std.mem.eql(u8, path, "squash.value")) {
             if (self.world.get(core.Squash, id)) |sq| sq.value = v;
+        } else if (std.mem.startsWith(u8, path, "light.")) {
+            const li = self.world.get(core.Light, id) orelse return;
+            const f = path["light.".len..];
+            if (std.mem.eql(u8, f, "intensity")) {
+                li.intensity = v;
+            } else if (setVec3(&li.color, f, "color", v)) {} else _ = setVec3(&li.direction, f, "direction", v);
+        } else if (std.mem.startsWith(u8, path, "environment.")) {
+            const env = self.world.get(core.Environment, id) orelse return;
+            const f = path["environment.".len..];
+            if (std.mem.eql(u8, f, "ambient.intensity")) {
+                env.ambient_intensity = v;
+            } else if (setVec3(&env.ambient_color, f, "ambient.color", v)) {} else if (setVec3(&env.sky_zenith, f, "sky.zenith", v)) {} else _ = setVec3(&env.sky_horizon, f, "sky.horizon", v);
+        } else if (std.mem.startsWith(u8, path, "post.")) {
+            const po = self.world.get(core.Post, id) orelse return;
+            const f = path["post.".len..];
+            if (std.mem.eql(u8, f, "exposure")) po.exposure = v else if (std.mem.eql(u8, f, "bloom.intensity")) po.bloom_intensity = v else if (std.mem.eql(u8, f, "bloom.threshold")) po.bloom_threshold = v;
         }
     }
 

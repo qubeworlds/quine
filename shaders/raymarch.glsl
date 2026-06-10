@@ -27,13 +27,26 @@ void main() {
 @fs raymarch_fs
 #define MAX_NODES 32
 
+#define MAX_POINT_LIGHTS 8
+
 layout(binding=0) uniform rm_params {
     vec4 cam_eye;   // xyz eye,    w = tan(fovy/2)
     vec4 cam_right; // xyz right,  w = aspect
     vec4 cam_up;    // xyz up,     w = node_count
     vec4 cam_fwd;   // xyz forward,w = time
-    vec4 scene_min; // xyz scene AABB min (empty-space skip)
+    vec4 scene_min; // xyz scene AABB min (empty-space skip), w = 1 if the backend's
+                    // NDC depth is [-1,1] (GL) — selects the gl_FragDepth mapping
     vec4 scene_max; // xyz scene AABB max
+    mat4 view_proj; // the frame's view-projection, for hit-point depth output
+    // Scene lighting (docs/lights-and-tones.md) — same packing as
+    // triangle.glsl's fs_lights; all-zeros-except-exposure=1 = legacy look.
+    vec4 sun_dir_int;  // xyz = direction the sun light travels, w = intensity
+    vec4 sun_color;    // rgb sun colour, w = has_env
+    vec4 ambient_ci;   // rgb ambient tint, w = ambient intensity
+    vec4 sky_zenith;   // rgb sky top, w = exposure
+    vec4 sky_horizon;  // rgb sky horizon, w = tonemap (0 none, 1 aces)
+    vec4 point_pos[MAX_POINT_LIGHTS]; // xyz world position, w = range
+    vec4 point_col[MAX_POINT_LIGHTS]; // rgb colour, w = intensity
     vec4 nodes[MAX_NODES * 3];
 };
 
@@ -108,6 +121,26 @@ vec3 calcNormal(vec3 p) {
         mapScene(p + e.yyx).x - mapScene(p - e.yyx).x));
 }
 
+// SDF soft shadow (IQ): march from the surface toward the light; the closest
+// pass-by distance softens the penumbra. This is the sundial's gnomon shadow —
+// no shadow map needed, the field IS the occluder.
+float softShadow(vec3 ro, vec3 rd, float maxt) {
+    float res = 1.0;
+    float t = 0.03;
+    for (int i = 0; i < 48; i++) {
+        float h = mapScene(ro + rd * t).x;
+        if (h < 0.0008) return 0.0;
+        res = min(res, 9.0 * h / t);
+        t += clamp(h, 0.02, 0.6);
+        if (t > maxt) break;
+    }
+    return clamp(res, 0.0, 1.0);
+}
+
+vec3 acesTonemap(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
 void main() {
     vec3 ro = cam_eye.xyz;
     float tan_half = cam_eye.w;
@@ -116,9 +149,17 @@ void main() {
         + ndc.x * tan_half * aspect * cam_right.xyz
         + ndc.y * tan_half * cam_up.xyz);
 
-    // Background: the same vertical gradient as the preview backdrop.
-    vec3 bg = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095),
-                  clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0));
+    // Background: the scene Environment's sky gradient along the view ray when
+    // present (the visible sky of an SDF scene), else the legacy backdrop.
+    bool has_env = sun_color.w > 0.5;
+    vec3 bg = has_env
+        ? mix(sky_horizon.rgb, sky_zenith.rgb, clamp(rd.y * 0.85 + 0.12, 0.0, 1.0))
+        : mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095),
+              clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0));
+    float exposure = max(sky_zenith.w, 0.0);
+    bool tonemap = sky_horizon.w > 0.5;
+    bg *= exposure;
+    if (tonemap) bg = acesTonemap(bg);
 
     // Empty-space skip: clip the ray to the scene AABB so we only march where the
     // geometry can be (all SDF nodes live inside these bounds). A ray that misses
@@ -132,6 +173,7 @@ void main() {
     float t_far = min(min(thi.x, thi.y), thi.z);
     if (t_far < t_near) {
         frag_color = vec4(bg, 1.0);
+        gl_FragDepth = 1.0;
         return;
     }
 
@@ -148,25 +190,62 @@ void main() {
 
     if (!hit) {
         frag_color = vec4(bg, 1.0);
+        gl_FragDepth = 1.0;
         return;
     }
 
+    // Depth of the hit point, in the backend's NDC convention, so the mesh
+    // pass depth-tests against the SDF surface (and vice versa).
+    vec4 clip = view_proj * vec4(p, 1.0);
+    float ndc_z = clip.z / max(clip.w, 1e-6);
+    gl_FragDepth = clamp(scene_min.w > 0.5 ? ndc_z * 0.5 + 0.5 : ndc_z, 0.0, 1.0);
+
     vec3 base = mapScene(p).yzw;
     vec3 n = calcNormal(p);
-    vec3 l = normalize(vec3(0.4, 0.7, 1.0));
+    // Key light: the scene's directional sun (with an SDF soft shadow) when
+    // present, else the legacy fixed key.
+    bool has_sun = sun_dir_int.w > 0.0;
+    vec3 l = has_sun ? normalize(-sun_dir_int.xyz) : normalize(vec3(0.4, 0.7, 1.0));
+    vec3 key_rgb = has_sun ? sun_color.rgb * sun_dir_int.w : vec3(0.85);
     float diff = max(dot(n, l), 0.0);
-    // Cheap hemispheric ambient (sky above, ground below) so unlit faces read.
-    vec3 amb = mix(vec3(0.10, 0.10, 0.12), vec3(0.30, 0.33, 0.42), n.y * 0.5 + 0.5);
+    float shadow = 1.0;
+    if (has_sun && diff > 0.0) shadow = softShadow(p + n * 0.02, l, 40.0);
+    // Ambient: the data sky × ambient tint/intensity when present (×2 maps
+    // intensity 0.5 to full sky radiance), else the legacy hemispheric term.
+    vec3 amb = has_env
+        ? mix(sky_horizon.rgb, sky_zenith.rgb, clamp(n.y * 0.5 + 0.5, 0.0, 1.0))
+              * ambient_ci.rgb * (ambient_ci.w * 2.0)
+        : mix(vec3(0.10, 0.10, 0.12), vec3(0.30, 0.33, 0.42), n.y * 0.5 + 0.5);
     // A little Blinn specular for shape readability.
     vec3 v = normalize(ro - p);
     vec3 h = normalize(l + v);
-    float spec = pow(max(dot(n, h), 0.0), 32.0) * diff;
+    float spec = pow(max(dot(n, h), 0.0), 32.0) * diff * shadow;
     // Camera-coaxial fill ("headlight"): the surface you're looking at always
     // catches light, so an object viewed from its key-shadowed side still reads.
-    float fill = max(dot(n, normalize(v + vec3(0.0, 0.3, 0.0))), 0.0);
-    vec3 col = base * (amb + diff * 0.85 + fill * 0.55) + vec3(spec * 0.35);
+    // With a scene Environment it follows the ambient level (night stays night).
+    float fill = max(dot(n, normalize(v + vec3(0.0, 0.3, 0.0))), 0.0)
+        * (has_env ? 0.55 * clamp(ambient_ci.w * 2.0, 0.0, 1.0) : 0.55);
+    vec3 col = base * (amb + key_rgb * (diff * shadow) + vec3(fill)) + key_rgb * spec * 0.35;
 
-    frag_color = vec4(min(col, vec3(1.0)), 1.0);
+    // Point lights (lanterns): Lambert with smooth quadratic falloff to zero
+    // at range. Unused slots have intensity 0.
+    for (int i = 0; i < MAX_POINT_LIGHTS; i++) {
+        float pint = point_col[i].w;
+        if (pint <= 0.0) continue;
+        vec3 lv = point_pos[i].xyz - p;
+        float dist = length(lv);
+        float rng = max(point_pos[i].w, 1e-3);
+        if (dist >= rng) continue;
+        float att = 1.0 - dist / rng;
+        att *= att;
+        float ndl = max(dot(n, lv / max(dist, 1e-4)), 0.0);
+        col += base * point_col[i].rgb * (pint * att * ndl);
+    }
+
+    col *= exposure;
+    if (tonemap) col = acesTonemap(col);
+    else col = min(col, vec3(1.0));
+    frag_color = vec4(col, 1.0);
 }
 @end
 

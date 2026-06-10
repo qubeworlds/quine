@@ -126,6 +126,40 @@ const white_material: shd.FsParams = .{
     .emissive = .{ 0, 0, 0, 0 },
 };
 
+/// The legacy lighting block: no sun, no environment, exposure 1, no tonemap —
+/// the shader's old fixed-key path. Bound for the grid/gizmo chrome (always
+/// readable regardless of scene lighting) and for lightless scenes.
+const legacy_lights: shd.FsLights = blk: {
+    var l = std.mem.zeroes(shd.FsLights);
+    l.sky_zenith[3] = 1; // exposure
+    break :blk l;
+};
+
+/// Build the per-frame lighting uniform from the extracted queue (the scene's
+/// sun/points/environment/post, docs/lights-and-tones.md). Identical packing
+/// feeds both triangle.glsl's `fs_lights` and raymarch.glsl's `rm_params`.
+fn lightParams(queue: *const core.RenderQueue) shd.FsLights {
+    var l = legacy_lights;
+    if (queue.sun.intensity > 0) {
+        const d = queue.sun.direction.normalize();
+        l.sun_dir_int = .{ d.x, d.y, d.z, queue.sun.intensity };
+        l.sun_color = .{ queue.sun.color.x, queue.sun.color.y, queue.sun.color.z, l.sun_color[3] };
+    }
+    if (queue.has_env) {
+        l.sun_color[3] = 1;
+        l.ambient_ci = .{ queue.env.ambient_color.x, queue.env.ambient_color.y, queue.env.ambient_color.z, queue.env.ambient_intensity };
+        l.sky_zenith = .{ queue.env.sky_zenith.x, queue.env.sky_zenith.y, queue.env.sky_zenith.z, l.sky_zenith[3] };
+        l.sky_horizon = .{ queue.env.sky_horizon.x, queue.env.sky_horizon.y, queue.env.sky_horizon.z, l.sky_horizon[3] };
+    }
+    l.sky_zenith[3] = @max(queue.post.exposure, 0);
+    l.sky_horizon[3] = if (queue.post.tonemap == .aces) 1 else 0;
+    for (queue.points[0..queue.points_len], 0..) |p, i| {
+        l.point_pos[i] = .{ p.position.x, p.position.y, p.position.z, p.range };
+        l.point_col[i] = .{ p.color.x, p.color.y, p.color.z, p.intensity };
+    }
+    return l;
+}
+
 /// Renderer state. Kept in a struct (rather than module globals) so the
 /// ownership and lifecycle are explicit at the call site in the app.
 pub const Renderer = struct {
@@ -331,9 +365,11 @@ pub const Renderer = struct {
         // Raymarch pipeline: vertex-less fullscreen triangle that sphere-traces
         // an SDF scene from a uniform node array. Depth test off (it owns the
         // frame for SDF-only scenes); it writes its own background on a miss.
+        // The raymarch fs writes gl_FragDepth from the hit point (far plane on
+        // miss), so SDF surfaces and meshes occlude each other correctly.
         self.raymarch_pip = sg.makePipeline(.{
             .shader = sg.makeShader(shd_rm.raymarchShaderDesc(sg.queryBackend())),
-            .depth = .{ .compare = .ALWAYS, .write_enabled = false },
+            .depth = .{ .compare = .LESS_EQUAL, .write_enabled = true },
             .label = "raymarch-pipeline",
         });
 
@@ -470,10 +506,14 @@ pub const Renderer = struct {
             const gp = shd.VsParams{ .mvp = view_proj.m, .model = m.Mat4.identity.m, .eye_pos = eye4 };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&gp));
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&white_material));
+            sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&legacy_lights));
             sg.draw(0, self.grid_count, 1);
         }
 
         sg.applyPipeline(self.pip);
+        // Scene lighting, once per pipeline (uniform until the next pipeline).
+        const lights = lightParams(queue);
+        sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&lights));
 
         for (queue.slice()) |item| {
             if (item.material.base_color.w < 1.0) continue; // transparent: blended pass below
@@ -555,6 +595,8 @@ pub const Renderer = struct {
         }.lt);
 
         sg.applyPipeline(self.transparent_pip);
+        const lights = lightParams(queue);
+        sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&lights));
         for (keys) |k| {
             const item = items[k.idx];
             const gm = self.cache.resolve(meshes, item.mesh);
@@ -637,6 +679,7 @@ pub const Renderer = struct {
 
         sg.updateBuffer(self.gizmo_vbuf, sg.asRange(&verts));
         sg.applyPipeline(self.gizmo_pip);
+        sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&legacy_lights));
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.gizmo_vbuf;
         bind.views[shd.VIEW_tex] = self.white_view;
@@ -669,6 +712,20 @@ pub const Renderer = struct {
         p.cam_right = .{ right[0], right[1], right[2], aspect };
         p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], 0 };
 
+        // Hit-point depth output: the frame's view-projection (for the depth
+        // the fs writes per hit; the convention flag rides scene_min.w below).
+        p.view_proj = viewProj(queue, aspect).m;
+
+        // Scene lighting — same packing as the mesh shader's fs_lights block.
+        const lights = lightParams(queue);
+        p.sun_dir_int = lights.sun_dir_int;
+        p.sun_color = lights.sun_color;
+        p.ambient_ci = lights.ambient_ci;
+        p.sky_zenith = lights.sky_zenith;
+        p.sky_horizon = lights.sky_horizon;
+        p.point_pos = lights.point_pos;
+        p.point_col = lights.point_col;
+
         var lo = m.Vec3.splat(std.math.inf(f32));
         var hi = m.Vec3.splat(-std.math.inf(f32));
         var count: usize = 0;
@@ -689,8 +746,13 @@ pub const Renderer = struct {
         }
         if (count == 0) return;
         p.cam_up = .{ up[0], up[1], up[2], @floatFromInt(count) };
-        // Combined AABB for the shader's empty-space ray-box skip.
-        p.scene_min = .{ lo.x, lo.y, lo.z, 0 };
+        // Combined AABB for the shader's empty-space ray-box skip. The w lane
+        // carries the backend's NDC depth convention (GL = [-1,1] -> flag 1).
+        const gl_depth: f32 = switch (sg.queryBackend()) {
+            .D3D11, .METAL_MACOS, .METAL_IOS, .METAL_SIMULATOR, .WGPU => 0,
+            else => 1, // GLCORE, GLES3 (WebGL2), DUMMY
+        };
+        p.scene_min = .{ lo.x, lo.y, lo.z, gl_depth };
         p.scene_max = .{ hi.x, hi.y, hi.z, 0 };
 
         sg.applyPipeline(self.raymarch_pip);

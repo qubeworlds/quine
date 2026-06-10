@@ -68,6 +68,9 @@ pub const Spin = components.Spin;
 pub const Squash = components.Squash;
 pub const Gaze = components.Gaze;
 pub const Hop = components.Hop;
+pub const Light = components.Light;
+pub const Environment = components.Environment;
+pub const Post = components.Post;
 
 /// Eye anatomy as engine knowledge: one `eye.Spec` expands into the five parts
 /// (sclera/iris/cornea/pupil/tear-line) as primitives + materials + flags. The
@@ -191,7 +194,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop, Light, Environment, Post }, max_entities);
 
 // =============================================================================
 // World

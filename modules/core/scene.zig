@@ -240,6 +240,35 @@ pub const Camera = struct {
     controller: ?CameraController = null,
 };
 
+/// A scene light — directional (the sun/key) or point (lamps). See
+/// docs/lights-and-tones.md; mirrors `components.Light`.
+pub const Light = struct {
+    pub const Kind = enum { directional, point };
+    kind: Kind,
+    color: Vec3 = .{ 1, 1, 1 },
+    intensity: f32 = 1.0,
+    direction: Vec3 = .{ 0, -1, 0 }, // directional only; engine normalizes
+    range: f32 = 10.0, // point only
+    cast_shadows: bool = false,
+};
+
+/// Sky gradient + ambient term (one per scene; mirrors `components.Environment`).
+pub const Environment = struct {
+    sky_zenith: Vec3 = .{ 0.16, 0.44, 0.85 },
+    sky_horizon: Vec3 = .{ 0.6, 0.78, 0.95 },
+    ambient_color: Vec3 = .{ 1, 1, 1 },
+    ambient_intensity: f32 = 0.3,
+};
+
+/// Post-processing knobs on the camera entity (mirrors `components.Post`).
+pub const Post = struct {
+    pub const Tonemap = enum { none, aces };
+    tonemap: Tonemap = .none,
+    exposure: f32 = 1.0,
+    bloom_threshold: f32 = 1.0,
+    bloom_intensity: f32 = 0.0,
+};
+
 pub const Entity = struct {
     name: []const u8,
     transform: ?Transform = null,
@@ -253,6 +282,9 @@ pub const Entity = struct {
     hop: ?Hop = null,
     buoyancy: ?Buoyancy = null,
     camera: ?Camera = null,
+    light: ?Light = null,
+    environment: ?Environment = null,
+    post: ?Post = null,
     /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
     /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
     gaze: ?Vec3 = null,
@@ -407,6 +439,9 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("hop")) |x| e.hop = try parseHop(x);
     if (o.get("buoyancy")) |x| e.buoyancy = try parseBuoyancy(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
+    if (o.get("light")) |x| e.light = try parseLight(x);
+    if (o.get("environment")) |x| e.environment = try parseEnvironment(x);
+    if (o.get("post")) |x| e.post = try parsePost(x);
     if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
 }
@@ -693,6 +728,62 @@ fn parseCamera(v: Value) !Camera {
         c.controller = orb;
     }
     return c;
+}
+
+fn parseLight(v: Value) !Light {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    const kind_s = try asStr(o.get("kind") orelse return error.InvalidScene);
+    const kind: Light.Kind = if (std.mem.eql(u8, kind_s, "directional"))
+        .directional
+    else if (std.mem.eql(u8, kind_s, "point"))
+        .point
+    else
+        return error.InvalidScene;
+    var l = Light{ .kind = kind };
+    if (o.get("color")) |x| l.color = try asVec3(x);
+    if (o.get("intensity")) |x| l.intensity = try asF32(x);
+    if (o.get("direction")) |x| l.direction = try asVec3(x);
+    if (o.get("range")) |x| l.range = try asF32(x);
+    if (o.get("castShadows")) |x| l.cast_shadows = try asBool(x);
+    return l;
+}
+
+fn parseEnvironment(v: Value) !Environment {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var env = Environment{};
+    if (o.get("sky")) |sv| {
+        if (sv != .object) return error.InvalidScene;
+        const so = sv.object;
+        if (so.get("zenith")) |x| env.sky_zenith = try asVec3(x);
+        if (so.get("horizon")) |x| env.sky_horizon = try asVec3(x);
+    }
+    if (o.get("ambient")) |av| {
+        if (av != .object) return error.InvalidScene;
+        const ao = av.object;
+        if (ao.get("color")) |x| env.ambient_color = try asVec3(x);
+        if (ao.get("intensity")) |x| env.ambient_intensity = try asF32(x);
+    }
+    return env;
+}
+
+fn parsePost(v: Value) !Post {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var p = Post{};
+    if (o.get("tonemap")) |x| {
+        const s = try asStr(x);
+        p.tonemap = if (std.mem.eql(u8, s, "aces")) .aces else .none;
+    }
+    if (o.get("exposure")) |x| p.exposure = try asF32(x);
+    if (o.get("bloom")) |bv| {
+        if (bv != .object) return error.InvalidScene;
+        const bo = bv.object;
+        if (bo.get("threshold")) |x| p.bloom_threshold = try asF32(x);
+        if (bo.get("intensity")) |x| p.bloom_intensity = try asF32(x);
+    }
+    return p;
 }
 
 // --- small typed accessors over std.json.Value -------------------------------
