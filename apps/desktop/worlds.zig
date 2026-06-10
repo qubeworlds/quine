@@ -588,8 +588,10 @@ const sun_arc = [_]Key3{
 /// lanterns come on at dusk via material.emissive tracks (both already animate).
 pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     var b = Buf{ .a = a };
+    // preferredBackend: the stonework is SDF geometry, which only the webgl2
+    // bundle raymarches — pin it (host-read metadata), like the drill scene.
     b.raw(
-        \\{"schemaVersion":1,"name":"sundial","entities":[
+        \\{"schemaVersion":1,"name":"sundial","preferredBackend":"webgl2","entities":[
         \\
     );
 
