@@ -70,19 +70,23 @@ float sdConeZ(vec3 p, float ha, float r) {
     return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
 }
 
+// Marble flag of the nearest surface, written by mapScene alongside its colour.
+float g_marble = 0.0;
+
 // returns vec4(distance, color.rgb). The node buffer is N independent objects
 // (each begun by a `new_object` node); we fold within an object, then take the
 // NEAREST object — so the wall, the drill, etc. composite as separate solids.
 vec4 mapScene(vec3 p) {
-    float dTot = 1e9; vec3 colTot = vec3(0.80, 0.80, 0.85);
-    float dSub = 1e9; vec3 colSub = vec3(0.80, 0.80, 0.85);
+    float dTot = 1e9; vec3 colTot = vec3(0.80, 0.80, 0.85); float mTot = 0.0;
+    float dSub = 1e9; vec3 colSub = vec3(0.80, 0.80, 0.85); float mSub = 0.0;
     int count = int(cam_up.w);
     for (int i = 0; i < MAX_NODES; i++) {
         if (i >= count) break;
         vec4 a = nodes[i * 3 + 0];
         vec4 b = nodes[i * 3 + 1];
         vec4 c = nodes[i * 3 + 2];
-        bool newObj = (a.w >= 64.0) || (i == 0);
+        bool newObj = (mod(a.w, 128.0) >= 64.0) || (i == 0);
+        bool nodeMarble = a.w >= 128.0;
         float wm = mod(a.w, 64.0);
         int prim = int(mod(wm, 8.0));
         int op = int(floor(wm / 8.0));
@@ -94,22 +98,25 @@ vec4 mapScene(vec3 p) {
         else if (prim == 2) di = sdBox(q, b.xyz) - b.w;
         else di = sdConeZ(q, b.z, b.w);
 
+        float mi = nodeMarble ? 1.0 : 0.0;
         if (newObj) {
-            if (dSub < dTot) { dTot = dSub; colTot = colSub; } // close the previous object
-            dSub = di; colSub = c.rgb;                          // begin a new object
+            if (dSub < dTot) { dTot = dSub; colTot = colSub; mTot = mSub; } // close the previous object
+            dSub = di; colSub = c.rgb; mSub = mi;                            // begin a new object
         } else if (op == 0) {
-            if (di < dSub) { dSub = di; colSub = c.rgb; }
+            if (di < dSub) { dSub = di; colSub = c.rgb; mSub = mi; }
         } else if (op == 1) {
             float h = clamp(0.5 + 0.5 * (di - dSub) / max(k, 1e-5), 0.0, 1.0);
             dSub = mix(di, dSub, h) - k * h * (1.0 - h);
             colSub = mix(c.rgb, colSub, h);
+            mSub = mix(mi, mSub, h);
         } else {
             // smooth subtract: smax(dSub, -di, k)
             float h = clamp(0.5 + 0.5 * (di + dSub) / max(k, 1e-5), 0.0, 1.0);
             dSub = -(mix(di, -dSub, h) - k * h * (1.0 - h));
         }
     }
-    if (dSub < dTot) { dTot = dSub; colTot = colSub; }
+    if (dSub < dTot) { dTot = dSub; colTot = colSub; mTot = mSub; }
+    g_marble = mTot;
     return vec4(dTot, colTot);
 }
 
@@ -137,6 +144,49 @@ float softShadow(vec3 ro, vec3 rd, float maxt) {
     return clamp(res, 0.0, 1.0);
 }
 
+// Tiny value-noise stack for the procedural surfaces/sky below.
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+float vnoise(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), f.x),
+                   mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), f.x),
+                   mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float fbm(vec3 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+    return v;
+}
+
+// Procedural marble: noise-warped veins over the node colour, in world space
+// (stable — the pattern sticks to the stone).
+vec3 marble(vec3 base, vec3 p) {
+    float warp = fbm(p * 1.6);
+    float vein = sin((p.x + 0.6 * p.y + 0.8 * p.z) * 2.4 + warp * 7.0);
+    float m = smoothstep(0.72, 0.98, abs(vein));
+    vec3 col = mix(base, base * 0.55 + vec3(0.16, 0.15, 0.16), m); // grey veins
+    return col * (0.92 + 0.16 * fbm(p * 0.5 + 11.0));              // tonal patches
+}
+
+// Night-sky star field: hashed cells over the ray direction; `amt` fades it
+// in/out (the timeline's environment.sky.stars).
+vec3 stars(vec3 rd, float amt) {
+    if (amt <= 0.0) return vec3(0.0);
+    vec3 p = rd * 90.0;
+    vec3 id = floor(p);
+    float h = hash13(id);
+    if (h < 0.992) return vec3(0.0);
+    float b = smoothstep(0.35, 0.0, length(fract(p) - 0.5));
+    float tw = 0.55 + 0.45 * hash13(id + 7.0);
+    return vec3(b * tw * amt * 1.4);
+}
+
 vec3 acesTonemap(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
@@ -156,6 +206,15 @@ void main() {
         ? mix(sky_horizon.rgb, sky_zenith.rgb, clamp(rd.y * 0.85 + 0.12, 0.0, 1.0))
         : mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095),
               clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0));
+    if (has_env) {
+        // A soft halo around the sun direction (the bright disc itself is the
+        // scene's emissive sundisc entity), and the fadable night star field.
+        if (sun_dir_int.w > 0.0) {
+            float sa = max(dot(rd, normalize(-sun_dir_int.xyz)), 0.0);
+            bg += sun_color.rgb * sun_dir_int.w * (pow(sa, 96.0) * 0.18 + pow(sa, 8.0) * 0.05);
+        }
+        bg += stars(rd, cam_fwd.w);
+    }
     float exposure = max(sky_zenith.w, 0.0);
     bool tonemap = sky_horizon.w > 0.5;
     bg *= exposure;
@@ -201,6 +260,7 @@ void main() {
     gl_FragDepth = clamp(scene_min.w > 0.5 ? ndc_z * 0.5 + 0.5 : ndc_z, 0.0, 1.0);
 
     vec3 base = mapScene(p).yzw;
+    if (g_marble > 0.01) base = mix(base, marble(base, p), g_marble);
     vec3 n = calcNormal(p);
     // Key light: the scene's directional sun (with an SDF soft shadow) when
     // present, else the legacy fixed key.

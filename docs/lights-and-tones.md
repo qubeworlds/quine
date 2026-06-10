@@ -65,7 +65,14 @@ engine uses the first one it finds.
 
 - `sky.zenith` / `sky.horizon` — a two-stop vertical gradient: the clear color
   and the cheap "env" term until real IBL lands (then these become its tint).
+- `sky.stars` — night star-field strength in the (raymarch) sky, 0–1. Animate it
+  via the `environment.sky.stars` lane for day/night cycles. The day sky also
+  gets a soft halo around the sun direction for free.
 - `ambient` — the constant ambient term the BRDF already has, made data.
+
+SDF nodes additionally accept `"marble": true` — procedural world-space marble
+veining over the node's `color` in the raymarch shader (render-only; the CPU
+dist/mesher path ignores it).
 
 ## 3. `post` — tonemap / exposure / bloom, on the camera entity
 
@@ -95,6 +102,7 @@ engine uses the first one it finds.
 | `light.direction.{x,y,z}` | directional (engine re-normalizes after sampling) |
 | `environment.ambient.intensity` | the environment entity |
 | `environment.sky.zenith.{r,g,b}`, `environment.sky.horizon.{r,g,b}` | " |
+| `environment.sky.stars` | " |
 | `post.exposure` | the camera entity |
 
 Unknown paths keep falling through silently — old engines skip new tracks.

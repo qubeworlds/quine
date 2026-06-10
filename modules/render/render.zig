@@ -710,7 +710,8 @@ pub const Renderer = struct {
         var p: shd_rm.RmParams = std.mem.zeroes(shd_rm.RmParams);
         p.cam_eye = .{ queue.eye.x, queue.eye.y, queue.eye.z, tan_half };
         p.cam_right = .{ right[0], right[1], right[2], aspect };
-        p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], 0 };
+        // cam_fwd.w carries the Environment's star-field strength (0 = off).
+        p.cam_fwd = .{ fwd[0], fwd[1], fwd[2], if (queue.has_env) queue.env.stars else 0 };
 
         // Hit-point depth output: the frame's view-projection (for the depth
         // the fs writes per hit; the convention flag rides scene_min.w below).
@@ -737,7 +738,8 @@ pub const Renderer = struct {
             for (s.nodes[0..s.len], 0..) |n, j| {
                 if (count >= max_nodes) break;
                 const new_obj: u32 = if (j == 0) 64 else 0;
-                const tag: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op) + new_obj);
+                const marble: u32 = if (n.marble) 128 else 0;
+                const tag: f32 = @floatFromInt(@intFromEnum(n.prim) + 8 * @intFromEnum(n.op) + new_obj + marble);
                 p.nodes[count * 3 + 0] = .{ n.center.x, n.center.y, n.center.z, tag };
                 p.nodes[count * 3 + 1] = .{ n.half.x, n.half.y, n.half.z, n.radius };
                 p.nodes[count * 3 + 2] = .{ n.color.x, n.color.y, n.color.z, n.k };

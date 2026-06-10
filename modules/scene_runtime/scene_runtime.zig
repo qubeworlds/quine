@@ -235,6 +235,7 @@ pub const SceneRuntime = struct {
                 .sky_horizon = m.Vec3.init(env.sky_horizon[0], env.sky_horizon[1], env.sky_horizon[2]),
                 .ambient_color = m.Vec3.init(env.ambient_color[0], env.ambient_color[1], env.ambient_color[2]),
                 .ambient_intensity = env.ambient_intensity,
+                .stars = env.stars,
             });
             if (e.post) |p| self.world.set(core.Post, ent, .{
                 .tonemap = switch (p.tonemap) {
@@ -1222,6 +1223,8 @@ pub const SceneRuntime = struct {
             const f = path["environment.".len..];
             if (std.mem.eql(u8, f, "ambient.intensity")) {
                 env.ambient_intensity = v;
+            } else if (std.mem.eql(u8, f, "sky.stars")) {
+                env.stars = v;
             } else if (setVec3(&env.ambient_color, f, "ambient.color", v)) {} else if (setVec3(&env.sky_zenith, f, "sky.zenith", v)) {} else _ = setVec3(&env.sky_horizon, f, "sky.horizon", v);
         } else if (std.mem.startsWith(u8, path, "post.")) {
             const po = self.world.get(core.Post, id) orelse return;

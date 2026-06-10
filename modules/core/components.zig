@@ -156,6 +156,9 @@ pub const Environment = struct {
     /// Constant ambient tint × intensity fed to the BRDF's ambient term.
     ambient_color: m.Vec3 = m.Vec3.splat(1),
     ambient_intensity: f32 = 0.3,
+    /// Night-sky star field strength in the sky background (0 = off, 1 = full).
+    /// Timeline-animatable (`environment.sky.stars`) for day/night cycles.
+    stars: f32 = 0,
 };
 
 /// Post-processing knobs, carried on the camera entity: pre-tonemap exposure

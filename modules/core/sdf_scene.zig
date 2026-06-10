@@ -59,6 +59,9 @@ pub const Node = struct {
     k: f32 = 0.0,
     /// Surface albedo where this node is the nearest contributor.
     color: Vec3 = .{ .x = 0.80, .y = 0.80, .z = 0.85 },
+    /// Render-only surface finish: procedural marble veining over `color`
+    /// (the raymarch shader's FBM veins). Ignored by the CPU dist/mesher path.
+    marble: bool = false,
 };
 
 /// Signed distance + the surface colour at that point.

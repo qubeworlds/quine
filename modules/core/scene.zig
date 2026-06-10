@@ -258,6 +258,7 @@ pub const Environment = struct {
     sky_horizon: Vec3 = .{ 0.6, 0.78, 0.95 },
     ambient_color: Vec3 = .{ 1, 1, 1 },
     ambient_intensity: f32 = 0.3,
+    stars: f32 = 0,
 };
 
 /// Post-processing knobs on the camera entity (mirrors `components.Post`).
@@ -560,6 +561,7 @@ fn parseGeometry(v: Value) !Geometry {
                 const c = try asVec3(x);
                 node.color = .{ .x = c[0], .y = c[1], .z = c[2] };
             }
+            if (no.get("marble")) |x| node.marble = try asBool(x);
             sc.add(node);
         }
         if (o.get("debris")) |dv| {
@@ -758,6 +760,7 @@ fn parseEnvironment(v: Value) !Environment {
         const so = sv.object;
         if (so.get("zenith")) |x| env.sky_zenith = try asVec3(x);
         if (so.get("horizon")) |x| env.sky_horizon = try asVec3(x);
+        if (so.get("stars")) |x| env.stars = try asF32(x);
     }
     if (o.get("ambient")) |av| {
         if (av != .object) return error.InvalidScene;

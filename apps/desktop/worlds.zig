@@ -610,7 +610,8 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
         \\,
         \\{"name":"environment","environment":{
         \\ "sky":{"zenith":[0.16,0.44,0.85],"horizon":[0.6,0.78,0.95]},
-        \\ "ambient":{"color":[0.55,0.65,0.8],"intensity":0.3}}}
+        \\ "ambient":{"color":[0.55,0.65,0.8],"intensity":0.3},
+        \\ "stars":0}}
     );
 
     // The key light: a directional sun with the scene's one shadow budget.
@@ -636,17 +637,17 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     b.raw(
         \\,
         \\{"name":"stonework","geometry":{"kind":"sdf","nodes":[
-        \\ {"prim":"round_box","op":"union","center":[0,-0.3,0],"half":[7.5,0.3,7.5],"radius":0.06,"color":[0.78,0.72,0.62]},
-        \\ {"prim":"round_box","op":"union","center":[0,0.12,0],"half":[2.7,0.12,2.7],"radius":0.06,"color":[0.85,0.8,0.7]},
-        \\ {"prim":"round_box","op":"union","center":[0,1.3,0],"half":[0.16,1.1,0.16],"radius":0.06,"color":[0.9,0.86,0.78]},
-        \\ {"prim":"sphere","op":"smooth_union","center":[0,2.5,0],"radius":0.22,"k":0.15,"color":[0.95,0.9,0.8]},
-        \\ {"prim":"round_box","op":"union","center":[6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.74,0.68,0.58]},
-        \\ {"prim":"round_box","op":"union","center":[6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.76,0.7,0.6]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.72,0.66,0.56]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"color":[0.78,0.72,0.62]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.6,2.2],"half":[0.35,1.6,0.35],"radius":0.06,"color":[0.75,0.69,0.59]},
-        \\ {"prim":"round_box","op":"union","center":[-6,1.6,-2.2],"half":[0.35,1.6,0.35],"radius":0.06,"color":[0.75,0.69,0.59]},
-        \\ {"prim":"round_box","op":"union","center":[-6,3.4,0],"half":[0.35,0.3,2.9],"radius":0.06,"color":[0.8,0.74,0.64]},
+        \\ {"prim":"round_box","op":"union","center":[0,-0.3,0],"half":[7.5,0.3,7.5],"radius":0.06,"marble":true,"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[0,0.12,0],"half":[2.7,0.12,2.7],"radius":0.06,"marble":true,"color":[0.85,0.8,0.7]},
+        \\ {"prim":"round_box","op":"union","center":[0,1.3,0],"half":[0.16,1.1,0.16],"radius":0.06,"marble":true,"color":[0.9,0.86,0.78]},
+        \\ {"prim":"sphere","op":"smooth_union","center":[0,2.5,0],"radius":0.22,"k":0.15,"marble":true,"color":[0.95,0.9,0.8]},
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"marble":true,"color":[0.74,0.68,0.58]},
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"marble":true,"color":[0.76,0.7,0.6]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,6],"half":[0.35,1.5,0.35],"radius":0.06,"marble":true,"color":[0.72,0.66,0.56]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,-6],"half":[0.35,1.5,0.35],"radius":0.06,"marble":true,"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,2.2],"half":[0.35,1.6,0.35],"radius":0.06,"marble":true,"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,-2.2],"half":[0.35,1.6,0.35],"radius":0.06,"marble":true,"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,3.4,0],"half":[0.35,0.3,2.9],"radius":0.06,"marble":true,"color":[0.8,0.74,0.64]},
         \\ {"prim":"round_box","op":"union","center":[4.2,0.9,4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
         \\ {"prim":"round_box","op":"union","center":[4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
         \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,4.2],"half":[0.07,0.9,0.07],"radius":0.02,"color":[0.18,0.16,0.14]},
@@ -747,6 +748,12 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     emitTrack(&b, true, "camera", "post.exposure", &[_]Key{
         .{ .f = 0, .v = 1.25 }, .{ .f = 300, .v = 0.85 }, .{ .f = 600, .v = 1.3 },
         .{ .f = 700, .v = 2.1 }, .{ .f = 1100, .v = 2.1 }, .{ .f = 1200, .v = 1.25 },
+    });
+
+    // Stars fade in after dusk and out before dawn (the raymarch sky reads them).
+    emitTrack(&b, true, "environment", "environment.sky.stars", &[_]Key{
+        .{ .f = 0, .v = 0 },   .{ .f = 620, .v = 0 }, .{ .f = 700, .v = 1 },
+        .{ .f = 1090, .v = 1 }, .{ .f = 1160, .v = 0 }, .{ .f = 1200, .v = 0 },
     });
 
     // Lanterns: on at dusk, off before dawn. Emissive (today) + point-light
