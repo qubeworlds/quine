@@ -18,6 +18,7 @@ const sdtx = sokol.debugtext;
 const shd = @import("shader");
 const shd_skin = @import("shader_skin");
 const shd_rm = @import("shader_raymarch");
+const shd_post = @import("shader_post");
 const core = @import("core");
 const m = @import("math");
 const mesh_cache = @import("mesh_cache.zig");
@@ -210,6 +211,26 @@ pub const Renderer = struct {
     bg_pip: sg.Pipeline = .{},
     /// Vertex-less fullscreen pipeline that sphere-traces an SDF/CSG scene.
     raymarch_pip: sg.Pipeline = .{},
+    /// Bloom post chain (docs/lights-and-tones.md): the scene renders into an
+    /// offscreen target, a bright-pass + separable blur builds a quarter-res
+    /// bloom layer, and a composite adds it over the scene into the swapchain.
+    /// Targets are (re)created lazily at the swapchain size, and only used when
+    /// the scene's `post.bloom.intensity` > 0 — other scenes keep the direct
+    /// swapchain path untouched.
+    post_w: i32 = 0,
+    post_h: i32 = 0,
+    post_color: sg.Image = .{},
+    post_depth: sg.Image = .{},
+    post_color_att: sg.View = .{},
+    post_color_tex: sg.View = .{},
+    post_depth_att: sg.View = .{},
+    bloom_img: [2]sg.Image = .{ .{}, .{} },
+    bloom_att: [2]sg.View = .{ .{}, .{} },
+    bloom_tex: [2]sg.View = .{ .{}, .{} },
+    post_smp: sg.Sampler = .{},
+    bright_pip: sg.Pipeline = .{},
+    blur_pip: sg.Pipeline = .{},
+    comp_pip: sg.Pipeline = .{},
     /// G-buffer probe mode for offscreen tooling: 0 = normal render, 1 = UV,
     /// 2 = world position, 3 = world normal. When non-zero the skinned mesh
     /// outputs that channel as colour and the scene chrome (backdrop, grid,
@@ -373,6 +394,30 @@ pub const Renderer = struct {
             .label = "raymarch-pipeline",
         });
 
+        // Bloom post chain: fullscreen-triangle pipelines. Bright + blur render
+        // into depth-less offscreen targets; composite renders to the swapchain.
+        self.post_smp = sg.makeSampler(.{
+            .min_filter = .LINEAR,
+            .mag_filter = .LINEAR,
+            .wrap_u = .CLAMP_TO_EDGE,
+            .wrap_v = .CLAMP_TO_EDGE,
+            .label = "post-sampler",
+        });
+        self.bright_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd_post.brightShaderDesc(sg.queryBackend())),
+            .depth = .{ .pixel_format = .NONE },
+            .label = "bloom-bright-pipeline",
+        });
+        self.blur_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd_post.blurShaderDesc(sg.queryBackend())),
+            .depth = .{ .pixel_format = .NONE },
+            .label = "bloom-blur-pipeline",
+        });
+        self.comp_pip = sg.makePipeline(.{
+            .shader = sg.makeShader(shd_post.compositeShaderDesc(sg.queryBackend())),
+            .label = "bloom-composite-pipeline",
+        });
+
         // Debug-text overlay (the HUD). The Amstrad CPC font has a clean,
         // complete ASCII set (incl. lowercase), which reads better than the
         // default 8x8 fonts.
@@ -467,6 +512,43 @@ pub const Renderer = struct {
     /// matches the runtime GPU backend: WebGPU/Metal/D3D11 use z in [0, 1],
     /// while OpenGL/WebGL2 use [-1, 1]. `aspect` is the viewport width/height,
     /// owned by the app.
+    /// A pass into one offscreen colour view: clear-less (DONTCARE) load.
+    fn colorPass(dst: sg.View, depth: sg.View) sg.Pass {
+        var pass = sg.Pass{};
+        pass.action.colors[0] = .{ .load_action = .DONTCARE };
+        pass.attachments.colors[0] = dst;
+        pass.attachments.depth_stencil = depth;
+        return pass;
+    }
+
+    /// (Re)create the bloom chain's offscreen targets at the given swapchain
+    /// size: a full-res scene colour+depth pair (the env-default formats, so
+    /// every existing pipeline renders into it unchanged) and two quarter-res
+    /// ping-pong bloom layers.
+    fn ensurePost(self: *Renderer, w: i32, h: i32) void {
+        if (self.post_w == w and self.post_h == h) return;
+        for ([_]sg.View{ self.post_color_att, self.post_color_tex, self.post_depth_att }) |v| if (v.id != 0) sg.destroyView(v);
+        for (self.bloom_att) |v| if (v.id != 0) sg.destroyView(v);
+        for (self.bloom_tex) |v| if (v.id != 0) sg.destroyView(v);
+        for ([_]sg.Image{ self.post_color, self.post_depth }) |img| if (img.id != 0) sg.destroyImage(img);
+        for (self.bloom_img) |img| if (img.id != 0) sg.destroyImage(img);
+
+        self.post_color = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = w, .height = h, .label = "post-scene-color" });
+        self.post_depth = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = w, .height = h, .pixel_format = .DEPTH_STENCIL, .label = "post-scene-depth" });
+        self.post_color_att = sg.makeView(.{ .color_attachment = .{ .image = self.post_color } });
+        self.post_color_tex = sg.makeView(.{ .texture = .{ .image = self.post_color } });
+        self.post_depth_att = sg.makeView(.{ .depth_stencil_attachment = .{ .image = self.post_depth } });
+        const bw = @max(@divTrunc(w, 4), 1);
+        const bh = @max(@divTrunc(h, 4), 1);
+        for (0..2) |i| {
+            self.bloom_img[i] = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = bw, .height = bh, .label = "bloom-layer" });
+            self.bloom_att[i] = sg.makeView(.{ .color_attachment = .{ .image = self.bloom_img[i] } });
+            self.bloom_tex[i] = sg.makeView(.{ .texture = .{ .image = self.bloom_img[i] } });
+        }
+        self.post_w = w;
+        self.post_h = h;
+    }
+
     pub fn draw(
         self: *Renderer,
         queue: *const core.RenderQueue,
@@ -482,7 +564,19 @@ pub const Renderer = struct {
 
         var action = self.pass_action;
         if (probe) action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
-        sg.beginPass(.{ .action = action, .swapchain = sglue.swapchain() });
+        // Bloom path: render the whole scene into an offscreen target instead
+        // of the swapchain, then run the bright/blur/composite chain below.
+        const swap = sglue.swapchain();
+        const do_post = queue.post.bloom_intensity > 0 and !probe;
+        if (do_post) {
+            self.ensurePost(swap.width, swap.height);
+            var pass = sg.Pass{ .action = action };
+            pass.attachments.colors[0] = self.post_color_att;
+            pass.attachments.depth_stencil = self.post_depth_att;
+            sg.beginPass(pass);
+        } else {
+            sg.beginPass(.{ .action = action, .swapchain = swap });
+        }
 
         // Preview backdrop fills the frame first (vertex-less fullscreen tri:
         // the shader builds positions from gl_VertexIndex, so no bindings).
@@ -545,7 +639,7 @@ pub const Renderer = struct {
             }
         }
 
-        if (skinned) |s| self.drawSkinned(s, view_proj);
+        if (skinned) |s| self.drawSkinned(s, view_proj, &lights);
 
         // Transparent pass: after all opaque geometry (incl. the skinned body),
         // so glassy parts like the cornea composite over what's behind them.
@@ -554,10 +648,59 @@ pub const Renderer = struct {
 
         if (!probe) {
             if (gizmo) |g| self.drawGizmo(g, view_proj, eye4);
-            if (hud) |info| drawHud(info);
+            if (!do_post) if (hud) |info| drawHud(info);
         }
 
         sg.endPass();
+
+        if (do_post) {
+            const bw = @max(@divTrunc(self.post_w, 4), 1);
+            const bh = @max(@divTrunc(self.post_h, 4), 1);
+            // 1. Bright-pass extract, full -> quarter res. The scene pass has
+            // already tonemapped, so the threshold is LDR (authored ~1.0 maps
+            // to ~0.86 — only near-white emissives bloom).
+            sg.beginPass(colorPass(self.bloom_att[0], .{}));
+            sg.applyPipeline(self.bright_pip);
+            var bind = sg.Bindings{};
+            bind.views[shd_post.VIEW_src] = self.post_color_tex;
+            bind.samplers[shd_post.SMP_psmp] = self.post_smp;
+            sg.applyBindings(bind);
+            const bp = shd_post.BrightParams{ .bp = .{ std.math.clamp(queue.post.bloom_threshold * 0.86, 0.0, 0.97), 0, 0, 0 } };
+            sg.applyUniforms(shd_post.UB_bright_params, sg.asRange(&bp));
+            sg.draw(0, 3, 1);
+            sg.endPass();
+            // 2+3. Separable gaussian blur, ping-pong at quarter res.
+            const steps = [2]struct { dst: u32, src: u32, dir: [4]f32 }{
+                .{ .dst = 1, .src = 0, .dir = .{ 1.0 / @as(f32, @floatFromInt(bw)), 0, 0, 0 } },
+                .{ .dst = 0, .src = 1, .dir = .{ 0, 1.0 / @as(f32, @floatFromInt(bh)), 0, 0 } },
+            };
+            for (steps) |st| {
+                sg.beginPass(colorPass(self.bloom_att[st.dst], .{}));
+                sg.applyPipeline(self.blur_pip);
+                var bb = sg.Bindings{};
+                bb.views[shd_post.VIEW_src] = self.bloom_tex[st.src];
+                bb.samplers[shd_post.SMP_psmp] = self.post_smp;
+                sg.applyBindings(bb);
+                const blp = shd_post.BlurParams{ .dir = st.dir };
+                sg.applyUniforms(shd_post.UB_blur_params, sg.asRange(&blp));
+                sg.draw(0, 3, 1);
+                sg.endPass();
+            }
+            // 4. Composite scene + bloom into the swapchain (+ the HUD on top).
+            sg.beginPass(.{ .action = self.pass_action, .swapchain = swap });
+            sg.applyPipeline(self.comp_pip);
+            var cb = sg.Bindings{};
+            cb.views[shd_post.VIEW_scene_tex] = self.post_color_tex;
+            cb.views[shd_post.VIEW_bloom_tex] = self.bloom_tex[0];
+            cb.samplers[shd_post.SMP_psmp] = self.post_smp;
+            sg.applyBindings(cb);
+            const cp = shd_post.CompParams{ .cp = .{ queue.post.bloom_intensity, 0, 0, 0 } };
+            sg.applyUniforms(shd_post.UB_comp_params, sg.asRange(&cp));
+            sg.draw(0, 3, 1);
+            if (hud) |info| drawHud(info);
+            sg.endPass();
+        }
+
         sg.commit();
     }
 
@@ -628,10 +771,12 @@ pub const Renderer = struct {
     /// Draw all skinned instances. Each picks its phase palette by `bucket`; the
     /// shared mesh is bound once. Palettes are pre-padded to max_joints by the
     /// caller, so a bucket slices straight out of `scene.palettes`.
-    fn drawSkinned(self: *Renderer, scene: SkinnedScene, view_proj: m.Mat4) void {
+    fn drawSkinned(self: *Renderer, scene: SkinnedScene, view_proj: m.Mat4, lights: *const shd.FsLights) void {
         if (self.skinned_index_count == 0) return;
 
         sg.applyPipeline(self.skinned_pip);
+        // Same byte layout as triangle.glsl's fs_lights — one struct feeds both.
+        sg.applyUniforms(shd_skin.UB_fs_lights, sg.asRange(lights));
         var bind = sg.Bindings{};
         bind.vertex_buffers[0] = self.skinned_vbuf;
         bind.index_buffer = self.skinned_ibuf;

@@ -711,7 +711,7 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     for (sun_arc, 0..) |k, i| sun_dir[i] = .{ .f = k.f, .v = .{ -k.v[0], -k.v[1], -k.v[2] } };
     emitTrack3(&b, true, "sun", "light.direction", xyz, sun_dir[0..]);
     emitTrack(&b, true, "sun", "light.intensity", &[_]Key{
-        .{ .f = 0, .v = 0.9 },  .{ .f = 300, .v = 3.2 },  .{ .f = 600, .v = 0.8 },
+        .{ .f = 0, .v = 0.9 },  .{ .f = 300, .v = 2.6 },  .{ .f = 600, .v = 0.8 },
         .{ .f = 660, .v = 0 },  .{ .f = 1140, .v = 0 },   .{ .f = 1200, .v = 0.9 },
     });
     emitTrack3(&b, true, "sun", "light.color", rgb, &[_]Key3{
@@ -723,7 +723,7 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
 
     // Sky + ambient (Phase 6): the gradient and ambient term follow the day.
     emitTrack(&b, true, "environment", "environment.ambient.intensity", &[_]Key{
-        .{ .f = 0, .v = 0.28 }, .{ .f = 300, .v = 0.5 },  .{ .f = 600, .v = 0.22 },
+        .{ .f = 0, .v = 0.28 }, .{ .f = 300, .v = 0.42 }, .{ .f = 600, .v = 0.22 },
         .{ .f = 700, .v = 0.06 }, .{ .f = 1100, .v = 0.06 }, .{ .f = 1200, .v = 0.28 },
     });
     emitTrack3(&b, true, "environment", "environment.sky.zenith", rgb, &[_]Key3{
@@ -747,7 +747,7 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
     // the "tones" half of the demo.
     emitTrack(&b, true, "camera", "post.exposure", &[_]Key{
         .{ .f = 0, .v = 1.25 }, .{ .f = 300, .v = 0.85 }, .{ .f = 600, .v = 1.3 },
-        .{ .f = 700, .v = 2.1 }, .{ .f = 1100, .v = 2.1 }, .{ .f = 1200, .v = 1.25 },
+        .{ .f = 700, .v = 1.7 }, .{ .f = 1100, .v = 1.7 }, .{ .f = 1200, .v = 1.25 },
     });
 
     // Stars fade in after dusk and out before dawn (the raymarch sky reads them).
@@ -769,7 +769,7 @@ pub fn sundialJson(a: std.mem.Allocator) []const u8 {
         var on: [env.len]Key = undefined;
         var em: [env.len]Key3 = undefined;
         for (env, 0..) |k, i| {
-            on[i] = .{ .f = k.f, .v = k.v * 2.4 };
+            on[i] = .{ .f = k.f, .v = k.v * 1.7 };
             em[i] = .{ .f = k.f, .v = .{ glow[0] * k.v, glow[1] * k.v, glow[2] * k.v } };
         }
         emitTrack(&b, true, nm, "light.intensity", on[0..]);

@@ -216,6 +216,20 @@ pub fn build(b: *Build) !void {
         },
     });
 
+    // --- post shader: bright/blur/composite bloom chain, cross-compiled ------
+    const mod_shader_post = try sokol.shdc.createModule(b, "shader_post", mod_sokol, .{
+        .shdc_dep = dep_shdc,
+        .input = "shaders/post.glsl",
+        .output = "post.glsl.zig",
+        .slang = .{
+            .glsl410 = true,
+            .metal_macos = true,
+            .hlsl5 = true,
+            .glsl300es = true,
+            .wgsl = true,
+        },
+    });
+
     // --- render: sokol wrapper; reads core's state struct --------------------
     const mod_render = b.createModule(.{
         .root_source_file = b.path("modules/render/render.zig"),
@@ -226,6 +240,7 @@ pub fn build(b: *Build) !void {
             .{ .name = "shader", .module = mod_shader },
             .{ .name = "shader_skin", .module = mod_shader_skin },
             .{ .name = "shader_raymarch", .module = mod_shader_raymarch },
+            .{ .name = "shader_post", .module = mod_shader_post },
             .{ .name = "core", .module = mod_core },
             .{ .name = "math", .module = mod_math },
         },
