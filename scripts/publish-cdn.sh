@@ -30,7 +30,7 @@ if [ "${QUINE_SKIP_BUILD:-0}" != "1" ]; then
   echo "==> Building quine wasm bundles (webgl2 + webgpu)"
   "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2
   "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu
-  echo "==> Dumping example scenes (cockpit/tunnel/rabbits/terrain)"
+  echo "==> Dumping example scenes (cockpit/tunnel/rabbits/terrain/sundial)"
   "$ZIG" build dump-scenes
 fi
 
@@ -55,7 +55,7 @@ put engine/quine-webgpu.wasm zig-out/web/quine-webgpu.wasm application/wasm
 #    moves/cleans up as a unit. (The Navigator overlay + the world index.json are
 #    published from the `world` repo, alongside the scenes that link them.)
 echo "==> Uploading scenes to scenes/<name>/"
-for s in cockpit tunnel terrain; do
+for s in cockpit tunnel terrain sundial; do
   put "scenes/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
 done
 # rabbits is now LIVE (multiplayer): a minimal scene that links the game-server
