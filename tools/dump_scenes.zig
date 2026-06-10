@@ -45,4 +45,8 @@ pub fn main() void {
     const terrain = worlds.terrainJson(a);
     defer a.free(terrain);
     writeJson("zig-out/scenes/terrain.scene.json", terrain);
+
+    const sundial = worlds.sundialJson(a);
+    defer a.free(sundial);
+    writeJson("zig-out/scenes/sundial.scene.json", sundial);
 }

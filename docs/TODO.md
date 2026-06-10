@@ -35,6 +35,20 @@ renders/sims what it's handed (no baked "water" content). Foam/wake/particles ar
 generic capabilities a scene configures, like `sdf`/`debris` for the drill.
 
 
+## Phase 6 prep — `sundial`, the Light & Shade & tones demo scene *(data shipped)*
+
+The Phase 6 demo scene exists as **data**: `sundialJson` in
+`apps/desktop/worlds.zig` (the "Light & Shade" tile, dumped by `zig build
+dump-scenes`) — a walled sundial garden under a 40 s looping day cycle. It
+already plays today (the emissive sun disc arcs on transform tracks; lanterns
+come on at dusk via `material.emissive` tracks), and it carries the **pinned
+Phase 6 schema** — `light` / `environment` / `post` components + their timeline
+lanes, specified in [`docs/lights-and-tones.md`](./lights-and-tones.md) — which
+the engine ignores until each Phase 6 piece (data-driven lights, shadow map,
+sky/ambient, tonemap+exposure, bloom) lands and lights up the *same data*.
+Deterministic timeline + `QUINE_THUMB` snapshots at noon/dusk/night frames make
+it the phase's regression harness.
+
 Where we are: a **data-driven** scene (the normalized JSON the `world` zod schema
 emits) loaded into an ECS world with real Jolt physics (native + web), behaviour
 **skills** interpreted in QuickJS, and the keepie-uppie actor heading the ball

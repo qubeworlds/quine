@@ -26,6 +26,7 @@ pub const Tile = struct {
 pub const tiles = [_]Tile{
     .{ .title = "Rabbits", .subtitle = "a field of hopping Stanford bunnies" },
     .{ .title = "Terrain - Navmesh", .subtitle = "an agent crossing a baked navmesh" },
+    .{ .title = "Light & Shade", .subtitle = "a day passes over a sundial garden" },
 };
 
 // =============================================================================
@@ -278,7 +279,8 @@ pub fn tunnelJson(a: std.mem.Allocator) []const u8 {
 pub fn worldJson(a: std.mem.Allocator, idx: usize) []const u8 {
     return switch (idx) {
         0 => rabbitsJson(a),
-        else => terrainJson(a),
+        1 => terrainJson(a),
+        else => sundialJson(a),
     };
 }
 
@@ -520,4 +522,251 @@ fn emitAgentTrack(b: *Buf, comptime lane: []const u8, route: []const [2]u32, fra
         b.print("{{\"frame\":{d:.1},\"value\":{d:.3},\"interp\":\"linear\"}}", .{ frame, value });
     }
     b.raw("]}");
+}
+
+// --- Sundial — Light & Shade (the Phase 6 demo scene) -------------------------
+
+/// A scalar keyframe for the generic track emitters below.
+const Key = struct { f: u32, v: f32 };
+/// A vec3 keyframe (expands into three scalar-lane tracks).
+const Key3 = struct { f: u32, v: [3]f32 };
+
+/// Emit one timeline track `{target, path}` with linear keyframes. `leading`
+/// is the comma separator between tracks.
+fn emitTrack(b: *Buf, leading: bool, target: []const u8, path: []const u8, keys: []const Key) void {
+    if (leading) b.raw(",");
+    b.print("\n {{\"target\":\"{s}\",\"path\":\"{s}\",\"keyframes\":[", .{ target, path });
+    for (keys, 0..) |k, i| {
+        if (i > 0) b.raw(",");
+        b.print("{{\"frame\":{d},\"value\":{d:.3},\"interp\":\"linear\"}}", .{ k.f, k.v });
+    }
+    b.raw("]}");
+}
+
+/// Emit three scalar tracks for a vec3 path — `base` + each of `lanes`
+/// (".x/.y/.z" for positions/directions, ".r/.g/.b" for colours).
+fn emitTrack3(b: *Buf, leading: bool, target: []const u8, base: []const u8, lanes: [3][]const u8, keys: []const Key3) void {
+    for (lanes, 0..) |lane, li| {
+        if (leading or li > 0) b.raw(",");
+        b.print("\n {{\"target\":\"{s}\",\"path\":\"{s}{s}\",\"keyframes\":[", .{ target, base, lane });
+        for (keys, 0..) |k, i| {
+            if (i > 0) b.raw(",");
+            b.print("{{\"frame\":{d},\"value\":{d:.3},\"interp\":\"linear\"}}", .{ k.f, k.v[li] });
+        }
+        b.raw("]}");
+    }
+}
+
+const xyz = [3][]const u8{ ".x", ".y", ".z" };
+const rgb = [3][]const u8{ ".r", ".g", ".b" };
+
+/// One full day in timeline frames (30 fps, 40 s loop). The phase landmarks the
+/// keyframes below share: dawn 0 → noon 300 → dusk 600 → night 660..1140 → dawn.
+const day_frames: u32 = 1200;
+
+/// The visible sun disc's arc across the sky (east → up → west, then hidden
+/// below the horizon overnight while it travels back east). The `sun`
+/// directional light's keyframes mirror these (direction = -position).
+const sun_arc = [_]Key3{
+    .{ .f = 0, .v = .{ 14.0, 0.6, -3.0 } }, // dawn, east horizon
+    .{ .f = 150, .v = .{ 9.9, 7.8, -3.0 } },
+    .{ .f = 300, .v = .{ 0.0, 11.5, -3.0 } }, // noon, overhead
+    .{ .f = 450, .v = .{ -9.9, 7.8, -3.0 } },
+    .{ .f = 600, .v = .{ -14.0, 0.6, -3.0 } }, // dusk, west horizon
+    .{ .f = 660, .v = .{ -15.0, -5.0, -3.0 } }, // set (hidden)
+    .{ .f = 1140, .v = .{ 15.0, -5.0, -3.0 } }, // back east, still hidden
+    .{ .f = 1200, .v = .{ 14.0, 0.6, -3.0 } }, // re-rise = frame 0 (seamless loop)
+};
+
+/// The Light & Shade example: a walled sundial garden under one full day cycle.
+/// This is the **Phase 6 (lights & shade & tones) demo scene** — it carries the
+/// new data-driven `light` / `environment` / `post` fields (see
+/// docs/lights-and-tones.md), which today's engine ignores (forward-compatible)
+/// and Phase 6 brings to life: the sweeping gnomon shadow, lantern point lights,
+/// the day-cycle sky/ambient, exposure adaptation and bloom. It still reads as a
+/// day cycle TODAY: the emissive sun disc arcs on transform tracks and the
+/// lanterns come on at dusk via material.emissive tracks (both already animate).
+pub fn sundialJson(a: std.mem.Allocator) []const u8 {
+    var b = Buf{ .a = a };
+    b.raw(
+        \\{"schemaVersion":1,"name":"sundial","entities":[
+        \\
+    );
+
+    // Camera: a raised three-quarter view of the whole garden. Carries the
+    // Phase 6 `post` component (tonemap/exposure/bloom) — exposure is keyframed
+    // below so noon and lantern-lit night both read.
+    b.raw(
+        \\{"name":"camera","camera":{"fovY":0.95,"near":0.1,"far":300,
+        \\ "controller":{"kind":"orbit","target":[0,1.0,0],"distance":18.0,"yaw":0.32,"pitch":0.52}},
+        \\ "post":{"tonemap":"aces","exposure":1.0,"bloom":{"threshold":1.0,"intensity":0.5}}}
+    );
+
+    // Environment: the sky gradient + ambient term (Phase 6 retires the
+    // hardcoded sky colour). Keyframed through the day below.
+    b.raw(
+        \\,
+        \\{"name":"environment","environment":{
+        \\ "sky":{"zenith":[0.16,0.44,0.85],"horizon":[0.6,0.78,0.95]},
+        \\ "ambient":{"color":[0.55,0.65,0.8],"intensity":0.3}}}
+    );
+
+    // The key light: a directional sun with the scene's one shadow budget.
+    // Its direction/colour/intensity tracks mirror the visible disc's arc.
+    b.raw(
+        \\,
+        \\{"name":"sun","light":{"kind":"directional","color":[1.0,0.62,0.38],
+        \\ "intensity":0.9,"direction":[-0.933,-0.04,0.2],"castShadows":true}}
+    );
+
+    // The visible sun disc: near-black base so only its (keyframed) emissive
+    // shows — it dies to nothing overnight while it travels back east.
+    b.print(
+        \\,
+        \\{{"name":"sundisc","transform":{{"position":[{d:.3},{d:.3},{d:.3}]}},
+        \\ "geometry":{{"kind":"sphere","radius":1.3,"rings":14,"segments":20}},
+        \\ "material":{{"color":[0.02,0.02,0.03,1],"emissive":[2.6,1.1,0.4]}}}}
+    , .{ sun_arc[0].v[0], sun_arc[0].v[1], sun_arc[0].v[2] });
+
+    // The stonework — floor, dial, obelisk gnomon, perimeter columns, the west
+    // arch, lantern posts — as ONE SDF entity (one mesh, per-node colours).
+    // Crisp axis-aligned forms so Phase 6's shadow map has clean casters.
+    b.raw(
+        \\,
+        \\{"name":"stonework","geometry":{"kind":"sdf","nodes":[
+        \\ {"prim":"round_box","op":"union","center":[0,-0.3,0],"half":[7.5,0.3,7.5],"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[0,0.12,0],"half":[2.7,0.12,2.7],"color":[0.85,0.8,0.7]},
+        \\ {"prim":"round_box","op":"union","center":[0,1.3,0],"half":[0.16,1.1,0.16],"color":[0.9,0.86,0.78]},
+        \\ {"prim":"sphere","op":"smooth_union","center":[0,2.5,0],"radius":0.22,"k":0.15,"color":[0.95,0.9,0.8]},
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,6],"half":[0.35,1.5,0.35],"color":[0.74,0.68,0.58]},
+        \\ {"prim":"round_box","op":"union","center":[6,1.5,-6],"half":[0.35,1.5,0.35],"color":[0.76,0.7,0.6]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,6],"half":[0.35,1.5,0.35],"color":[0.72,0.66,0.56]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.5,-6],"half":[0.35,1.5,0.35],"color":[0.78,0.72,0.62]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,2.2],"half":[0.35,1.6,0.35],"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,1.6,-2.2],"half":[0.35,1.6,0.35],"color":[0.75,0.69,0.59]},
+        \\ {"prim":"round_box","op":"union","center":[-6,3.4,0],"half":[0.35,0.3,2.9],"color":[0.8,0.74,0.64]},
+        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]},
+        \\ {"prim":"round_box","op":"union","center":[-4.2,0.9,-4.2],"half":[0.07,0.9,0.07],"color":[0.18,0.16,0.14]}
+        \\]}}
+    );
+
+    // Hour markers: a bronze ring of twelve on the dial (cardinals larger).
+    var hi: u32 = 0;
+    while (hi < 12) : (hi += 1) {
+        const ang = @as(f32, @floatFromInt(hi)) * (std.math.pi / 6.0);
+        const big = hi % 3 == 0;
+        const r: f32 = if (big) 0.13 else 0.09;
+        var nb: [12]u8 = undefined;
+        const nm = std.fmt.bufPrint(&nb, "hour{d}", .{hi}) catch "hour";
+        b.raw(",\n");
+        b.print(
+            \\{{"name":"{s}","transform":{{"position":[{d:.3},0.3,{d:.3}]}},
+            \\ "geometry":{{"kind":"sphere","radius":{d:.3},"rings":8,"segments":10}},
+            \\ "material":{{"color":[0.35,0.28,0.2,1],"metallic":0.8,"roughness":0.35}}}}
+        , .{ nm, 2.2 * @sin(ang), 2.2 * @cos(ang), r });
+    }
+
+    // Lanterns: a glow sphere atop each post. Each carries BOTH its (keyframed)
+    // emissive material — visible today — and a Phase 6 point `light` that pools
+    // warm light on the stone at night.
+    const lantern_xz = [_][2]f32{ .{ 4.2, 4.2 }, .{ 4.2, -4.2 }, .{ -4.2, 4.2 }, .{ -4.2, -4.2 } };
+    for (lantern_xz, 0..) |p, li| {
+        var nb: [12]u8 = undefined;
+        const nm = std.fmt.bufPrint(&nb, "lantern{d}", .{li}) catch "lantern";
+        b.raw(",\n");
+        b.print(
+            \\{{"name":"{s}","transform":{{"position":[{d:.3},2.0,{d:.3}]}},
+            \\ "geometry":{{"kind":"sphere","radius":0.24,"rings":10,"segments":14}},
+            \\ "material":{{"color":[0.1,0.08,0.05,1],"emissive":[0,0,0]}},
+            \\ "light":{{"kind":"point","color":[1.0,0.62,0.28],"intensity":0,"range":7.0}}}}
+        , .{ nm, p[0], p[1] });
+    }
+
+    // ---- The day-cycle timeline ----
+    b.raw("\n],\n\"assets\":[],\n\"timeline\":{");
+    b.print("\"fps\":30,\"durationFrames\":{d},\"tracks\":[", .{day_frames});
+
+    // The visible disc: position arc + emissive (warm dawn -> white noon -> red
+    // dusk -> dark overnight). Both animate on today's engine.
+    emitTrack3(&b, false, "sundisc", "transform.position", xyz, sun_arc[0..]);
+    emitTrack3(&b, true, "sundisc", "material.emissive", rgb, &[_]Key3{
+        .{ .f = 0, .v = .{ 2.6, 1.1, 0.4 } },
+        .{ .f = 120, .v = .{ 3.0, 2.6, 2.0 } },
+        .{ .f = 300, .v = .{ 3.2, 3.0, 2.6 } },
+        .{ .f = 480, .v = .{ 3.0, 2.2, 1.4 } },
+        .{ .f = 600, .v = .{ 3.0, 0.9, 0.35 } },
+        .{ .f = 660, .v = .{ 0, 0, 0 } },
+        .{ .f = 1140, .v = .{ 0, 0, 0 } },
+        .{ .f = 1200, .v = .{ 2.6, 1.1, 0.4 } },
+    });
+
+    // The directional sun (Phase 6): direction mirrors the disc (engine
+    // normalizes), warmth/intensity follow the day.
+    var sun_dir: [sun_arc.len]Key3 = undefined;
+    for (sun_arc, 0..) |k, i| sun_dir[i] = .{ .f = k.f, .v = .{ -k.v[0], -k.v[1], -k.v[2] } };
+    emitTrack3(&b, true, "sun", "light.direction", xyz, sun_dir[0..]);
+    emitTrack(&b, true, "sun", "light.intensity", &[_]Key{
+        .{ .f = 0, .v = 0.9 },  .{ .f = 300, .v = 3.2 },  .{ .f = 600, .v = 0.8 },
+        .{ .f = 660, .v = 0 },  .{ .f = 1140, .v = 0 },   .{ .f = 1200, .v = 0.9 },
+    });
+    emitTrack3(&b, true, "sun", "light.color", rgb, &[_]Key3{
+        .{ .f = 0, .v = .{ 1.0, 0.62, 0.38 } },
+        .{ .f = 300, .v = .{ 1.0, 0.98, 0.92 } },
+        .{ .f = 600, .v = .{ 1.0, 0.45, 0.3 } },
+        .{ .f = 1200, .v = .{ 1.0, 0.62, 0.38 } },
+    });
+
+    // Sky + ambient (Phase 6): the gradient and ambient term follow the day.
+    emitTrack(&b, true, "environment", "environment.ambient.intensity", &[_]Key{
+        .{ .f = 0, .v = 0.28 }, .{ .f = 300, .v = 0.5 },  .{ .f = 600, .v = 0.22 },
+        .{ .f = 700, .v = 0.06 }, .{ .f = 1100, .v = 0.06 }, .{ .f = 1200, .v = 0.28 },
+    });
+    emitTrack3(&b, true, "environment", "environment.sky.zenith", rgb, &[_]Key3{
+        .{ .f = 0, .v = .{ 0.18, 0.22, 0.42 } },
+        .{ .f = 300, .v = .{ 0.16, 0.44, 0.85 } },
+        .{ .f = 600, .v = .{ 0.22, 0.16, 0.38 } },
+        .{ .f = 700, .v = .{ 0.015, 0.02, 0.06 } },
+        .{ .f = 1100, .v = .{ 0.015, 0.02, 0.06 } },
+        .{ .f = 1200, .v = .{ 0.18, 0.22, 0.42 } },
+    });
+    emitTrack3(&b, true, "environment", "environment.sky.horizon", rgb, &[_]Key3{
+        .{ .f = 0, .v = .{ 0.95, 0.55, 0.3 } },
+        .{ .f = 300, .v = .{ 0.6, 0.78, 0.95 } },
+        .{ .f = 600, .v = .{ 0.98, 0.45, 0.25 } },
+        .{ .f = 700, .v = .{ 0.03, 0.04, 0.09 } },
+        .{ .f = 1100, .v = .{ 0.03, 0.04, 0.09 } },
+        .{ .f = 1200, .v = .{ 0.95, 0.55, 0.3 } },
+    });
+
+    // Exposure (Phase 6): clamp blinding noon, open up for lantern-lit night —
+    // the "tones" half of the demo.
+    emitTrack(&b, true, "camera", "post.exposure", &[_]Key{
+        .{ .f = 0, .v = 1.25 }, .{ .f = 300, .v = 0.85 }, .{ .f = 600, .v = 1.3 },
+        .{ .f = 700, .v = 2.1 }, .{ .f = 1100, .v = 2.1 }, .{ .f = 1200, .v = 1.25 },
+    });
+
+    // Lanterns: on at dusk, off before dawn. Emissive (today) + point-light
+    // intensity (Phase 6) share one envelope.
+    const env = [_]Key{
+        .{ .f = 0, .v = 0 },   .{ .f = 560, .v = 0 }, .{ .f = 660, .v = 1 },
+        .{ .f = 1080, .v = 1 }, .{ .f = 1170, .v = 0 }, .{ .f = 1200, .v = 0 },
+    };
+    const glow = [3]f32{ 2.2, 1.3, 0.55 };
+    for (lantern_xz, 0..) |_, li| {
+        var nb: [12]u8 = undefined;
+        const nm = std.fmt.bufPrint(&nb, "lantern{d}", .{li}) catch "lantern";
+        var on: [env.len]Key = undefined;
+        var em: [env.len]Key3 = undefined;
+        for (env, 0..) |k, i| {
+            on[i] = .{ .f = k.f, .v = k.v * 2.4 };
+            em[i] = .{ .f = k.f, .v = .{ glow[0] * k.v, glow[1] * k.v, glow[2] * k.v } };
+        }
+        emitTrack(&b, true, nm, "light.intensity", on[0..]);
+        emitTrack3(&b, true, nm, "material.emissive", rgb, em[0..]);
+    }
+
+    b.raw("]}}");
+    return b.done();
 }
