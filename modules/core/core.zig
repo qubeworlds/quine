@@ -120,9 +120,14 @@ pub const extract = render_queue.extract;
 /// World-tick gate: drops inbound frames whose tick has already passed.
 pub const TickGate = @import("tick.zig").TickGate;
 
+/// Host-injected engine configuration (EngineConfig) — data model + JSON
+/// parser. The app shell applies it; see docs/engine-config.md.
+pub const config = @import("config.zig");
+
 test {
     // Pull in the sibling files' unit tests so `zig build test` runs them.
     _ = @import("tick.zig");
+    _ = @import("config.zig");
     _ = @import("eye.zig");
     _ = @import("sdf.zig");
     _ = @import("sdf_scene.zig");

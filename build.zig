@@ -330,7 +330,9 @@ pub fn build(b: *Build) !void {
             //
             // `quine_enqueue` is the inbound-message entry point the editor calls
             // (Module.ccall) to push WebSocket frames into the engine's queue;
-            // `quine_provide_asset` is how the host hands the qube's game assets
+            // `quine_set_config` injects the EngineConfig document at boot
+            // (docs/engine-config.md); `quine_provide_asset` is how the host
+            // hands the qube's game assets
             // (meshes) to the engine at boot (so the wasm ships no game content) —
             // the loader fetches each, `_malloc`/`HEAPU8` stage the bytes, and
             // `addRunDependency`/`removeRunDependency` hold `_main` until they're
@@ -339,7 +341,7 @@ pub fn build(b: *Build) !void {
                 "-sALLOW_MEMORY_GROWTH=1",
                 "-sSTACK_SIZE=8388608",
                 "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
-                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_malloc,_free",
+                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_malloc,_free",
             },
         });
         // `zig build` emits the web bundle into zig-out/web.
