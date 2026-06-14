@@ -50,6 +50,10 @@ mergeInto(LibraryManager.library, {
       }
 
       var A = { ctx: ctx, ch: ch, rate: mixerRate, mode: 'buffer', next: 0, look: 0.18 };
+      // Internal cross-function state: `needed`/`push` read `Module._quineAudio`.
+      // Closure renames this property CONSISTENTLY across all three, so the
+      // internal path works; the host reads the separate, quoted `window.quineAudio`.
+      Module._quineAudio = A;
       var g = (typeof window !== 'undefined') ? window : globalThis;
 
       // Publish a host-readable snapshot of the audio state with QUOTED keys, so
@@ -69,7 +73,10 @@ mergeInto(LibraryManager.library, {
       publish();
 
       var resume = function () {
-        if (ctx.state !== 'running') ctx.resume().then(publish, publish);
+        if (ctx.state !== 'running') {
+          var pr = ctx.resume();
+          if (pr && pr.then) pr.then(publish, publish);
+        }
         publish();
       };
       ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
@@ -161,13 +168,20 @@ mergeInto(LibraryManager.library, {
       var free = A.cap - (w - r);
       var nw = Math.min(frames, free);
       var d = A.data, cap = A.cap, ch = A.ch;
+      var sl = 0, sr = 0; // recent-block L/R energy (a stereo/pan diagnostic)
       for (var i = 0; i < nw; i++) {
         var s = (w % cap) * ch;
         var k = base + i * channels;
-        for (var c = 0; c < ch; c++) { d[s + c] = (c < channels) ? HEAPF32[k + c] : 0; }
+        for (var c = 0; c < ch; c++) {
+          var v = (c < channels) ? HEAPF32[k + c] : 0;
+          d[s + c] = v;
+          if (c === 0) sl += v < 0 ? -v : v; else if (c === 1) sr += v < 0 ? -v : v;
+        }
         w++;
       }
       Atomics.store(A.control, 1, w);
+      var gw = (typeof window !== 'undefined' ? window : globalThis)['quineAudio'];
+      if (gw) { gw['pushed'] = (gw['pushed'] || 0) + nw; gw['L'] = sl; gw['R'] = sr; }
       return;
     }
 
@@ -186,5 +200,7 @@ mergeInto(LibraryManager.library, {
     if (t < now2) t = now2;
     srcNode.start(t);
     A.next = t + frames / A.rate;
+    var gb = (typeof window !== 'undefined' ? window : globalThis)['quineAudio'];
+    if (gb) gb['pushed'] = (gb['pushed'] || 0) + frames; // live "audio flowing" counter
   },
 });
