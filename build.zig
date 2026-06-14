@@ -9,8 +9,26 @@ const sokol = @import("sokol");
 const WebGpuApi = enum { webgl2, webgpu };
 
 pub fn build(b: *Build) !void {
-    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // Tier D1: the opt-in threaded web bundle. Jolt's job pool runs on Web
+    // Workers (emscripten pthreads); the whole wasm then shares one
+    // SharedArrayBuffer, so EVERY object — Zig + Jolt + sokol — must be built
+    // with wasm `atomics` + `bulk_memory` or wasm-ld rejects the memory-model
+    // mismatch. We augment the resolved target with those features and ship a
+    // separate `-mt` bundle (it needs cross-origin isolation to instantiate, so
+    // it can't replace the default single-threaded one). The default build path
+    // is completely unchanged when this is off.
+    const web_threads = b.option(bool, "web-threads", "Web: build the threaded (-pthread) bundle (Tier D1). Needs SharedArrayBuffer / cross-origin isolation at runtime.") orelse false;
+    const target = blk: {
+        const base = b.standardTargetOptions(.{});
+        if (!web_threads) break :blk base;
+        if (!base.result.cpu.arch.isWasm()) @panic("-Dweb-threads only applies to a wasm target");
+        var q = base.query;
+        q.cpu_features_add.addFeature(@intFromEnum(std.Target.wasm.Feature.atomics));
+        q.cpu_features_add.addFeature(@intFromEnum(std.Target.wasm.Feature.bulk_memory));
+        break :blk b.resolveTargetQuery(q);
+    };
 
     const is_web = target.result.cpu.arch.isWasm();
     const web_gpu = b.option(
@@ -303,9 +321,12 @@ pub fn build(b: *Build) !void {
         // Emscripten linker turns into <name>.{html,wasm,js}. The bundle name
         // encodes the backend so both can coexist in zig-out/web and the JS
         // loader (web/index.html) can pick one at runtime.
+        // The threaded bundle gets a distinct `-mt` name so it coexists with the
+        // single-threaded default and the loader can pick it only when the page
+        // is cross-origin isolated (SharedArrayBuffer available).
         const web_name = switch (web_gpu) {
-            .webgl2 => "quine-webgl2",
-            .webgpu => "quine-webgpu",
+            .webgl2 => if (web_threads) "quine-webgl2-mt" else "quine-webgl2",
+            .webgpu => if (web_threads) "quine-webgpu-mt" else "quine-webgpu",
         };
         const lib = b.addLibrary(.{
             .name = web_name,
@@ -321,6 +342,9 @@ pub fn build(b: *Build) !void {
         // gathers every Jolt .cpp (matching zphysics's source list).
         const emcc_path = dep_emsdk.path("upstream/emscripten/emcc").getPath(b);
         const jolt_libs = dep_zphysics.path("libs").getPath(b);
+        // Threaded bundle: compile Jolt with `-pthread` so its job pool can spawn
+        // Web Workers and the object matches the shared-memory wasm (D1).
+        const jolt_pthread: []const u8 = if (web_threads) "-pthread " else "";
         const build_joltc = b.addSystemCommand(&.{
             "sh",
             "-c",
@@ -330,14 +354,35 @@ pub fn build(b: *Build) !void {
             // core C API we do use is all in JoltPhysicsC.cpp.
             b.fmt(
                 "set -e; srcs=$(find '{s}/Jolt' -name '*.cpp'); " ++
-                    "'{s}' -r -std=c++17 -fno-exceptions -fno-access-control -fno-sanitize=undefined -Oz " ++
+                    "'{s}' -r -std=c++17 -fno-exceptions -fno-access-control -fno-sanitize=undefined -Oz {s}" ++
                     "-DJPH_CROSS_PLATFORM_DETERMINISTIC= -I '{s}' -I '{s}/JoltC' " ++
                     "$srcs '{s}/JoltC/JoltPhysicsC.cpp' -o \"$1\"",
-                .{ jolt_libs, emcc_path, jolt_libs, jolt_libs, jolt_libs },
+                .{ jolt_libs, emcc_path, jolt_pthread, jolt_libs, jolt_libs, jolt_libs },
             ),
             "sh",
         });
         mod_app.addObjectFile(build_joltc.addOutputFileArg("joltc.o"));
+
+        // Link args, built dynamically so the threaded bundle can add -pthread +
+        // a pre-spawned worker pool (Jolt can't synchronously spawn workers
+        // mid-frame). Cross-origin isolation is the runtime prerequisite for the
+        // SharedArrayBuffer a -pthread module needs.
+        var em_args: std.ArrayList([]const u8) = .empty;
+        try em_args.appendSlice(b.allocator, &.{
+            "-sALLOW_MEMORY_GROWTH=1",
+            "-sSTACK_SIZE=8388608",
+            "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
+            "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_quine_version,_malloc,_free",
+        });
+        if (web_threads) try em_args.appendSlice(b.allocator, &.{
+            "-pthread",
+            "-sPTHREAD_POOL_SIZE=8",
+            "-sPTHREAD_POOL_SIZE_STRICT=0",
+        });
+        // Our own WebAudio output device (replaces sokol_audio): negotiates the
+        // browser's real channel count (up to 8) and schedules the mixer's PCM.
+        // See apps/desktop/audio_web.js.
+        try em_args.appendSlice(b.allocator, &.{ "--js-library", b.path("apps/desktop/audio_web.js").getPath(b) });
 
         const link = try sokol.emLinkStep(b, .{
             .lib_main = lib,
@@ -348,6 +393,9 @@ pub fn build(b: *Build) !void {
             .use_webgpu = web_gpu == .webgpu,
             .use_emmalloc = true,
             .use_filesystem = false,
+            // Closure + pthread is a known-fragile combination; skip it for the
+            // threaded bundle (the default bundle keeps closure minification).
+            .release_use_closure = !web_threads,
             .shell_file_path = b.path("web/shell.html"),
             // Jolt needs real heap + stack: its temp allocator grabs 16 MB up
             // front, which overflows Emscripten's default fixed heap, and the
@@ -363,17 +411,7 @@ pub fn build(b: *Build) !void {
             // the loader fetches each, `_malloc`/`HEAPU8` stage the bytes, and
             // `addRunDependency`/`removeRunDependency` hold `_main` until they're
             // delivered. `ccall` exposes the marshal helper. `_main` is the entry.
-            .extra_args = &.{
-                "-sALLOW_MEMORY_GROWTH=1",
-                "-sSTACK_SIZE=8388608",
-                "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
-                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_quine_version,_malloc,_free",
-                // Our own WebAudio output device (replaces sokol_audio): negotiates
-                // the browser's real channel count (up to 8) and schedules the
-                // mixer's PCM. See apps/desktop/audio_web.js.
-                "--js-library",
-                b.path("apps/desktop/audio_web.js").getPath(b),
-            },
+            .extra_args = em_args.items,
         });
         // The `--js-library` path above is passed to emcc as a plain string, so
         // the build graph doesn't see audio_web.js as an input — a JS-only edit

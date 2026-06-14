@@ -34,7 +34,14 @@ var jolt_inited: bool = false;
 /// by `scripts/phys-determinism.sh` (identical state digest across 0/1/2/4/auto
 /// threads). The env knob keeps the single-threaded A/B path for that check.
 fn workerThreads() i32 {
-    if (comptime @import("builtin").target.cpu.arch.isWasm()) return 0;
+    const t = @import("builtin").target;
+    // Web is single-threaded **unless** this is the Tier D1 threaded bundle —
+    // built with wasm `atomics` (`-Dweb-threads`), which is the signal that
+    // emscripten pthreads + a SharedArrayBuffer are present. Without atomics
+    // (the default bundle) Jolt must stay on the one thread.
+    if (comptime t.cpu.arch.isWasm() and !std.Target.wasm.featureSetHas(t.cpu.features, .atomics)) return 0;
+    // `-1` = Jolt autodetects core count (native: CPU count; threaded wasm:
+    // navigator.hardwareConcurrency); `QUINE_PHYS_THREADS` overrides on native.
     const v = std.c.getenv("QUINE_PHYS_THREADS") orelse return -1;
     return std.fmt.parseInt(i32, std.mem.span(v), 10) catch -1;
 }

@@ -853,13 +853,15 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Tier D — wasm threads (web parity)** — splits cleanly into two
       independent halves with very different readiness (see ADR-0001 §"Tier D
       plan"):
-      - **D1 — Jolt threads on wasm** (achievable now): Jolt's pool is C++
-        `std::thread` in the emcc-compiled object, so it does *not* depend on
-        Zig's `std.Thread`. Needs `-pthread` on the Jolt emcc compile + the
-        `emLinkStep`, `-sPTHREAD_POOL_SIZE`, the `atomics`/`bulk_memory` wasm
-        features + shared memory, and flipping `physics.workerThreads()` to allow
-        wasm. Determinism holds (cross-platform determinism is on); browser
-        verification is out of band.
+      - **D1 — Jolt threads on wasm** — **build side DONE** (opt-in
+        `-Dweb-threads`, default bundle untouched). `-pthread` on the Jolt compile
+        + `emLinkStep`, `-sPTHREAD_POOL_SIZE=8`, target augmented with
+        `atomics`/`bulk_memory`, and `physics.workerThreads()` enables wasm
+        threads iff the bundle has `atomics`. It **builds + links** a separate
+        `quine-*-mt.{js,wasm}`. *Out of band (no isolated browser here):* runtime
+        verification (SAB instantiation, workers spawn, in-browser determinism),
+        the host loader picking `-mt` only when `crossOriginIsolated`, and adding
+        `-mt` to `publish-cdn.sh`. See ADR-0001 §"Tier D plan".
       - **D2 — Zig bake threads on wasm** (**blocked**): `std.Thread` pulls
         `std.Io.Threaded`, which **does not compile for emscripten in Zig 0.16**
         (the `childWait`/signal-enum bug this session hit — bake.zig is gated off

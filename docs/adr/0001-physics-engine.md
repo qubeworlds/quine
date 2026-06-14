@@ -203,24 +203,42 @@ Steps, in order:
 Bringing threads to the web build. Investigating it surfaced that the two thread
 users have **very different readiness**, so Tier D splits in two.
 
-### D1 — Jolt threads on wasm (achievable now)
+### D1 — Jolt threads on wasm — build side DONE; runtime verification out of band
 
 Jolt's job pool is C++ `std::thread`/`std::mutex` compiled into the emcc Jolt
 object (`build.zig` `build_joltc`), **not** Zig's `std.Thread` — so it's
-independent of the Zig-stdlib blocker below. What it needs:
+independent of the Zig-stdlib blocker below. The **build plumbing is implemented**
+behind the opt-in `-Dweb-threads` flag (the default single-threaded bundle is
+byte-for-byte untouched). It does:
 
-1. **`-pthread` on the Jolt emcc compile** (`build_joltc`) and on the final
-   `emLinkStep`, plus `-sPTHREAD_POOL_SIZE=<n>` to pre-spawn workers (emscripten
+1. **`-pthread`** on the Jolt emcc compile (`build_joltc`) and on the final
+   `emLinkStep`, plus `-sPTHREAD_POOL_SIZE=8` to pre-spawn workers (emscripten
    can't synchronously `pthread_create` on the main thread mid-frame).
-2. **Wasm features:** the web target needs `atomics` + `bulk_memory` and shared
-   memory; emscripten `ALLOW_MEMORY_GROWTH` + shared memory is supported but
-   growth must be handled (the heap is a `SharedArrayBuffer`).
-3. **Flip `physics.workerThreads()`** — today it hard-returns `0` on wasm; let
-   wasm read a thread count once D1's link flags are in.
-4. Determinism is unchanged: cross-platform determinism is on, so Jolt stays
-   thread-count-independent (the native A/B harness already proves the property;
-   the wasm build inherits it). **Browser verification is out of band** — this
-   sandbox has no cross-origin-isolated browser.
+2. **Wasm features:** augments the resolved target with `atomics` + `bulk_memory`
+   (the whole wasm shares one `SharedArrayBuffer`, so every object — Zig + Jolt +
+   sokol + quickjs — must match, or wasm-ld rejects the memory model).
+   `ALLOW_MEMORY_GROWTH` stays on (emscripten warns but links).
+3. **`physics.workerThreads()`** now returns a thread count on wasm **iff** the
+   bundle was built with `atomics` (the D1 signal); the default bundle still
+   returns `0`. Closure is disabled for the threaded bundle (closure + pthread is
+   fragile).
+4. It **builds and links** — a separate `quine-{webgl2,webgpu}-mt.{js,wasm}`
+   bundle (the `.js` carries the pthread Worker bootstrap; emscripten generates
+   the `-mt` system libs). That clears the real unknown: the toolchain accepts
+   threaded wasm across the whole stack.
+
+**Still out of band (needs a cross-origin-isolated browser — not available in the
+build sandbox):**
+
+- **Runtime verification** — that it instantiates with a `SharedArrayBuffer`,
+  that Jolt actually spawns workers, and that determinism holds in-browser
+  (inherited from cross-platform determinism, proven natively, but unrun on web).
+- **Loader selection** — the host/SDK must pick the `-mt` bundle **only when
+  `crossOriginIsolated`**, else the single-threaded one (a `-pthread` module
+  won't instantiate without SAB). Host-side (`world` repo), not engine build.
+- **CDN publish** — `scripts/publish-cdn.sh` must also emit the `-mt` artifacts.
+  Deliberately *not* wired up yet: publishing an unverified threaded bundle to the
+  live CDN should wait on the browser check above.
 
 ### D2 — Zig bake threads on wasm (blocked)
 
