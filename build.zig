@@ -374,6 +374,13 @@ pub fn build(b: *Build) !void {
                 b.path("apps/desktop/audio_web.js").getPath(b),
             },
         });
+        // The `--js-library` path above is passed to emcc as a plain string, so
+        // the build graph doesn't see audio_web.js as an input — a JS-only edit
+        // wouldn't invalidate the link cache (stale audio could ship). Register it
+        // as a tracked file input on the emcc Run step so it rebuilds when changed.
+        for (link.step.dependencies.items) |dep| {
+            if (dep.cast(std.Build.Step.Run)) |emcc| emcc.addFileInput(b.path("apps/desktop/audio_web.js"));
+        }
         // `zig build` emits the web bundle into zig-out/web.
         b.getInstallStep().dependOn(&link.step);
         // `zig build run` serves it locally via emrun (needs a browser).

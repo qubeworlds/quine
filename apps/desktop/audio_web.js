@@ -58,10 +58,14 @@ mergeInto(LibraryManager.library, {
         g.addEventListener(ev, resume, { passive: true });
       });
 
-      // Try the worklet+SAB upgrade (async). Conditions: cross-origin isolation
-      // (SharedArrayBuffer exists), AudioWorklet support, and a matching rate.
-      if (typeof SharedArrayBuffer !== 'undefined' && ctx.audioWorklet &&
-          Math.abs(ctx.sampleRate - mixerRate) < 1) {
+      // Try the worklet+SAB upgrade (async). Conditions: the page is genuinely
+      // cross-origin isolated (the canonical gate — more reliable than just
+      // `typeof SharedArrayBuffer`, e.g. inside a non-isolated iframe), AudioWorklet
+      // support, and a matching rate. Otherwise we stay on the buffer fallback, so
+      // the engine still plays audio when embedded in an ordinary (non-COI) page.
+      // (bracket access so emscripten's closure pass can't fold/strip the gate)
+      if (globalThis['crossOriginIsolated'] === true && typeof SharedArrayBuffer !== 'undefined' &&
+          ctx.audioWorklet && Math.abs(ctx.sampleRate - mixerRate) < 1) {
         try {
           // Ring + target are multiples of the worklet's 128-frame quantum. At
           // 48 kHz: cap 8192 ≈ 170 ms of slack; target 2048 ≈ 43 ms latency, with
