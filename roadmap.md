@@ -818,8 +818,14 @@ Each phase builds on the last; in-flight items defer to `docs/TODO.md`.
 ### Phase 1 — Multithreading  *(native **and** web — see §12)*
 The enabler for everything physical, and the priority. Sequence **A → B → D**,
 skip C, hold the "result must not depend on thread count" invariant.
-- [ ] **Determinism test harness** — record tick+inputs, replay headless, assert
-      identical state. *Lands first; it's the safety net the rest leans on.*
+- [x] **Determinism test harness** *(first cut)* — `core.snapshot`: a canonical
+      state `digest` (entity-index order, padding-free field hashing), a
+      `DigestTrace` that record→replays and reports the **exact tick** two runs
+      diverge, and a `writeJson` live-state dump for debugging. Wired as headless
+      tests: a pure-core record/replay, plus a `SceneRuntime` tick+input **+
+      physics** replay (Jolt single-threaded reproduces digest-for-digest). The
+      safety net the rest leans on — *extend it as each tier lands* (record
+      single-threaded, replay with the pool on, assert `divergedAt == null`).
 - [ ] **Tier A — thread the bakes** — app-layer thread pool for PNG/glTF decode,
       SDF meshing / marching-cubes, navmesh bake, texture upload. Core stays pure.
       *(zero determinism risk, no wasm dependency)*
@@ -827,9 +833,11 @@ skip C, hold the "result must not depend on thread count" invariant.
       thread-safe (mutex around `add()`, or per-thread scratch reduced in fixed
       order), set `num_body_mutexes`, flip `num_threads > 0`.
 - [ ] **Tier D — wasm threads (web parity)** — emscripten `-pthread`,
-      SharedArrayBuffer, **COOP/COEP cross-origin-isolation headers on the
-      Cloudflare Worker**, pthread-enabled libc++ for the Jolt build, warmed
-      thread pool. Verify same-binary determinism still holds on web.
+      SharedArrayBuffer, pthread-enabled libc++ for the Jolt build, warmed thread
+      pool. Verify same-binary determinism still holds on web.
+      *Cross-origin isolation (COOP/COEP) — the SharedArrayBuffer prerequisite —
+      is **done**, handled by the npm SDK harness, so this no longer waits on
+      Cloudflare Worker header config.*
 - [ ] **Scale check** — push toward ADR-0001's 10k+ bodies; profile.
 
 ### Phase 2 — Observability & debug tooling  *(foundational debug — see §19)*
@@ -855,8 +863,9 @@ Pulled early: you can't debug threading, the multiplayer loop, or AI agents by e
         available. Negotiates N = min(8, `destination.maxChannelCount`).
       - **Native** — ALSA on Linux; macOS/Windows null for now.
       Core raises events, the app plays (mirrors the render boundary).
-      *Next:* CoreAudio/WASAPI native backends; host **COOP/COEP** headers so the
-      SAB path lights up on iPad.
+      *Next:* CoreAudio/WASAPI native backends. **COOP/COEP** cross-origin
+      isolation — which lights the SAB worklet path up on iPad — is now **done**,
+      handled by the npm SDK harness.
 - [ ] **Audio modules on top** (§26 Module tier) — positional/surround placement,
       reverb, HRTF as compiled modules over the low-level engine, not in the core.
 - [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the

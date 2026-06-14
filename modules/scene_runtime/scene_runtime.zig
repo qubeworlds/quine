@@ -1748,6 +1748,63 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
     try std.testing.expect(rt.world.get(core.MeshRef, rt.find("ground").?.entity) == null);
 }
 
+/// Run a scene for `ticks` fixed steps, feeding a scripted input each tick and
+/// recording a state digest after every step. The whole point of the harness:
+/// the run is fully determined by (initial scene, tick count, input sequence),
+/// so a second call with the same arguments must produce an identical trace —
+/// physics (Jolt, single-threaded here) included, since the step syncs body
+/// transforms back into the ECS the digest reads.
+fn recordSceneRun(a: std.mem.Allocator, sc: core.SceneData, ticks: usize, trace: *core.DigestTrace) !void {
+    var rt: SceneRuntime = undefined;
+    try rt.init(a, sc, &.{});
+    defer rt.deinit();
+    const dt: f32 = 1.0 / 60.0;
+    for (0..ticks) |t| {
+        // A scripted, varying input — recorded as part of this run.
+        rt.setAxis(0, @sin(@as(f32, @floatFromInt(t)) * 0.1));
+        try rt.update(dt);
+        try trace.record(a, &rt.world);
+    }
+}
+
+test "SceneRuntime is deterministic: an identical tick+input replay matches digest-for-digest" {
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "determinism",
+        .gravity = .{ 0, -9.81, 0 },
+        .entities = &.{
+            .{
+                .name = "ground",
+                .transform = .{ .position = .{ 0, -1, 0 } },
+                .body = .{ .motion = .static, .collider = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } }, .friction = 0.4, .tag = "ground" },
+            },
+            .{
+                .name = "ball",
+                .transform = .{ .position = .{ 0.05, 2, -0.03 } }, // slightly off-centre so it rolls
+                .geometry = .{ .sphere = .{ .radius = 0.2, .rings = 8, .segments = 12 } },
+                .body = .{ .motion = .dynamic, .collider = .{ .sphere = .{ .radius = 0.2 } }, .mass = 1.0, .restitution = 0.4, .tag = "ball" },
+            },
+        },
+    };
+
+    const a = std.heap.c_allocator;
+    var first: core.DigestTrace = .{};
+    defer first.deinit(a);
+    var second: core.DigestTrace = .{};
+    defer second.deinit(a);
+
+    try recordSceneRun(a, sc, 180, &first);
+    try recordSceneRun(a, sc, 180, &second);
+
+    // Same binary, same inputs → the two runs agree at every tick.
+    try std.testing.expectEqual(@as(?usize, null), first.divergedAt(second));
+
+    // And the run was non-trivial: 180 ticks recorded, and the ball's fall +
+    // bounce actually moved state (not a constant digest the whole way).
+    try std.testing.expectEqual(@as(usize, 180), first.digests.items.len);
+    try std.testing.expect(first.digests.items[0] != first.digests.items[179]);
+}
+
 test "SceneRuntime resolves and loads a glTF model from an asset" {
     const glb = @embedFile("character.glb");
     const sc = core.scene.Scene{

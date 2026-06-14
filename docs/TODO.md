@@ -193,7 +193,9 @@ Goal: scenes are data we can save, load, and compose — not code in `loadDancer
 - [ ] **Save / load.** Serialize the ECS `World` (or a scene doc) to a file and
       back. Leverages the deterministic core — a saved scene + tick count
       reproduces exactly. Format TBD (Zig `std` serialization vs a small custom
-      binary/JSON).
+      binary/JSON). *(Partial: `core.snapshot.writeJson` already dumps live world
+      state to JSON one-way for debugging — the load-back / round-trip half is
+      what remains here.)*
 - [ ] **Combine scenes.** Merge two scenes into one world with an offset/parent
       transform and id-remapping, so we can assemble bigger scenes from parts
       (e.g. dancer-scene + arena-scene).
@@ -360,8 +362,11 @@ Engine / infra:
       thread-safe contact path; we run single-threaded now). *(ADR 0001)*
 - [ ] **Windows cross-compile**: the zphysics binding's comptime `@sizeOf`
       asserts fail under the Windows-GNU ABI. *(ADR 0001)*
-- [ ] **Replay/determinism harness.** Record seed/inputs, replay headless — the
-      core was built for this; good for tests and debugging.
+- [x] **Replay/determinism harness** *(first cut)*. `core.snapshot` — a canonical
+      state `digest`, a `DigestTrace` that record→replays and reports the exact
+      tick two runs diverge, and a `writeJson` live-state dump. Headless tests
+      cover a pure-core replay and a `SceneRuntime` tick+input+physics replay
+      (digest-for-digest). Extend it tier-by-tier as the threading work lands.
 - [ ] **Scientific layer.** Orbital / continuous dynamics as our own integrator
       feeding external forces into Jolt bodies. *(ADR 0001)*
 

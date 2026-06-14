@@ -133,6 +133,13 @@ pub const TickGate = @import("tick.zig").TickGate;
 /// parser. The app shell applies it; see docs/engine-config.md.
 pub const config = @import("config.zig");
 
+/// Deterministic world-state snapshots: a `digest` fingerprint for record→replay
+/// determinism checks, a `DigestTrace` that pinpoints the tick two runs diverge,
+/// and a `writeJson` state dump for debugging. See `snapshot.zig`.
+pub const snapshot = @import("snapshot.zig");
+pub const digest = snapshot.digest;
+pub const DigestTrace = snapshot.DigestTrace;
+
 test {
     // Pull in the sibling files' unit tests so `zig build test` runs them.
     _ = @import("tick.zig");
@@ -146,6 +153,7 @@ test {
     _ = @import("png.zig");
     _ = @import("obj.zig");
     _ = @import("ocean.zig");
+    _ = @import("snapshot.zig");
 }
 
 /// Gerstner ocean: the closed-form wave surface that feeds both buoyancy (core)
