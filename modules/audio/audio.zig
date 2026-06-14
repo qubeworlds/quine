@@ -30,8 +30,30 @@ pub const sample_rate: f32 = 48000;
 pub const max_channels = 8;
 pub const max_buses = 8;
 pub const max_oneshots = 16;
+pub const max_samplers = 32;
 
 const Bus = struct { freq: f32 = 0, gain: f32 = 0, noise: f32 = 0, pan: f32 = 0, phase: f32 = 0 };
+
+/// A PCM sample voice: plays a provided clip buffer (mono f32 at `sample_rate`)
+/// with per-voice gain, playback `rate` (pitch), stereo `pan`, looping, and a
+/// fade envelope (fade in/out, pause, stop). Addressed by `id` (the owning
+/// source) so the app can update/stop the same voice across frames. This is the
+/// substrate the 3D-audio module drives — the mixer itself stays content-agnostic
+/// (it neither owns nor decodes the PCM; the host hands clips in).
+const Sampler = struct {
+    id: u32 = 0,
+    buf: ?[]const f32 = null,
+    pos: f32 = 0, // fractional read position, in samples
+    rate: f32 = 1, // playback rate (1 = original pitch)
+    gain: f32 = 0, // target loudness (spatialisation sets this each frame)
+    pan: f32 = 0,
+    loop: bool = false,
+    fade: f32 = 1, // current envelope multiplier [0,1]
+    fade_to: f32 = 1, // envelope target
+    fade_rate: f32 = 0, // per-second ramp toward `fade_to` (0 = snap)
+    release: bool = false, // free the voice once the envelope reaches 0
+    active: bool = false,
+};
 
 const OneShot = struct {
     freq: f32 = 0,
@@ -53,6 +75,7 @@ pub const Mixer = struct {
     channels: u32 = 2,
     buses: [max_buses]Bus = [_]Bus{.{}} ** max_buses,
     shots: [max_oneshots]OneShot = [_]OneShot{.{}} ** max_oneshots,
+    samplers: [max_samplers]Sampler = [_]Sampler{.{}} ** max_samplers,
     /// LCG state for the noise source (audio needs no determinism vs. the sim).
     rng: u32 = 0x9e3779b9,
     master: f32 = 0.4,
@@ -95,6 +118,76 @@ pub const Mixer = struct {
             .decay = if (kind == 0) 4.0 else 18.0,
             .active = true,
         };
+    }
+
+    // --- sampler (PCM clip) voices ------------------------------------------
+
+    /// The live voice for source `id`, or null if it has none.
+    fn samplerFor(self: *Mixer, id: u32) ?*Sampler {
+        for (&self.samplers) |*v| if (v.active and v.id == id) return v;
+        return null;
+    }
+
+    /// A slot to (re)use for source `id`: its existing voice, else a free slot,
+    /// else the quietest active voice (stolen so a burst never starves).
+    fn samplerSlot(self: *Mixer, id: u32) *Sampler {
+        if (self.samplerFor(id)) |v| return v;
+        var quietest: *Sampler = &self.samplers[0];
+        for (&self.samplers) |*v| {
+            if (!v.active) return v;
+            if (v.gain * v.fade < quietest.gain * quietest.fade) quietest = v;
+        }
+        return quietest;
+    }
+
+    /// Start (or restart) the clip for source `id`. `buf` is mono f32 PCM at
+    /// `sample_rate`; `pitch` is the playback rate; `pan` in [-1, 1].
+    pub fn playClip(self: *Mixer, id: u32, buf: []const f32, gain: f32, pitch: f32, pan: f32, loop: bool) void {
+        const v = self.samplerSlot(id);
+        v.* = .{
+            .id = id,
+            .buf = buf,
+            .rate = @max(pitch, 0),
+            .gain = if (gain < 0) 0 else gain,
+            .pan = std.math.clamp(pan, -1, 1),
+            .loop = loop,
+            .active = buf.len > 0,
+        };
+    }
+
+    /// Update source `id`'s live params (the spatialisation system calls this
+    /// each frame as the listener/source move).
+    pub fn updateClip(self: *Mixer, id: u32, gain: f32, pitch: f32, pan: f32) void {
+        if (self.samplerFor(id)) |v| {
+            v.gain = if (gain < 0) 0 else gain;
+            v.rate = @max(pitch, 0);
+            v.pan = std.math.clamp(pan, -1, 1);
+        }
+    }
+
+    /// Ramp source `id`'s envelope toward `target` at `rate` per second (0 =
+    /// snap). Fade/pause/resume: `target` 0 silences (voice stays alive), 1 resumes.
+    pub fn fadeClip(self: *Mixer, id: u32, target: f32, rate: f32) void {
+        if (self.samplerFor(id)) |v| {
+            v.fade_to = std.math.clamp(target, 0, 1);
+            v.fade_rate = rate;
+            v.release = false;
+        }
+    }
+
+    /// Stop source `id`: ramp to silence at `rate` per second (0 = immediate),
+    /// then free the voice.
+    pub fn stopClip(self: *Mixer, id: u32, rate: f32) void {
+        if (self.samplerFor(id)) |v| {
+            v.fade_to = 0;
+            v.fade_rate = rate;
+            v.release = true;
+        }
+    }
+
+    /// True if source `id` currently has a live voice.
+    pub fn clipActive(self: *Mixer, id: u32) bool {
+        return self.samplerFor(id) != null;
     }
 
     fn nextNoise(self: *Mixer) f32 {
@@ -192,6 +285,44 @@ pub const Mixer = struct {
                     sh.env = 0;
                     sh.active = false;
                 }
+            }
+            for (&self.samplers) |*v| {
+                if (!v.active) continue;
+                const buf = v.buf orelse {
+                    v.active = false;
+                    continue;
+                };
+                const len = buf.len;
+                if (len == 0) {
+                    v.active = false;
+                    continue;
+                }
+                // Advance the fade envelope toward its target.
+                if (v.fade != v.fade_to) {
+                    if (v.fade_rate <= 0) {
+                        v.fade = v.fade_to; // snap
+                    } else {
+                        const step = v.fade_rate * dt;
+                        v.fade = if (v.fade < v.fade_to) @min(v.fade + step, v.fade_to) else @max(v.fade - step, v.fade_to);
+                    }
+                }
+                // Linear-interpolated read at the fractional position.
+                const idx: usize = @intFromFloat(@floor(v.pos));
+                const frac = v.pos - @floor(v.pos);
+                const s0 = buf[idx];
+                const s1 = if (idx + 1 < len) buf[idx + 1] else if (v.loop) buf[0] else 0;
+                const sample = s0 * (1 - frac) + s1 * frac;
+                const g = v.gain * v.fade;
+                const w = panLR(v.pan);
+                l += sample * g * w[0];
+                r += sample * g * w[1];
+                // Advance; wrap (loop) or finish (one-shot).
+                v.pos += v.rate;
+                const lenf: f32 = @floatFromInt(len);
+                if (v.pos >= lenf) {
+                    if (v.loop) v.pos = @mod(v.pos, lenf) else v.active = false;
+                }
+                if (v.release and v.fade <= 0) v.active = false;
             }
             l = std.math.clamp(l * self.master, -1.0, 1.0);
             r = std.math.clamp(r * self.master, -1.0, 1.0);
@@ -302,4 +433,86 @@ test "configure clamps to the supported channel range" {
     try std.testing.expectEqual(@as(u32, 1), mx.channels);
     mx.configure(99);
     try std.testing.expectEqual(@as(u32, max_channels), mx.channels);
+}
+
+test "a sampler clip plays its buffer once, then frees the voice" {
+    var mx: Mixer = .{}; // stereo
+    const clip = [_]f32{0.5} ** 16;
+    mx.playClip(1, &clip, 1.0, 1.0, 0, false);
+    try std.testing.expect(mx.clipActive(1));
+
+    var buf: [32]f32 = undefined; // 16 stereo frames == the clip's 16 samples at rate 1
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+    try std.testing.expect(!mx.clipActive(1)); // consumed, voice freed
+
+    mx.render(&buf);
+    try std.testing.expectEqual(@as(f32, 0), energy(&buf)); // silent after it ends
+}
+
+test "a looping sampler clip keeps playing past its length" {
+    var mx: Mixer = .{};
+    const clip = [_]f32{0.5} ** 16;
+    mx.playClip(2, &clip, 1.0, 1.0, 0, true);
+
+    var buf: [256]f32 = undefined; // 128 frames ≫ the 16-sample clip
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+    try std.testing.expect(mx.clipActive(2)); // still looping
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+}
+
+test "playback rate shortens a clip (higher pitch plays faster)" {
+    var mx: Mixer = .{};
+    const clip = [_]f32{0.5} ** 16;
+    mx.playClip(3, &clip, 1.0, 2.0, 0, false); // double rate
+
+    var buf: [16]f32 = undefined; // 8 frames consume all 16 samples at rate 2
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+    try std.testing.expect(!mx.clipActive(3));
+}
+
+test "pan steers a sampler clip between the left and right channels" {
+    var mx: Mixer = .{};
+    const clip = [_]f32{0.5} ** 16;
+    mx.playClip(4, &clip, 1.0, 1.0, -1, true); // hard left, looped
+
+    var buf: [256]f32 = undefined;
+    mx.render(&buf);
+    var left: f32 = 0;
+    var right: f32 = 0;
+    var i: usize = 0;
+    while (i < buf.len) : (i += 2) {
+        left += @abs(buf[i]);
+        right += @abs(buf[i + 1]);
+    }
+    try std.testing.expect(left > right * 100);
+}
+
+test "fade silences a clip (pause); stop frees the voice" {
+    var mx: Mixer = .{};
+    const clip = [_]f32{0.5} ** 64;
+    mx.playClip(5, &clip, 1.0, 1.0, 0, true); // looped so it stays alive
+    var buf: [64]f32 = undefined; // 32 frames
+
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+
+    // Snap-fade to silence (pause): the voice stays alive but renders silent.
+    mx.fadeClip(5, 0, 0);
+    mx.render(&buf);
+    try std.testing.expectEqual(@as(f32, 0), energy(&buf));
+    try std.testing.expect(mx.clipActive(5));
+
+    // Resume.
+    mx.fadeClip(5, 1, 0);
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+
+    // Stop: the voice is freed.
+    mx.stopClip(5, 0);
+    mx.render(&buf);
+    try std.testing.expect(!mx.clipActive(5));
 }
