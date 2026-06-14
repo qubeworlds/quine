@@ -37,6 +37,9 @@ pub const MeshHandle = assets.MeshHandle;
 pub const MeshData = assets.MeshData;
 pub const MeshRegistry = assets.MeshRegistry;
 pub const max_meshes = assets.max_meshes;
+pub const AudioClip = assets.AudioClip;
+pub const AudioClipHandle = assets.AudioClipHandle;
+pub const AudioClipRegistry = assets.AudioClipRegistry;
 pub const SkinnedVertex = assets.SkinnedVertex;
 pub const SkinnedMeshData = assets.SkinnedMeshData;
 pub const Texture = assets.Texture;
@@ -217,6 +220,9 @@ pub const World = struct {
 
     /// CPU-side geometry, referenced from entities by `MeshRef` handles.
     meshes: MeshRegistry = .{},
+
+    /// Decoded PCM clips, referenced from `AudioSource.clip` (1-based; 0 = none).
+    audio_clips: AudioClipRegistry = .{},
 
     /// SDF/CSG objects the render layer raymarches (and the mesher polygonises for
     /// collision/debris) — one per entity whose geometry is `kind:"sdf"`. The engine

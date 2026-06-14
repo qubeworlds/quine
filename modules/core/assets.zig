@@ -135,8 +135,36 @@ pub const MeshRegistry = struct {
     }
 };
 
-/// The scaffold triangle, now a real 3D mesh: unit-ish triangle in the XY plane
-/// facing +Z, with per-vertex colors. Replaces the old hard-coded clip-space
+/// Handle to a decoded audio clip in the `AudioClipRegistry`.
+pub const AudioClipHandle = enum(u32) { _ };
+
+pub const max_clips = 256;
+
+/// A decoded mono PCM clip at the mixer's sample rate (48 kHz). The engine never
+/// decodes audio — the host hands PCM in via `quine_provide_asset` (like meshes),
+/// and the scene loader registers it here. `samples` is owned by the scene.
+pub const AudioClip = struct {
+    samples: []const f32,
+};
+
+/// Fixed-capacity registry of audio clips, mirroring `MeshRegistry`. The app
+/// reads a source's clip by handle to feed the mixer's sampler voice.
+pub const AudioClipRegistry = struct {
+    clips: [max_clips]AudioClip = undefined,
+    len: usize = 0,
+
+    pub fn add(self: *AudioClipRegistry, clip: AudioClip) AudioClipHandle {
+        std.debug.assert(self.len < max_clips);
+        const idx = self.len;
+        self.clips[idx] = clip;
+        self.len += 1;
+        return @enumFromInt(@as(u32, @intCast(idx)));
+    }
+
+    pub fn get(self: *const AudioClipRegistry, handle: AudioClipHandle) AudioClip {
+        return self.clips[@intFromEnum(handle)];
+    }
+};
 /// triangle now that geometry is transformed by a camera.
 pub const triangle_vertices = [_]Vertex{
     .{ .position = .{ .x = 0.0, .y = 0.5, .z = 0.0 }, .normal = .{ .z = 1 }, .color = .{ .x = 1, .y = 0, .z = 0, .w = 1 } },

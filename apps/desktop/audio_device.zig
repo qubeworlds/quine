@@ -72,7 +72,16 @@ pub fn syncSources(world: *core.World) void {
         if (mx.clipActive(id)) {
             mx.updateClip(id, src.out_gain, src.out_pitch, src.out_pan);
         } else {
-            mx.playClip(id, &tone, src.out_gain, src.out_pitch, src.out_pan, true);
+            // A clip-bearing source plays its PCM (1-based handle); a clip-less one
+            // hums the generated tone (synth-first). Looping ambient sources keep
+            // playing; a one-shot clip plays once.
+            const has_clip = src.clip != 0;
+            const pcm: []const f32 = if (has_clip)
+                world.audio_clips.get(@enumFromInt(src.clip - 1)).samples
+            else
+                &tone;
+            const loop = if (has_clip) src.loop else true;
+            mx.playClip(id, pcm, src.out_gain, src.out_pitch, src.out_pan, loop);
         }
     }
 }

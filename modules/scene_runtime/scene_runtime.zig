@@ -293,18 +293,31 @@ pub const SceneRuntime = struct {
                 .bloom_intensity = p.bloom_intensity,
             });
             // Scene-declared audio: a positioned source and/or the listener mark.
-            // Clip-name → handle resolution lands with the clip registry; for now
-            // a clip-less source plays a synth tone (the synth-first path).
-            if (e.audio) |au| self.world.set(core.AudioSource, ent, .{
-                .gain = au.gain,
-                .pitch = au.pitch,
-                .loop = au.loop,
-                .spatial = au.spatial,
-                .playing = au.playing,
-                .ref_distance = au.ref_distance,
-                .max_distance = au.max_distance,
-                .out_pitch = au.pitch,
-            });
+            // Resolve the clip name → registry handle (1-based; 0 = none, a synth
+            // tone). The host provides the clip as mono f32 PCM bytes (like a mesh);
+            // we copy them into a scene-owned f32 buffer.
+            if (e.audio) |au| {
+                var clip_handle: u32 = 0;
+                if (au.clip) |cname| if (resolve(assets, cname)) |bytes| {
+                    const n = bytes.len / @sizeOf(f32);
+                    if (n > 0) {
+                        const owned = try a.alloc(f32, n);
+                        @memcpy(std.mem.sliceAsBytes(owned), bytes[0 .. n * @sizeOf(f32)]);
+                        clip_handle = @intFromEnum(self.world.audio_clips.add(.{ .samples = owned })) + 1;
+                    }
+                };
+                self.world.set(core.AudioSource, ent, .{
+                    .clip = clip_handle,
+                    .gain = au.gain,
+                    .pitch = au.pitch,
+                    .loop = au.loop,
+                    .spatial = au.spatial,
+                    .playing = au.playing,
+                    .ref_distance = au.ref_distance,
+                    .max_distance = au.max_distance,
+                    .out_pitch = au.pitch,
+                });
+            }
             if (e.listener) self.world.set(core.AudioListener, ent, .{});
             bindings[i] = bnd;
         }
@@ -1617,6 +1630,23 @@ fn clampf(v: f32, lo: f32, hi: f32) f32 {
 // Headless test: load scene data into a live world + physics, run it.
 // Uses the C allocator (Jolt links libc) so engine bookkeeping isn't flagged.
 // =============================================================================
+
+test "a scene audio source resolves its clip name to PCM in the registry" {
+    const pcm = [_]f32{ 0.1, 0.2, 0.3, 0.4 };
+    const assets = [_]Asset{.{ .name = "hum.pcm", .bytes = std.mem.sliceAsBytes(pcm[0..]) }};
+    const sc = core.scene.Scene{ .schema_version = 1, .name = "clip", .entities = &.{
+        .{ .name = "src", .transform = .{}, .audio = .{ .clip = "hum.pcm", .loop = true } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &assets);
+    defer rt.deinit();
+
+    const s = rt.world.get(core.AudioSource, rt.find("src").?.entity).?;
+    try std.testing.expect(s.clip != 0); // resolved to a 1-based handle
+    const clip = rt.world.audio_clips.get(@enumFromInt(s.clip - 1));
+    try std.testing.expectEqual(@as(usize, 4), clip.samples.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), clip.samples[2], 1e-6);
+}
 
 test "a scene-declared audio source + listener spatialises by position after update" {
     // Scene-declared: the listener mark + a positioned source, loaded from data.
