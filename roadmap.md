@@ -847,11 +847,16 @@ Pulled early: you can't debug threading, the multiplayer loop, or AI agents by e
 - [x] **Low-level engine** — our own pure **N-channel synth mixer**
       (`modules/audio`): buses + one-shots + per-voice pan, rendered to 1..8
       interleaved channels, channel count set by the host. Headless + tested.
-- [x] **Own device layer** — dropped `sokol_audio`. Our own WebAudio device on
-      web (negotiates N = min(8, `destination.maxChannelCount`), schedules the
-      mixer's PCM) + ALSA on native Linux; macOS/Windows null for now. Core raises
-      events, the app plays (mirrors the render boundary). *Next:* an AudioWorklet
-      + SAB ring for lower-latency web output; CoreAudio/WASAPI native backends.
+- [x] **Own device layer** — dropped `sokol_audio`. Our own output device:
+      - **Web** — 48 kHz base. Preferred path is an **AudioWorklet + SharedArray
+        Buffer ring** (lock-free SPSC via Atomics, 128-frame quantum, ~43 ms
+        latency); needs cross-origin isolation (COOP/COEP) for `SharedArrayBuffer`.
+        Falls back to main-thread AudioBuffer scheduling where COI/worklet aren't
+        available. Negotiates N = min(8, `destination.maxChannelCount`).
+      - **Native** — ALSA on Linux; macOS/Windows null for now.
+      Core raises events, the app plays (mirrors the render boundary).
+      *Next:* CoreAudio/WASAPI native backends; host **COOP/COEP** headers so the
+      SAB path lights up on iPad.
 - [ ] **Audio modules on top** (§26 Module tier) — positional/surround placement,
       reverb, HRTF as compiled modules over the low-level engine, not in the core.
 - [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the

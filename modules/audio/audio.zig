@@ -21,8 +21,10 @@
 
 const std = @import("std");
 
-/// Device sample rate the app must configure its output to match.
-pub const sample_rate: f32 = 44100;
+/// Device sample rate the app must configure its output to match. 48 kHz is the
+/// WebAudio default (and what iPad Safari opens), so the AudioWorklet path runs
+/// 1:1 with the mixer — no resampling. The worklet's render quantum is 128 frames.
+pub const sample_rate: f32 = 48000;
 /// The most channels we ever render — a 7.1 layout, the ceiling a browser hands
 /// out (`AudioContext.destination.maxChannelCount` tops out here in practice).
 pub const max_channels = 8;
@@ -219,9 +221,9 @@ test "a one-shot makes sound, then decays to silence" {
     mx.render(&buf);
     try std.testing.expect(energy(&buf) > 0);
 
-    // Let it ring out: ~1s of audio drains the envelope to zero.
-    var big: [@as(usize, @intFromFloat(sample_rate)) * 2]f32 = undefined;
-    mx.render(&big);
+    // Let it ring out: render ~1.4s in small chunks (a boom decays at 4/s), then
+    // the envelope is drained to silence. (Looped renders, not a huge stack buffer.)
+    for (0..1024) |_| mx.render(&buf); // 1024 × 256 ≈ 5.5 s at 48 kHz
     mx.render(&buf);
     try std.testing.expectEqual(@as(f32, 0), energy(&buf));
 }
