@@ -50,10 +50,28 @@ mergeInto(LibraryManager.library, {
       }
 
       var A = { ctx: ctx, ch: ch, rate: mixerRate, mode: 'buffer', next: 0, look: 0.18 };
-      Module._quineAudio = A;
-
-      var resume = function () { if (ctx.state !== 'running') { ctx.resume(); } };
       var g = (typeof window !== 'undefined') ? window : globalThis;
+
+      // Publish a host-readable snapshot of the audio state with QUOTED keys, so
+      // emscripten's closure pass can't rename them (it renamed `Module._quineAudio`
+      // and the page could never read it). The host reads `window.quineAudio`:
+      // { mode, channels, sampleRate, block, state }. Re-published on every change.
+      var publish = function () {
+        g['quineAudio'] = {
+          'mode': A.mode,
+          'channels': A.ch,
+          'sampleRate': A.rate,
+          'contextRate': A.ctx ? A.ctx.sampleRate : 0,
+          'block': A.mode === 'worklet' ? 128 : 0,
+          'state': A.ctx ? A.ctx.state : '',
+        };
+      };
+      publish();
+
+      var resume = function () {
+        if (ctx.state !== 'running') ctx.resume().then(publish, publish);
+        publish();
+      };
       ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
         g.addEventListener(ev, resume, { passive: true });
       });
@@ -98,6 +116,7 @@ mergeInto(LibraryManager.library, {
             node.connect(ctx.destination);
             A.node = node;
             A.mode = 'worklet';
+            publish();
           }).catch(function () { /* stay on the buffer fallback */ });
         } catch (e) { /* stay on the buffer fallback */ }
       }
