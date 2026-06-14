@@ -23,6 +23,7 @@ cd "$ROOT_DIR"
 
 BUCKET="cdn-qubeworlds"
 ZIG="$ROOT_DIR/.zig/zig"; [ -x "$ZIG" ] || ZIG=zig
+VERSION="$(git rev-parse --short HEAD)" # immutable versioned paths, alongside latest
 
 # 1. Build both web backends (each bakes in one sokol backend), and dump the
 #    Frame's procedural worlds to standalone scene JSON (zig-out/scenes).
@@ -48,6 +49,17 @@ put engine/quine-webgl2.js   zig-out/web/quine-webgl2.js   text/javascript
 put engine/quine-webgl2.wasm zig-out/web/quine-webgl2.wasm application/wasm
 put engine/quine-webgpu.js   zig-out/web/quine-webgpu.js   text/javascript
 put engine/quine-webgpu.wasm zig-out/web/quine-webgpu.wasm application/wasm
+
+# 2b. Immutable VERSIONED engine + the version-baked @taluvi/quine SDK, so apps
+#     can pin a build (the SDK's default engine base becomes /engine/$VERSION/).
+#     `/engine/` above stays the moving "latest" pointer.
+echo "==> Uploading versioned engine + SDK ($VERSION)"
+for b in webgl2 webgpu; do
+  put "engine/$VERSION/quine-$b.js"   "zig-out/web/quine-$b.js"   text/javascript
+  put "engine/$VERSION/quine-$b.wasm" "zig-out/web/quine-$b.wasm" application/wasm
+done
+( cd sdk && pnpm install --silent && QUINE_VERSION="$VERSION" pnpm build )
+put "sdk/$VERSION/quine.js" sdk/dist/index.js text/javascript
 
 # 3. Scenes → scenes/<name>/ — each a SELF-CONTAINED folder: the scene file plus
 #    the meshes it references, co-located. The engine carries no meshes; a scene's

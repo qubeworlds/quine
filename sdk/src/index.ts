@@ -11,8 +11,19 @@
 /** The engine's fixed audio sample rate (its mixer + AudioWorklet run at this). */
 export const SAMPLE_RATE = 48000;
 
-/** Default CDN base for the engine bundles. */
-export const DEFAULT_ENGINE_BASE = 'https://cdn.qubeworlds.com/engine';
+/** Build version baked in at publish time (the git SHA); `'dev'` for local builds. */
+declare const __QUINE_VERSION__: string;
+export const version: string = __QUINE_VERSION__;
+
+/**
+ * Default CDN base for the engine bundles. A *versioned* SDK build pins the
+ * matching versioned engine (`/engine/<version>/`) so the two ship in lockstep;
+ * a `'dev'` build uses the mutable latest (`/engine`).
+ */
+export const DEFAULT_ENGINE_BASE =
+  version === 'dev'
+    ? 'https://cdn.qubeworlds.com/engine'
+    : `https://cdn.qubeworlds.com/engine/${version}`;
 
 /** The emscripten `Module` surface this SDK uses. */
 export interface QuineModule {
