@@ -833,9 +833,13 @@ skip C, hold the "result must not depend on thread count" invariant.
       construction (unit-tested 1/4/8 threads). **First consumer:** scene-load
       **PNG texture decode** runs in parallel (`predecodeTextures`) — decode on a
       thread-safe allocator, copy into the arena serially, slots assigned in
-      first-appearance order. Core stays pure. *Remaining consumers:* glTF decode,
-      SDF meshing / marching-cubes (per-brick), navmesh bake, texture upload —
-      same decode-then-integrate pattern.
+      first-appearance order. **Second consumer:** SDF brick-cache sampling — the
+      512-point-per-cell field eval is split into a pure `core` per-cell sampler
+      (`sdf_cache.layout`/`sampleCell`/`compact`, core stays single-threaded) that
+      `debris.buildCache` fans across threads; output is byte-identical to the
+      serial `core.sdf_cache.build` (tested). Core stays pure. *Remaining
+      consumers:* glTF decode, marching-cubes meshing, navmesh bake, texture
+      upload — same decode-then-integrate pattern.
 - [x] **Tier B — threaded Jolt (native)** — the contact listener's `add` is
       spinlock-guarded (per-pair `@max` is commutative → thread-count-independent),
       and native now runs the job pool multithreaded (`num_threads = -1`,

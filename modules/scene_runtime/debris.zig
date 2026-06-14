@@ -15,6 +15,30 @@ const std = @import("std");
 const core = @import("core");
 const phys = @import("physics");
 const m = @import("math");
+const bake = @import("bake.zig");
+
+/// Tier A: build the SDF brick cache with per-cell sampling fanned out across
+/// threads. `core` stays single-threaded — it provides the pure per-cell sampler
+/// (`sdf_cache.sampleCell`) and compaction; we just drive the sampler in
+/// parallel from this side of the boundary. The output is **byte-identical** to
+/// the serial `core.sdf_cache.build` (same samples, same compaction order) —
+/// only faster, since the 512-point-per-cell field eval is the heavy part and is
+/// embarrassingly parallel. The parallel phase doesn't allocate (workers only
+/// write their own slot); `alloc` is touched serially here, so a non-thread-safe
+/// arena is fine.
+pub fn buildCache(alloc: std.mem.Allocator, scene: *const core.SdfScene, voxel: f32) !core.SdfCache {
+    const lay = core.sdf_cache.layout(scene, voxel);
+    const samples = try alloc.alloc(core.sdf_cache.CellSample, lay.cellCount());
+    defer alloc.free(samples);
+    const Ctx = struct { scene: *const core.SdfScene, lay: core.sdf_cache.Layout, out: []core.sdf_cache.CellSample };
+    const W = struct {
+        fn sample(c: Ctx, i: usize) void {
+            c.out[i] = core.sdf_cache.sampleCell(c.scene, c.lay, i);
+        }
+    };
+    bake.run(lay.cellCount(), Ctx{ .scene = scene, .lay = lay, .out = samples }, W.sample);
+    return core.sdf_cache.compact(alloc, lay, samples);
+}
 
 const Vec3 = m.Vec3;
 
@@ -534,6 +558,22 @@ pub const Stream = struct {
 // Tests (link Jolt; use the C allocator like the other physics-backed tests)
 // =============================================================================
 
+test "buildCache: parallel SDF sampling is byte-identical to the serial build" {
+    const a = std.testing.allocator;
+    var scene = core.carvedWall();
+    var ser = try core.sdf_cache.build(a, &scene, 0.1); // single-threaded reference (core)
+    defer ser.deinit(a);
+    var par = try buildCache(a, &scene, 0.1); // sampled across threads (bake)
+    defer par.deinit(a);
+
+    try std.testing.expectEqual(ser.brickCount(), par.brickCount());
+    try std.testing.expectEqualSlices(i32, ser.cell_index, par.cell_index);
+    try std.testing.expectEqual(ser.bricks.len, par.bricks.len);
+    for (ser.bricks, par.bricks) |sb, pb| {
+        try std.testing.expectEqualSlices(f32, &sb.dist, &pb.dist);
+    }
+}
+
 test "drill debris: cleared wall material spawns convex chunks that fall and settle" {
     const alloc = std.heap.c_allocator;
 
@@ -550,7 +590,7 @@ test "drill debris: cleared wall material spawns convex chunks that fall and set
 
     // Drill partway through, then cache + extract debris.
     var scene = core.carvedWall();
-    var cache = try core.sdf_cache.build(alloc, &scene, 0.08);
+    var cache = try buildCache(alloc, &scene, 0.08);
     defer cache.deinit(alloc);
 
     const ids = try spawnWallDebris(alloc, &physics, &scene, &cache, .{});
@@ -587,7 +627,7 @@ test "renderable debris: chunks get mesh entities whose transforms track physics
 
     var world = core.World{};
     var scene = core.carvedWall();
-    var cache = try core.sdf_cache.build(alloc, &scene, 0.08);
+    var cache = try buildCache(alloc, &scene, 0.08);
     defer cache.deinit(alloc);
 
     const pieces = try spawnRenderable(alloc, alloc, &world, &physics, &scene, &cache, .{});

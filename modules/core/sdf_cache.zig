@@ -128,9 +128,25 @@ fn brickAt(b: *const Brick, i: u32, j: u32, k: u32) f32 {
     return b.dist[(k * brick_dim + j) * brick_dim + i];
 }
 
-/// Build the sparse cache for `scene` at the given voxel size. Only cells whose
-/// surface band is within reach get a brick; the rest stay empty (index -1).
-pub fn build(alloc: std.mem.Allocator, scene: *const SdfScene, voxel: f32) !Cache {
+/// Grid geometry for a cache build — the cheap part, no field sampling. Shared
+/// by the serial `build` and the parallel bake path (`scene_runtime` fans
+/// `sampleCell` across threads), so both sample and compact identically.
+pub const Layout = struct {
+    origin: Vec3,
+    voxel: f32,
+    cell_size: f32,
+    dim: [3]u32,
+
+    /// Dense cell count (dim.x*dim.y*dim.z) — the bake's work-item count.
+    pub fn cellCount(self: Layout) usize {
+        return @as(usize, self.dim[0]) * self.dim[1] * self.dim[2];
+    }
+};
+
+/// Compute the padded grid geometry for `scene` at `voxel`. Pure + cheap (no
+/// sampling): the bake driver calls this once, then fans `sampleCell` across
+/// `cellCount()` work items.
+pub fn layout(scene: *const SdfScene, voxel: f32) Layout {
     const cell_size = @as(f32, @floatFromInt(brick_dim - 1)) * voxel;
     // Pad the scene bounds by a cell so the surface near the edges is covered.
     const bb = scene.bounds();
@@ -138,14 +154,64 @@ pub fn build(alloc: std.mem.Allocator, scene: *const SdfScene, voxel: f32) !Cach
     const lo = bb.min.sub(pad);
     const hi = bb.max.add(pad);
     const ext = hi.sub(lo);
-
-    const dim: [3]u32 = .{
-        @max(1, @as(u32, @intFromFloat(@ceil(ext.x / cell_size)))),
-        @max(1, @as(u32, @intFromFloat(@ceil(ext.y / cell_size)))),
-        @max(1, @as(u32, @intFromFloat(@ceil(ext.z / cell_size)))),
+    return .{
+        .origin = lo,
+        .voxel = voxel,
+        .cell_size = cell_size,
+        .dim = .{
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.x / cell_size)))),
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.y / cell_size)))),
+            @max(1, @as(u32, @intFromFloat(@ceil(ext.z / cell_size)))),
+        },
     };
+}
 
-    const dense = @as(usize, dim[0]) * dim[1] * dim[2];
+/// One cell's sampled brick plus the min |distance| over its lattice (occupancy).
+pub const CellSample = struct { brick: Brick, min_abs: f32 };
+
+/// Sample dense cell `linear` (`0..lay.cellCount()`): evaluate the field at its
+/// brick_dim³ lattice points. **Pure** — reads only `scene`, writes nothing
+/// shared, so a batch parallelizes trivially (each call owns its `CellSample`).
+/// The linear→(cx,cy,cz) decode (cx fastest) matches `compact`'s iteration, so
+/// the compacted cache is identical however the samples were produced.
+pub fn sampleCell(scene: *const SdfScene, lay: Layout, linear: usize) CellSample {
+    const cx: u32 = @intCast(linear % lay.dim[0]);
+    const cy: u32 = @intCast((linear / lay.dim[0]) % lay.dim[1]);
+    const cz: u32 = @intCast(linear / (@as(usize, lay.dim[0]) * lay.dim[1]));
+    const cell_origin = Vec3{
+        .x = lay.origin.x + @as(f32, @floatFromInt(cx)) * lay.cell_size,
+        .y = lay.origin.y + @as(f32, @floatFromInt(cy)) * lay.cell_size,
+        .z = lay.origin.z + @as(f32, @floatFromInt(cz)) * lay.cell_size,
+    };
+    var s = CellSample{ .brick = .{}, .min_abs = std.math.inf(f32) };
+    var k: u32 = 0;
+    while (k < brick_dim) : (k += 1) {
+        var j: u32 = 0;
+        while (j < brick_dim) : (j += 1) {
+            var i: u32 = 0;
+            while (i < brick_dim) : (i += 1) {
+                const p = Vec3{
+                    .x = cell_origin.x + @as(f32, @floatFromInt(i)) * lay.voxel,
+                    .y = cell_origin.y + @as(f32, @floatFromInt(j)) * lay.voxel,
+                    .z = cell_origin.z + @as(f32, @floatFromInt(k)) * lay.voxel,
+                };
+                const d = scene.dist(p);
+                s.brick.dist[(k * brick_dim + j) * brick_dim + i] = d;
+                s.min_abs = @min(s.min_abs, @abs(d));
+            }
+        }
+    }
+    return s;
+}
+
+/// Compact dense per-cell `samples` into the sparse cache: keep only cells whose
+/// surface band is within reach (`min_abs <= cell diagonal` — the band the
+/// trilinear brick can represent), in linear order. The result is identical
+/// regardless of how `samples` was filled (serial or parallel). `samples.len`
+/// must be `lay.cellCount()`.
+pub fn compact(alloc: std.mem.Allocator, lay: Layout, samples: []const CellSample) !Cache {
+    const dense = lay.cellCount();
+    std.debug.assert(samples.len == dense);
     const cell_index = try alloc.alloc(i32, dense);
     errdefer alloc.free(cell_index);
     @memset(cell_index, -1);
@@ -153,56 +219,35 @@ pub fn build(alloc: std.mem.Allocator, scene: *const SdfScene, voxel: f32) !Cach
     var bricks: std.ArrayList(Brick) = .empty;
     errdefer bricks.deinit(alloc);
 
-    const cell_diag = cell_size * @sqrt(3.0);
-
-    var cz: u32 = 0;
-    while (cz < dim[2]) : (cz += 1) {
-        var cy: u32 = 0;
-        while (cy < dim[1]) : (cy += 1) {
-            var cx: u32 = 0;
-            while (cx < dim[0]) : (cx += 1) {
-                const cell_origin = Vec3{
-                    .x = lo.x + @as(f32, @floatFromInt(cx)) * cell_size,
-                    .y = lo.y + @as(f32, @floatFromInt(cy)) * cell_size,
-                    .z = lo.z + @as(f32, @floatFromInt(cz)) * cell_size,
-                };
-                var brick: Brick = .{};
-                var min_abs: f32 = std.math.inf(f32);
-                var k: u32 = 0;
-                while (k < brick_dim) : (k += 1) {
-                    var j: u32 = 0;
-                    while (j < brick_dim) : (j += 1) {
-                        var i: u32 = 0;
-                        while (i < brick_dim) : (i += 1) {
-                            const p = Vec3{
-                                .x = cell_origin.x + @as(f32, @floatFromInt(i)) * voxel,
-                                .y = cell_origin.y + @as(f32, @floatFromInt(j)) * voxel,
-                                .z = cell_origin.z + @as(f32, @floatFromInt(k)) * voxel,
-                            };
-                            const d = scene.dist(p);
-                            brick.dist[(k * brick_dim + j) * brick_dim + i] = d;
-                            min_abs = @min(min_abs, @abs(d));
-                        }
-                    }
-                }
-                // Occupied if the surface passes within a cell-diagonal of any
-                // sample — i.e. the band the trilinear brick can represent.
-                if (min_abs <= cell_diag) {
-                    cell_index[(@as(usize, cz) * dim[1] + cy) * dim[0] + cx] = @intCast(bricks.items.len);
-                    try bricks.append(alloc, brick);
-                }
-            }
+    const cell_diag = lay.cell_size * @sqrt(3.0);
+    for (samples, 0..) |s, linear| {
+        if (s.min_abs <= cell_diag) {
+            cell_index[linear] = @intCast(bricks.items.len);
+            try bricks.append(alloc, s.brick);
         }
     }
 
     return .{
-        .origin = lo,
-        .voxel = voxel,
-        .cell_size = cell_size,
-        .dim = dim,
+        .origin = lay.origin,
+        .voxel = lay.voxel,
+        .cell_size = lay.cell_size,
+        .dim = lay.dim,
         .cell_index = cell_index,
         .bricks = try bricks.toOwnedSlice(alloc),
     };
+}
+
+/// Build the sparse cache for `scene` at the given voxel size (serial). Only
+/// cells whose surface band is within reach get a brick; the rest stay empty
+/// (index -1). `scene_runtime`'s parallel builder fans `sampleCell` across
+/// threads and `compact`s to a **byte-identical** cache; this stays the
+/// single-threaded reference (core is pure — no threads here).
+pub fn build(alloc: std.mem.Allocator, scene: *const SdfScene, voxel: f32) !Cache {
+    const lay = layout(scene, voxel);
+    const samples = try alloc.alloc(CellSample, lay.cellCount());
+    defer alloc.free(samples);
+    for (samples, 0..) |*s, linear| s.* = sampleCell(scene, lay, linear);
+    return compact(alloc, lay, samples);
 }
 
 // =============================================================================
