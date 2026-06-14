@@ -1321,7 +1321,13 @@ fn dumpWorldState() void {
     core.snapshot.writeJson(&App.stage.world, alloc, &buf) catch return;
     const path: [*:0]const u8 = std.c.getenv("QUINE_STATE_OUT") orelse "quine-state.json";
     writeFileLibc(path, buf.items);
-    std.debug.print("[quine] world state @ tick {d}: {d} bytes -> {s}\n", .{ App.world_tick, buf.items.len, std.mem.span(path) });
+    // The status line uses `std.debug.print`, which pulls in `std.Io.Threaded`
+    // (stderr/process control) — uncompilable for emscripten in Zig 0.16, the
+    // same reason `panic` is overridden above. Gate it out of the wasm build
+    // (a libc file dump is moot there anyway); F3 / QUINE_STATE_OUT are native.
+    if (comptime builtin.os.tag != .emscripten) {
+        std.debug.print("[quine] world state @ tick {d}: {d} bytes -> {s}\n", .{ App.world_tick, buf.items.len, std.mem.span(path) });
+    }
 }
 
 pub fn main() void {

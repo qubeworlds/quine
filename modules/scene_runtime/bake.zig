@@ -16,14 +16,28 @@
 //! for their own outputs — e.g. `std.heap.c_allocator`, not an arena.)
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Hard cap on spawned threads (bounds the on-stack handle array).
 const max_threads = 16;
 
+/// Whether to compile the threaded path at all. **Native only** today: on
+/// `wasm32-emscripten` `std.Thread` pulls in `std.Io.Threaded`, which currently
+/// fails to compile in the Zig 0.16 stdlib for that target (an emscripten signal-
+/// enum mismatch) — and the web build is single-threaded anyway (wasm threads are
+/// roadmap Tier D). Gating on this comptime flag keeps **every** `std.Thread`
+/// reference out of the wasm build; widen it to allow wasm once Tier D lands
+/// (emscripten `-pthread` + the stdlib build issue resolved).
+const threading_supported = !builtin.target.cpu.arch.isWasm();
+
 /// Worker-thread count for bakes. `QUINE_BAKE_THREADS` overrides (`1` disables
 /// threading — the single-threaded A/B baseline); default is the CPU count,
-/// capped at `max_threads`.
+/// capped at `max_threads`. Always `1` where threading isn't compiled in.
 pub fn threads() usize {
+    return if (comptime threading_supported) threadsNative() else 1;
+}
+
+fn threadsNative() usize {
     if (std.c.getenv("QUINE_BAKE_THREADS")) |v| {
         const n = std.fmt.parseInt(usize, std.mem.span(v), 10) catch 0;
         if (n >= 1) return @min(n, max_threads);
@@ -45,8 +59,24 @@ pub fn run(n: usize, ctx: anytype, comptime worker: fn (@TypeOf(ctx), usize) voi
 /// batch is deterministic regardless of `want`. Falls back to a plain serial loop
 /// for `want <= 1`, tiny batches, or if spawning fails (always correct, just
 /// slower — the calling thread drains the remaining work).
+///
+/// On targets without `threading_supported` (wasm today) the `else` is the only
+/// branch compiled, so the threaded `runThreaded` — and all of `std.Thread` — is
+/// never referenced. Tier D flips the flag to bring wasm in.
 pub fn runWith(n: usize, want: usize, ctx: anytype, comptime worker: fn (@TypeOf(ctx), usize) void) void {
     if (n == 0) return;
+    if (comptime threading_supported) {
+        runThreaded(n, want, ctx, worker);
+    } else {
+        for (0..n) |i| worker(ctx, i);
+    }
+}
+
+/// The threaded fork-join — only reachable (and only *analyzed*) on
+/// multi-threaded targets. A lock-free atomic work cursor hands each worker the
+/// next index; the calling thread participates too, so work always completes even
+/// if spawning fails.
+fn runThreaded(n: usize, want: usize, ctx: anytype, comptime worker: fn (@TypeOf(ctx), usize) void) void {
     const w = @min(@max(want, 1), max_threads);
     if (w <= 1 or n == 1) {
         for (0..n) |i| worker(ctx, i);
