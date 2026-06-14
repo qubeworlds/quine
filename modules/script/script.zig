@@ -130,6 +130,10 @@ pub const Js = struct {
         self.def("__quine_contact", jsContact, 2);
         self.def("__quine_squashValue", jsSquashValue, 1);
         self.def("__quine_bumpSquash", jsBumpSquash, 2);
+        self.def("__quine_axis", jsAxis, 1);
+        self.def("__quine_audioBus", jsAudioBus, 4);
+        self.def("__quine_sfx", jsSfx, 3);
+        self.def("__quine_setEmissive", jsSetEmissive, 4);
     }
 
     fn def(self: *Js, name: [:0]const u8, func: c.JSCFunction, len: c_int) void {
@@ -308,6 +312,55 @@ fn jsBumpSquash(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]
     return undef(ctx);
 }
 
+/// `__quine_axis(id)` — read an app-exposed input axis (e.g. a held-key value).
+fn jsAxis(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 1) return undef(ctx);
+    var id: i32 = 0;
+    _ = c.JS_ToInt32(ctx, &id, argv[0]);
+    return c.JS_NewFloat64(ctx, ctxJs(ctx).scene.axis(if (id < 0) 0 else @intCast(id)));
+}
+/// `__quine_audioBus(bus, freq, gain, noise)` — queue a continuous-bus intent the
+/// app drains to the mixer (the engine stays silent until the app plays it).
+fn jsAudioBus(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    var bus: i32 = 0;
+    _ = c.JS_ToInt32(ctx, &bus, argv[0]);
+    ctxJs(ctx).scene.emit(.{ .tag = sr.event.audio_bus, .p = .{
+        @floatFromInt(@max(bus, 0)), argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]),
+    } });
+    return undef(ctx);
+}
+/// `__quine_sfx(kind, freq, gain)` — queue a one-shot intent (kind 0 = boom).
+fn jsSfx(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 3) return undef(ctx);
+    var kind: i32 = 0;
+    _ = c.JS_ToInt32(ctx, &kind, argv[0]);
+    ctxJs(ctx).scene.emit(.{ .tag = sr.event.sfx, .p = .{
+        @floatFromInt(@max(kind, 0)), argF32(ctx, argv[1]), argF32(ctx, argv[2]), 0,
+    } });
+    return undef(ctx);
+}
+/// `__quine_setEmissive(name, r, g, b)` — write the entity's Material emissive
+/// (a glow), upserting the component. Render reads it as a uniform next frame.
+fn jsSetEmissive(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const r = argF32(ctx, argv[1]);
+    const g = argF32(ctx, argv[2]);
+    const bl = argF32(ctx, argv[3]);
+    if (js.scene.world.get(@import("core").Material, b.entity)) |mat| {
+        mat.emissive = .{ .x = r, .y = g, .z = bl };
+    } else {
+        js.scene.world.set(@import("core").Material, b.entity, .{ .emissive = .{ .x = r, .y = g, .z = bl } });
+    }
+    return undef(ctx);
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -437,4 +490,41 @@ test "the interpreted keepie-uppie.js skill heads the ball back up repeatedly" {
     // The interpreted skill drives the actor to head the ball back up many times
     // — the same keepie-uppie the native stand-in produces, now from a JS script.
     try std.testing.expect(bounces >= 3);
+}
+
+test "a skill reads an input axis, queues audio intents, and sets emissive" {
+    const scn = core.scene.Scene{ .schema_version = 1, .name = "io", .entities = &.{
+        .{ .name = "ball", .transform = .{}, .material = .{ .color = .{ 1, 1, 1, 1 } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scn, &.{});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // The skill uses the new prelude facades: input(), audio.bus/sfx, material.
+    try js.loadSkill(
+        \\onPostStep(function (dt) {
+        \\  var v = input(0);
+        \\  audio.bus(0, 220 * v, v, 0);  // a coil hum that tracks the axis
+        \\  audio.sfx(0, 60, 0.8);        // a one-shot boom
+        \\  world.get('ball').material.emissive = { x: v, y: 0, z: 0 };
+        \\});
+    );
+
+    rt.setAxis(0, 0.7);
+    rt.clearEvents();
+    try rt.update(1.0 / 60.0);
+
+    // Two intents queued for the app to drain after the tick: the bus + the boom.
+    try std.testing.expectEqual(@as(usize, 2), rt.out_event_len);
+    try std.testing.expectEqual(sr.event.audio_bus, rt.events()[0].tag);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7 * 220.0), rt.events()[0].p[1], 1e-2);
+    try std.testing.expectEqual(sr.event.sfx, rt.events()[1].tag);
+
+    // The emissive write reached the live Material component (a glow render reads).
+    const ball = rt.find("ball").?;
+    const mat = rt.world.get(core.Material, ball.entity).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7), mat.emissive.x, 1e-4);
 }

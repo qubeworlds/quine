@@ -89,6 +89,15 @@ pub fn build(b: *Build) !void {
         .optimize = optimize,
     });
 
+    // --- audio: pure content-agnostic synth mixer (no sokol/device) ----------
+    // Turns control values into PCM; the app owns the sokol_audio device and
+    // pumps this. Sokol-free, so it compiles + tests headless like core.
+    const mod_audio = b.createModule(.{
+        .root_source_file = b.path("modules/audio/audio.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // --- core: headless sim, plain Zig, no sokol/render imports --------------
     const mod_core = b.createModule(.{
         .root_source_file = b.path("modules/core/core.zig"),
@@ -265,6 +274,7 @@ pub fn build(b: *Build) !void {
             .{ .name = "math", .module = mod_math },
             .{ .name = "scene_runtime", .module = mod_scene_runtime },
             .{ .name = "script", .module = mod_script },
+            .{ .name = "audio", .module = mod_audio },
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
@@ -398,6 +408,9 @@ pub fn build(b: *Build) !void {
 
     const math_tests = b.addTest(.{ .root_module = mod_math });
     test_step.dependOn(&b.addRunArtifact(math_tests).step);
+
+    const audio_tests = b.addTest(.{ .root_module = mod_audio });
+    test_step.dependOn(&b.addRunArtifact(audio_tests).step);
 
     const core_tests = b.addTest(.{ .root_module = mod_core });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);

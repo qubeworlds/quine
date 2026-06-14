@@ -75,14 +75,23 @@ From a gap analysis against the reference runner:
 
 ## Quine-side work (the only code that lands here)
 
-**Phase 1 — miniaudio.** New `modules/audio/` (single-header miniaudio — public
-domain, builds like quickjs/Jolt under emcc; decode WAV/MP3 + mixer + 3D), owned
-by the **app**, not `core`. Skill natives `__quine_sfx(name)` and
-`__quine_audioParam(bus,a,b)` push onto an **app-owned command queue**; `frame()`
-drains it after the fixed-step accumulator empties → miniaudio. Headless/CI inits
-no device, so the queue drains to nothing and `core` stays silent and
-deterministic — mirroring the render boundary. **Verify the emscripten/WebAudio
-backend builds early** (TODO.md §5 warning); WebAudio needs a user-gesture unlock.
+**Phase 1 — audio (DONE).** A new **pure** `modules/audio/` synth mixer
+(oscillator buses + noise + decaying one-shots — `Mixer.setBus`/`trigger`/
+`render`), sokol-free so it tests headless. The app owns the device
+(`apps/desktop/audio_device.zig`) on **`sokol_audio`** (already compiled into the
+build — **zero new dependency**, single-threaded push model, no data race) and
+drains the skill's queued intents in `frame()` after the accumulator empties; a
+deviceless host (CI/Xvfb) opens no device, so the engine stays silent and
+deterministic — the audio boundary mirrors the render boundary.
+
+> **Why `sokol_audio`, not miniaudio (a deliberate divergence).** The reference
+> game's audio is *synthesized* (oscillators + noise + envelopes — coil hum,
+> boom), not sampled, so it needs no file decode. `sokol_audio` is already in the
+> build and already has the emscripten/WebAudio backend, so this adds nothing and
+> builds for web for free. **miniaudio remains the documented upgrade path** when
+> sampled clips / 3D spatialization are wanted (the ElevenLabs Foley/voice store,
+> TODO.md §5) — the skill-facing API (`audio.bus`/`audio.sfx`) is backend-agnostic
+> and won't change. WebAudio still needs a user-gesture unlock on web.
 
 **Phase 2 — minimal input bridge.** Track held-key state in the app; add
 `__quine_axis(id)` native + an `input` facade in `prelude.js`. Just enough for a
@@ -120,11 +129,27 @@ These three are content-agnostic and belong in `modules/script` + `modules/audio
 
 ## Phase checklist
 
-- [ ] **P1** `modules/audio` (miniaudio) + build wiring (native + emscripten) +
-      audio command queue + `frame()` drain. Verify wasm build.
-- [ ] **P2** held-key input in the app + `__quine_axis` + `prelude.js` `input`.
-- [ ] **P3** `__quine_setEmissive` material native.
+- [x] **P1** `modules/audio` (pure synth mixer on `sokol_audio`) + build wiring +
+      skill→app event queue in `scene_runtime` + `frame()` drain. *(native build
+      green; web build not yet re-run this session.)*
+- [x] **P2** held-key input in the app (axis 0 = Up/Down) + `__quine_axis` +
+      `prelude.js` `input`.
+- [x] **P3** `__quine_setEmissive` material native + `prelude.js` `material.emissive`.
 - [ ] **P4** *(content repo)* `framework.js` base classes.
 - [ ] **P5** *(content repo)* electric-ball `scene.json` + `skill.js` + overlay.
-- [ ] **P6** verification: `zig build test` capability tests, native `zig build`,
-      `zig build -Dtarget=wasm32-emscripten`, headless thumbnail of the scene.
+- [ ] **P6** verification: `zig build test` capability tests **(done — green)**,
+      native `zig build` **(done — green)**, `zig build -Dtarget=wasm32-emscripten`
+      (pending), headless thumbnail of the scene *(needs the content repo)*.
+
+## What landed in this repo (Quine engine primitives)
+
+- `modules/audio/audio.zig` — pure synth mixer (+ tests).
+- `apps/desktop/audio_device.zig` — `sokol_audio` device, app-owned, push model.
+- `modules/scene_runtime/scene_runtime.zig` — the host-I/O seam: `Event`
+  + `event` tags, `emit`/`events`/`clearEvents`, `setAxis`/`axis`.
+- `modules/script/script.zig` — natives `__quine_axis`, `__quine_audioBus`,
+  `__quine_sfx`, `__quine_setEmissive` (+ a capability test).
+- `modules/script/prelude.js` — `input()`, `audio.{bus,sfx}`, `material.emissive`.
+- `apps/desktop/main.zig` — device init/shutdown, held-key tracking, per-frame
+  axis feed + audio-intent drain.
+- `build.zig` — the `audio` module + its test step.

@@ -21,6 +21,7 @@ const m = @import("math");
 const scene_runtime = @import("scene_runtime");
 const script = @import("script");
 const input = @import("input.zig");
+const audio_device = @import("audio_device.zig");
 const gizmo = @import("gizmo.zig");
 const orbit = @import("orbit.zig");
 const build_options = @import("build_options");
@@ -105,6 +106,10 @@ const App = struct {
     var fps_requested: f64 = 0;
     var mouse_x: f32 = 0;
     var mouse_y: f32 = 0;
+    /// Held-key state feeding skill input axis 0 (Up = +1, Down = -1). The skill
+    /// integrates it (e.g. a voltage wheel); the engine just exposes the raw axis.
+    var key_up_held: bool = false;
+    var key_down_held: bool = false;
 
     var orbit_cam: orbit.Orbit = .{};
     var camera: ?core.Entity = null;
@@ -416,6 +421,7 @@ fn fedoraRed() f32 {
 
 export fn init() void {
     App.renderer.setup();
+    audio_device.init(); // open the audio device (no-ops on a deviceless host)
     // QUINE_CAMERA_FREE=1 seeds free-look mode (the camera ignores its timeline
     // tracks) — the editor's camera toggle flips it live, and headless captures
     // can opt out of camera animation without authoring a separate scene.
@@ -907,6 +913,10 @@ export fn frame() void {
     // freshly built scene rather than letting it settle one tick at a time.
     // Only while running — the engine boots idle and the host (or a scene load)
     // starts it, so the sim doesn't free-run through boot (see `quine_set_running`).
+    // Expose device input to the skill (axis 0 = Up/Down held → +1/-1); the
+    // skill integrates it. Written before the step so this tick reads it.
+    App.stage.setAxis(0, (if (App.key_up_held) @as(f32, 1) else 0) - (if (App.key_down_held) @as(f32, 1) else 0));
+
     if (App.running)
         App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
     var ticks: u32 = 0;
@@ -916,6 +926,13 @@ export fn frame() void {
         App.accumulator -= fixed_dt;
         ticks += 1;
     }
+
+    // Drain the skill's queued audio intents to the device and push a frame's
+    // worth of samples — app-side, after the sim, so `core` stays silent and
+    // deterministic (the audio boundary mirrors the render boundary).
+    audio_device.applyEvents(App.stage.events());
+    App.stage.clearEvents();
+    audio_device.pump();
 
     const w = sapp.widthf();
     const h = sapp.heightf();
@@ -1032,6 +1049,7 @@ export fn frame() void {
 }
 
 export fn cleanup() void {
+    audio_device.shutdown();
     App.renderer.shutdown();
 }
 
@@ -1071,6 +1089,18 @@ export fn event(ev: [*c]const sapp.Event) void {
             App.pointer_down = false;
         },
         .MOUSE_SCROLL => App.orbit_cam.zoom(@exp(-e.scroll_y * 0.1)),
+        // Held-key tracking for the skill input axis (e.g. a voltage wheel).
+        // KEY_DOWN still flows to the binding dispatcher below (ESC/TAB).
+        .KEY_DOWN => switch (e.key_code) {
+            .UP => App.key_up_held = true,
+            .DOWN => App.key_down_held = true,
+            else => {},
+        },
+        .KEY_UP => switch (e.key_code) {
+            .UP => App.key_up_held = false,
+            .DOWN => App.key_down_held = false,
+            else => {},
+        },
         .TOUCHES_BEGAN => {
             if (e.num_touches >= 3) {
                 if (!App.three_active) {

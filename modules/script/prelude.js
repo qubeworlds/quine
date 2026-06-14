@@ -47,6 +47,14 @@ var world = (function () {
           },
         };
       },
+      get material() {
+        return {
+          // Emissive glow (a Vec3 {x,y,z}); render reads it as a uniform.
+          set emissive(v) {
+            __quine_setEmissive(name, v.x, v.y, v.z);
+          },
+        };
+      },
     };
   }
   return {
@@ -68,3 +76,22 @@ function onPreStep(fn) {
 function onPostStep(fn) {
   __quine_onPostStep(fn);
 }
+
+// Input: an app-exposed device axis (e.g. a held-key value), read each tick.
+// `id` is an integer axis index; the app writes it, the skill reads it.
+function input(id) {
+  return __quine_axis(id | 0);
+}
+
+// Audio: queue synth intents the app drains to the device after the tick (the
+// engine stays silent in headless/CI — sound is app/render-side). `bus` is a
+// sustained voice (e.g. a coil hum); `sfx` is a one-shot (kind 0 = boom). Sound
+// design — mapping a game value to freq/gain — lives here in the skill.
+var audio = {
+  bus: function (bus, freq, gain, noise) {
+    __quine_audioBus(bus | 0, freq, gain, noise || 0);
+  },
+  sfx: function (kind, freq, gain) {
+    __quine_sfx(kind | 0, freq, gain);
+  },
+};

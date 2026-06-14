@@ -88,6 +88,26 @@ pub const Binding = struct {
 /// Per-runtime texture-slot capacity (mirrors the render layer's table).
 pub const max_textures = 8;
 
+/// Max queued skill→app output events drained per tick (audio cues, etc.).
+pub const max_out_events = 128;
+/// Max input axes the app exposes to the skill (`__quine_axis`).
+pub const max_axes = 8;
+
+/// A skill→app output event: a tag plus four scalar params. The app drains these
+/// after each tick and routes by tag. This is the determinism boundary in action
+/// — `update` stays pure (it only *queues* an intent); the side-effect (playing a
+/// sound) happens app-side, exactly like the render queue. Headless/CI never
+/// drains to a device, so the sim stays silent and replayable.
+pub const Event = struct { tag: u32 = 0, p: [4]f32 = .{ 0, 0, 0, 0 } };
+
+/// Event tags shared by the script natives (producer) and the app (consumer).
+pub const event = struct {
+    /// Continuous audio bus: p = { bus_index, freq_hz, gain, noise }.
+    pub const audio_bus: u32 = 1;
+    /// One-shot SFX: p = { kind, freq_hz, gain, 0 }.
+    pub const sfx: u32 = 2;
+};
+
 pub const SceneRuntime = struct {
     world: core.World = .{},
     physics: phys.World = undefined,
@@ -141,6 +161,16 @@ pub const SceneRuntime = struct {
     /// asset loads + uploads it ONCE and shares the handle, instead of parsing a
     /// model per entity. Lives in the runtime arena (freed on deinit).
     static_meshes: std.StringHashMapUnmanaged(core.MeshHandle) = .{},
+
+    /// Host I/O bridge (sokol-free, plain data) — the seam between the skill and
+    /// the app's audio device + input. The skill queues audio/output intents via
+    /// the script natives; the app drains `out_events` after each tick and routes
+    /// them (e.g. to the audio mixer). `input_axes` is written by the app each
+    /// frame from device input and read by the skill (`__quine_axis`). Neither is
+    /// `core` — audio + input are app/render-side, like the render queue.
+    out_events: [max_out_events]Event = undefined,
+    out_event_len: usize = 0,
+    input_axes: [max_axes]f32 = @splat(0),
 
     /// Build the runtime from parsed scene data. `gpa` backs both the scene
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
@@ -886,6 +916,38 @@ pub const SceneRuntime = struct {
         self.physics.deinit();
         if (self.tl_arena) |*a| a.deinit();
         self.arena.deinit();
+    }
+
+    // --- host I/O bridge: skill→app events + app→skill input axes -------------
+
+    /// Queue a skill→app output event (dropped if the per-tick buffer is full —
+    /// audio cues are best-effort and must never block or grow the sim).
+    pub fn emit(self: *SceneRuntime, e: Event) void {
+        if (self.out_event_len < self.out_events.len) {
+            self.out_events[self.out_event_len] = e;
+            self.out_event_len += 1;
+        }
+    }
+
+    /// The events queued since the last `clearEvents` — the app drains these
+    /// after the tick and routes them to the audio device etc.
+    pub fn events(self: *const SceneRuntime) []const Event {
+        return self.out_events[0..self.out_event_len];
+    }
+
+    /// Drop all queued events (the app calls this after draining them each frame).
+    pub fn clearEvents(self: *SceneRuntime) void {
+        self.out_event_len = 0;
+    }
+
+    /// Set an input axis (app-side, from device input), read by the skill.
+    pub fn setAxis(self: *SceneRuntime, i: usize, v: f32) void {
+        if (i < self.input_axes.len) self.input_axes[i] = v;
+    }
+
+    /// Read an input axis (skill-side, via `__quine_axis`). Out-of-range = 0.
+    pub fn axis(self: *const SceneRuntime, i: usize) f32 {
+        return if (i < self.input_axes.len) self.input_axes[i] else 0;
     }
 
     /// Build the CPU geometry an entity owns into the runtime arena, register it
