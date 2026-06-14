@@ -468,8 +468,25 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("light")) |x| e.light = try parseLight(x);
     if (o.get("environment")) |x| e.environment = try parseEnvironment(x);
     if (o.get("post")) |x| e.post = try parsePost(x);
+    if (o.get("audio")) |x| e.audio = try parseAudio(x);
+    if (o.get("listener")) |x| e.listener = (x == .bool and x.bool);
     if (o.get("gaze")) |x| e.gaze = try asVec3(x);
     return e;
+}
+
+fn parseAudio(v: Value) !AudioSource {
+    if (v != .object) return error.InvalidScene;
+    const o = v.object;
+    var a = AudioSource{};
+    if (o.get("clip")) |x| a.clip = try asStr(x);
+    if (o.get("gain")) |x| a.gain = try asF32(x);
+    if (o.get("pitch")) |x| a.pitch = try asF32(x);
+    if (o.get("loop")) |x| a.loop = (x == .bool and x.bool);
+    if (o.get("spatial")) |x| a.spatial = (x == .bool and x.bool);
+    if (o.get("playing")) |x| a.playing = (x == .bool and x.bool);
+    if (o.get("refDistance")) |x| a.ref_distance = try asF32(x);
+    if (o.get("maxDistance")) |x| a.max_distance = try asF32(x);
+    return a;
 }
 
 fn parseTransform(v: Value) !Transform {
@@ -932,6 +949,25 @@ test "material parses PBR factors, defaulting the ones the scene omits" {
     try testing.expectEqual(@as(f32, 0.0), b.metallic);
     try testing.expectEqual(@as(f32, 0.5), b.roughness);
     try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
+}
+
+test "parses a scene-declared audio source + listener mark" {
+    const json =
+        \\{ "schemaVersion": 1, "name": "a", "entities": [
+        \\  { "name": "cam", "listener": true, "camera": { "fovY": 1.0 } },
+        \\  { "name": "ball", "audio": { "gain": 0.8, "refDistance": 4, "maxDistance": 40, "loop": true, "spatial": true } }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    try testing.expect(s.entities[0].listener); // camera is the listener
+    const au = s.entities[1].audio.?;
+    try testing.expectEqual(@as(f32, 0.8), au.gain);
+    try testing.expectEqual(@as(f32, 4), au.ref_distance);
+    try testing.expectEqual(@as(f32, 40), au.max_distance);
+    try testing.expect(au.loop and au.spatial);
 }
 
 test "parses an sdf/csg geometry into a core SdfScene" {
