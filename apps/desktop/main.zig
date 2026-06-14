@@ -110,6 +110,10 @@ const App = struct {
     /// integrates it (e.g. a voltage wheel); the engine just exposes the raw axis.
     var key_up_held: bool = false;
     var key_down_held: bool = false;
+    /// Host-pushed input axes ({type:"input"}) — persistent, set from a DOM
+    /// control (touch buttons / slider) so keyboard-less devices (iPad) can drive
+    /// a skill's `input(axis)`. Combined with the keyboard in `frame`.
+    var host_axis: [scene_runtime.max_axes]f32 = @splat(0);
 
     var orbit_cam: orbit.Orbit = .{};
     var camera: ?core.Entity = null;
@@ -745,6 +749,19 @@ fn dispatchMessage(raw: []const u8) void {
         if (v.object.get("code")) |c2| {
             if (c2 == .string) App.js.loadSkill(c2.string) catch {};
         }
+    } else if (std.mem.eql(u8, tv.string, "input")) {
+        // Host-pushed input axis from a DOM control (touch buttons / slider), so a
+        // keyboard-less device can drive a skill's `input(axis)`. Persists until
+        // the next push. Shape: {type:"input", axis:0, value:1.0}
+        const av = v.object.get("axis") orelse return;
+        const ai: usize = switch (av) {
+            .integer => |x| if (x >= 0 and x < scene_runtime.max_axes) @intCast(x) else return,
+            .float => |x| if (x >= 0) @min(@as(usize, @intFromFloat(x)), scene_runtime.max_axes - 1) else return,
+            else => return,
+        };
+        if (v.object.get("value")) |x| if (numF32(x)) |f| {
+            App.host_axis[ai] = f;
+        };
     } else if (std.mem.eql(u8, tv.string, "material")) {
         // Live, in-place material edit: update one entity's Material component —
         // base colour and/or the metallic-roughness/emissive factors — without
@@ -913,9 +930,12 @@ export fn frame() void {
     // freshly built scene rather than letting it settle one tick at a time.
     // Only while running — the engine boots idle and the host (or a scene load)
     // starts it, so the sim doesn't free-run through boot (see `quine_set_running`).
-    // Expose device input to the skill (axis 0 = Up/Down held → +1/-1); the
-    // skill integrates it. Written before the step so this tick reads it.
-    App.stage.setAxis(0, (if (App.key_up_held) @as(f32, 1) else 0) - (if (App.key_down_held) @as(f32, 1) else 0));
+    // Feed skill input axes before the step: host-pushed values ({type:"input"},
+    // e.g. touch buttons) on every axis, plus the keyboard (Up/Down) added onto
+    // axis 0 — so desktop keys and touch controls both drive the sim.
+    for (0..scene_runtime.max_axes) |i| App.stage.setAxis(i, App.host_axis[i]);
+    const kb0 = (if (App.key_up_held) @as(f32, 1) else 0) - (if (App.key_down_held) @as(f32, 1) else 0);
+    App.stage.setAxis(0, std.math.clamp(App.host_axis[0] + kb0, -1, 1));
 
     if (App.running)
         App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
