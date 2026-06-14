@@ -26,6 +26,9 @@ const m = @import("math");
 /// here because it bridges `core` (the SDF + cache) and `physics` (Jolt).
 pub const debris = @import("debris.zig");
 
+/// Deterministic parallel bakes (Tier A): decode scene assets across threads.
+const bake = @import("bake.zig");
+
 /// A debris streamer bound to the SDF object (entity) it carves rubble from.
 const DebrisRig = struct { entity: core.Entity, stream: debris.Stream };
 
@@ -45,6 +48,7 @@ const BuoyancyRig = struct {
 
 test {
     _ = @import("debris.zig");
+    _ = @import("bake.zig");
 }
 
 /// A named asset the loader can resolve (e.g. a `.glb`'s bytes). The app supplies
@@ -199,6 +203,10 @@ pub const SceneRuntime = struct {
         // Physics half (the Jolt sibling). Stable address: `self.physics` is embedded.
         try self.physics.init(gpa);
         errdefer self.physics.deinit();
+
+        // Tier A: decode every referenced base-colour texture up front, in
+        // parallel, so the per-entity material loop below just looks them up.
+        try self.predecodeTextures(a, assets, scene_data);
 
         const bindings = try a.alloc(Binding, scene_data.entities.len);
         for (scene_data.entities, entities, 0..) |e, ent, i| {
@@ -1406,9 +1414,58 @@ pub const SceneRuntime = struct {
         }
     }
 
+    /// Tier A bake: decode every referenced base-colour texture **in parallel**,
+    /// up front, warming the slots `textureSlot` later reads. PNG inflate is the
+    /// heavy, embarrassingly-parallel part; we decode with a thread-safe allocator
+    /// (`c_allocator`, off the arena), then copy each result into the arena
+    /// **serially** (the arena isn't thread-safe) and assign slots in
+    /// first-appearance order — so the name→slot mapping is identical regardless
+    /// of thread count. A failed decode is skipped (no slot, no gap), exactly as
+    /// `textureSlot` would handle it on its own.
+    fn predecodeTextures(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, scene_data: core.SceneData) !void {
+        // Collect unique referenced texture names + their bytes, in scene order.
+        var names: [max_textures][]const u8 = undefined;
+        var srcs: [max_textures][]const u8 = undefined;
+        var count: usize = 0;
+        outer: for (scene_data.entities) |e| {
+            const mat = e.material orelse continue;
+            const tname = mat.texture orelse continue;
+            if (count >= max_textures - 1) break; // slot 0 is "no texture"
+            for (names[0..count]) |n| if (std.mem.eql(u8, n, tname)) continue :outer; // dedup
+            const bytes = resolve(assets, tname) orelse continue; // missing asset → skip
+            names[count] = tname;
+            srcs[count] = bytes;
+            count += 1;
+        }
+        if (count == 0) return;
+
+        // Parallel decode into malloc-backed temporaries (thread-safe).
+        var temps: [max_textures]?core.Texture = @splat(null);
+        const Ctx = struct { srcs: []const []const u8, out: []?core.Texture };
+        const W = struct {
+            fn decode(c: Ctx, i: usize) void {
+                c.out[i] = core.png.decode(std.heap.c_allocator, c.srcs[i]) catch null;
+            }
+        };
+        bake.run(count, Ctx{ .srcs = srcs[0..count], .out = temps[0..count] }, W.decode);
+
+        // Serial: copy each decoded image into the arena and assign a dense slot.
+        var slot: usize = 1;
+        for (0..count) |i| {
+            var t = temps[i] orelse continue;
+            defer t.deinit(std.heap.c_allocator); // free the malloc temporary
+            const pixels = try a.dupe(u8, t.pixels);
+            self.textures[slot] = .{ .width = t.width, .height = t.height, .pixels = pixels };
+            self.texture_names[slot] = try a.dupe(u8, names[i]);
+            slot += 1;
+        }
+    }
+
     /// Find-or-decode a scene texture asset into the CPU registry; returns its
     /// slot (1..max_textures-1), or null if the asset is missing/undecodable or
     /// the table is full. Repeated names share one slot (and one decode).
+    /// `predecodeTextures` warms these slots in parallel at init, so by the time
+    /// the material loop calls this the common case is a name hit (no decode).
     fn textureSlot(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, name: []const u8) ?u32 {
         var slot: usize = 1;
         while (slot < max_textures) : (slot += 1) {
@@ -1803,6 +1860,52 @@ test "SceneRuntime is deterministic: an identical tick+input replay matches dige
     // bounce actually moved state (not a constant digest the whole way).
     try std.testing.expectEqual(@as(usize, 180), first.digests.items.len);
     try std.testing.expect(first.digests.items[0] != first.digests.items[179]);
+}
+
+test "predecodeTextures decodes referenced PNGs in parallel; pixels match a serial decode" {
+    const a = std.heap.c_allocator;
+
+    // Three distinct RGB images, PNG-encoded with the engine's own encoder.
+    const dims = [_][2]u32{ .{ 2, 2 }, .{ 3, 1 }, .{ 1, 4 } };
+    var png_bytes: [3][]u8 = undefined;
+    for (dims, 0..) |d, i| {
+        const rgb = try a.alloc(u8, d[0] * d[1] * 3);
+        defer a.free(rgb);
+        for (rgb, 0..) |*px, k| px.* = @intCast((k * 37 + i * 91) % 256);
+        png_bytes[i] = try core.png.encodeRgb(a, d[0], d[1], rgb);
+    }
+    defer for (png_bytes) |b| a.free(b);
+
+    const assets = [_]Asset{
+        .{ .name = "tex0", .bytes = png_bytes[0] },
+        .{ .name = "tex1", .bytes = png_bytes[1] },
+        .{ .name = "tex2", .bytes = png_bytes[2] },
+    };
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "tex",
+        .entities = &.{
+            .{ .name = "a", .geometry = .{ .sphere = .{ .radius = 0.2, .rings = 6, .segments = 8 } }, .material = .{ .color = .{ 1, 1, 1, 1 }, .texture = "tex0" } },
+            .{ .name = "b", .geometry = .{ .sphere = .{ .radius = 0.2, .rings = 6, .segments = 8 } }, .material = .{ .color = .{ 1, 1, 1, 1 }, .texture = "tex1" } },
+            .{ .name = "c", .geometry = .{ .sphere = .{ .radius = 0.2, .rings = 6, .segments = 8 } }, .material = .{ .color = .{ 1, 1, 1, 1 }, .texture = "tex2" } },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(a, sc, &assets);
+    defer rt.deinit();
+
+    // Each texture landed in a dense slot (first-appearance order) and decoded
+    // bit-for-bit identically to a direct serial decode — the parallel bake is
+    // correct and order-stable.
+    for (0..3) |i| {
+        const tex = rt.textures[i + 1] orelse return error.MissingTexture;
+        var expected = try core.png.decode(std.testing.allocator, png_bytes[i]);
+        defer expected.deinit(std.testing.allocator);
+        try std.testing.expectEqual(expected.width, tex.width);
+        try std.testing.expectEqual(expected.height, tex.height);
+        try std.testing.expectEqualSlices(u8, expected.pixels, tex.pixels);
+    }
 }
 
 test "SceneRuntime resolves and loads a glTF model from an asset" {

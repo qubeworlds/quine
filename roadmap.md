@@ -826,9 +826,16 @@ skip C, hold the "result must not depend on thread count" invariant.
       physics** replay (Jolt single-threaded reproduces digest-for-digest). The
       safety net the rest leans on — *extend it as each tier lands* (record
       single-threaded, replay with the pool on, assert `divergedAt == null`).
-- [ ] **Tier A — thread the bakes** — app-layer thread pool for PNG/glTF decode,
-      SDF meshing / marching-cubes, navmesh bake, texture upload. Core stays pure.
-      *(zero determinism risk, no wasm dependency)*
+- [~] **Tier A — thread the bakes** — `scene_runtime/bake.zig`: a thread pool on
+      `std.Thread.spawn` + a lock-free atomic work cursor (0.16 has no
+      `std.Thread.Pool`/blocking `Mutex`). Determinism is structural — worker `i`
+      writes only slot `i`, so the batch is thread-count-independent by
+      construction (unit-tested 1/4/8 threads). **First consumer:** scene-load
+      **PNG texture decode** runs in parallel (`predecodeTextures`) — decode on a
+      thread-safe allocator, copy into the arena serially, slots assigned in
+      first-appearance order. Core stays pure. *Remaining consumers:* glTF decode,
+      SDF meshing / marching-cubes (per-brick), navmesh bake, texture upload —
+      same decode-then-integrate pattern.
 - [x] **Tier B — threaded Jolt (native)** — the contact listener's `add` is
       spinlock-guarded (per-pair `@max` is commutative → thread-count-independent),
       and native now runs the job pool multithreaded (`num_threads = -1`,
