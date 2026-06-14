@@ -259,7 +259,8 @@ pub fn build(b: *Build) !void {
     // read from build.zig.zon so it stays the single source of truth (shown in
     // the HUD). ---------------------------------------------------------------
     const build_options = b.addOptions();
-    build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    const engine_version = b.option([]const u8, "version", "engine build version string (default: build.zig.zon version; the CDN publisher passes the git SHA)") orelse @import("build.zig.zon").version;
+    build_options.addOption([]const u8, "version", engine_version);
 
     // --- app: shared module, built as a native exe or a wasm/web bundle ------
     const mod_app = b.createModule(.{
@@ -366,7 +367,7 @@ pub fn build(b: *Build) !void {
                 "-sALLOW_MEMORY_GROWTH=1",
                 "-sSTACK_SIZE=8388608",
                 "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
-                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_malloc,_free",
+                "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_quine_version,_malloc,_free",
                 // Our own WebAudio output device (replaces sokol_audio): negotiates
                 // the browser's real channel count (up to 8) and schedules the
                 // mixer's PCM. See apps/desktop/audio_web.js.

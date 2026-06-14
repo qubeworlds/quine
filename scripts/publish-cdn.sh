@@ -29,8 +29,8 @@ VERSION="$(git rev-parse --short HEAD)" # immutable versioned paths, alongside l
 #    Frame's procedural worlds to standalone scene JSON (zig-out/scenes).
 if [ "${QUINE_SKIP_BUILD:-0}" != "1" ]; then
   echo "==> Building quine wasm bundles (webgl2 + webgpu)"
-  "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2
-  "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu
+  "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2 -Dversion="$VERSION"
+  "$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu -Dversion="$VERSION"
   echo "==> Dumping example scenes (cockpit/tunnel/rabbits/terrain/sundial)"
   "$ZIG" build dump-scenes
 fi

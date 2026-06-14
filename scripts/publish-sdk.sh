@@ -39,14 +39,14 @@ put() { # put <key> <file> <content-type>
 echo "==> Building @taluvi/quine (version $VERSION)"
 ( cd sdk && pnpm install --silent && QUINE_VERSION="$VERSION" pnpm build )
 
-# 2. Versioned, immutable engine bundle.
-if [ -f zig-out/web/quine-webgl2.wasm ]; then
-  echo "==> Engine -> /engine/$VERSION/"
-  put "engine/$VERSION/quine-webgl2.js"   zig-out/web/quine-webgl2.js   text/javascript
-  put "engine/$VERSION/quine-webgl2.wasm" zig-out/web/quine-webgl2.wasm application/wasm
-else
-  echo "!! zig-out/web/quine-webgl2.wasm missing — build the web engine first; skipping engine."
-fi
+# 2. Build + publish the versioned, immutable engine — with the version baked in
+#    (`-Dversion`), so `quine_version()` reports it.
+ZIG="$ROOT_DIR/.zig/zig"; [ -x "$ZIG" ] || ZIG=zig
+echo "==> Building web engine (version $VERSION)"
+"$ZIG" build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgl2 -Dversion="$VERSION"
+echo "==> Engine -> /engine/$VERSION/"
+put "engine/$VERSION/quine-webgl2.js"   zig-out/web/quine-webgl2.js   text/javascript
+put "engine/$VERSION/quine-webgl2.wasm" zig-out/web/quine-webgl2.wasm application/wasm
 
 # 3. Versioned SDK ESM.
 echo "==> SDK -> /sdk/$VERSION/"

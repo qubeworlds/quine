@@ -292,6 +292,18 @@ export fn quine_set_running(on: i32) void {
     App.accumulator = 0;
 }
 
+/// The engine's build version (the CDN/git version, or the build.zig.zon semver).
+/// The host queries this instead of hashing the wasm — `Module.ccall('quine_version','string',[],[])`.
+const version_z: [build_options.version.len + 1]u8 = blk: {
+    var b: [build_options.version.len + 1]u8 = undefined;
+    @memcpy(b[0..build_options.version.len], build_options.version);
+    b[build_options.version.len] = 0;
+    break :blk b;
+};
+export fn quine_version() [*:0]const u8 {
+    return @ptrCast(&version_z);
+}
+
 /// Read a whole file via libc into an allocator-owned buffer (native paths).
 fn readFileBytes(a: std.mem.Allocator, path: []const u8) ?[]u8 {
     const pz = a.dupeZ(u8, path) catch return null;
