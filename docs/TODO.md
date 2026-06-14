@@ -276,6 +276,15 @@ Boundary: Zig / Cmajor-wasm / q64 nodes can run **in-core deterministically**
 (inside the tick); CLAP host-side and WebAudio nodes are **app-side** — the same
 core→render split, decided per node by its effects.
 
+### Web SDK — `@taluvi/quine` *(forward-looking; see the spatial-audio plan)*
+
+The publishable web harness (loader + boot trace + `mountScene` + `provideAudioClip`)
+will live as a standalone package **in this monorepo** and distribute **via the CDN**
+(a versioned ESM bundle at `/sdk/<version>/`, imported by URL — same as the engine
+wasm), with **npm publish deferred** until going public. npm **scope = `@taluvi`**
+(the parent org is *taluvi*) → it publishes as **`@taluvi/quine`**. Hard-requires the
+engine-CDN versioning (`/engine/<v>/` + `/sdk/<v>/`).
+
 ## 4. What else (proposed — pick what matters)
 
 Quick wins:
