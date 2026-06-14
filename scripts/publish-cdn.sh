@@ -61,6 +61,19 @@ done
 ( cd sdk && pnpm install --silent && QUINE_VERSION="$VERSION" pnpm build )
 put "sdk/$VERSION/quine.js" sdk/dist/index.js text/javascript
 
+# 2c. Mutable "latest" pointers (short cache so apps pick up new releases): a
+#     manifest + a /sdk/latest/ alias, pointing at the immutable versioned paths.
+putc() { # put with a short cache-control (mutable pointer)
+  npx --yes wrangler@latest r2 object put "$BUCKET/$1" --file="$2" --content-type="$3" --cache-control="public, max-age=60" --remote >/dev/null
+  echo "    $1 (cache 60s)"
+}
+MANIFEST="$(mktemp)"
+printf '{\n  "version": "%s",\n  "engine": "https://cdn.qubeworlds.com/engine/%s",\n  "sdk": "https://cdn.qubeworlds.com/sdk/%s/quine.js",\n  "publishedAt": "%s"\n}\n' \
+  "$VERSION" "$VERSION" "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MANIFEST"
+putc "manifest.json"       "$MANIFEST"       application/json
+putc "sdk/latest/quine.js" sdk/dist/index.js text/javascript
+rm -f "$MANIFEST"
+
 # 3. Scenes → scenes/<name>/ — each a SELF-CONTAINED folder: the scene file plus
 #    the meshes it references, co-located. The engine carries no meshes; a scene's
 #    `assets` manifest links each one RELATIVE to the scene, so a scene folder

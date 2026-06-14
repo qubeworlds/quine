@@ -40,6 +40,24 @@ pnpm build      # → dist/index.js (ESM) + dist/index.d.ts
 
 ## Distribution
 
-Distributed via the CDN as a versioned ESM bundle (`/sdk/<version>/quine.js`),
-imported by URL — the same mechanism as the engine wasm. npm publish is a later,
+Distributed via the CDN as a **versioned, immutable** ESM bundle, imported by URL —
+the same mechanism as the engine wasm. A versioned SDK pins its matching engine
+(`/engine/<version>/`), so the two ship in lockstep. npm publish is a later,
 optional convenience (types/install) when the project goes public.
+
+```js
+// Pin a build (immutable, cache-forever):
+import { mountScene } from 'https://cdn.qubeworlds.com/sdk/90a97c3/quine.js';
+
+// Or follow latest, two ways:
+//  a) the /sdk/latest/ alias (mutable, short cache):
+import { mountScene } from 'https://cdn.qubeworlds.com/sdk/latest/quine.js';
+
+//  b) the manifest pointer → dynamic-import the pinned version (robust):
+const m = await (await fetch('https://cdn.qubeworlds.com/manifest.json')).json();
+const { mountScene } = await import(m.sdk); // m = { version, engine, sdk, publishedAt }
+```
+
+Publish with `scripts/publish-sdk.sh` (immutable `/engine/<v>/` + `/sdk/<v>/`,
+without touching prod) or `scripts/publish-cdn.sh` (full prod, incl. the versioned
+paths + the `manifest.json` / `latest` pointers).

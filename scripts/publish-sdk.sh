@@ -52,6 +52,28 @@ fi
 echo "==> SDK -> /sdk/$VERSION/"
 put "sdk/$VERSION/quine.js" sdk/dist/index.js text/javascript
 
+# 4. Mutable "latest" pointers (short cache so apps pick up new releases): a
+#    manifest + a /sdk/latest/ alias. They point at the IMMUTABLE versioned
+#    artifacts above, so caching the artifacts is still safe.
+putc() { # put with a short cache-control (mutable pointer)
+  echo "    $BUCKET/$1 (cache 60s)"
+  npx --yes wrangler@latest r2 object put "$BUCKET/$1" --file="$2" --content-type="$3" --cache-control="public, max-age=60" --remote >/dev/null
+}
+echo "==> Latest pointers -> /manifest.json + /sdk/latest/"
+MANIFEST="$(mktemp)"
+cat > "$MANIFEST" <<JSON
+{
+  "version": "$VERSION",
+  "engine": "https://cdn.qubeworlds.com/engine/$VERSION",
+  "sdk": "https://cdn.qubeworlds.com/sdk/$VERSION/quine.js",
+  "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+JSON
+putc "manifest.json"       "$MANIFEST"        application/json
+putc "sdk/latest/quine.js" sdk/dist/index.js  text/javascript
+rm -f "$MANIFEST"
+
 echo "==> Done."
-echo "    SDK:    https://cdn.qubeworlds.com/sdk/$VERSION/quine.js"
-echo "    Engine: https://cdn.qubeworlds.com/engine/$VERSION/quine-webgl2.js"
+echo "    Manifest: https://cdn.qubeworlds.com/manifest.json"
+echo "    SDK:      https://cdn.qubeworlds.com/sdk/$VERSION/quine.js  (latest: /sdk/latest/quine.js)"
+echo "    Engine:   https://cdn.qubeworlds.com/engine/$VERSION/quine-webgl2.js"
