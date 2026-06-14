@@ -417,6 +417,26 @@ pub fn build(b: *Build) !void {
         const run_dump = b.addRunArtifact(dump);
         if (b.args) |args| run_dump.addArgs(args);
         b.step("dump-scenes", "Emit the Frame worlds as standalone scene-JSON files").dependOn(&run_dump.step);
+
+        // phys-determinism: a headless runner that advances a fixed multi-body
+        // scene and prints a fold of its per-tick state digests. Run it twice
+        // with different QUINE_PHYS_THREADS (via scripts/phys-determinism.sh) to
+        // prove the threaded Jolt solver reproduces the single-threaded result
+        // bit-for-bit — the gate on the Tier B `num_threads > 0` flip (ADR-0001).
+        const mod_phys_det = b.createModule(.{
+            .root_source_file = b.path("tools/phys_determinism.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "core", .module = mod_core },
+                .{ .name = "scene_runtime", .module = mod_scene_runtime },
+            },
+        });
+        const phys_det = b.addExecutable(.{ .name = "phys-determinism", .root_module = mod_phys_det });
+        b.installArtifact(phys_det); // installed so the A/B driver can set env per run
+        const run_phys_det = b.addRunArtifact(phys_det);
+        b.step("phys-determinism", "Run the threaded-physics determinism runner once").dependOn(&run_phys_det.step);
     }
 
     // --- tests: ecs + core are headless, so they run anywhere (CI-friendly) --

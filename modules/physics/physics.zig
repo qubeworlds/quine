@@ -7,10 +7,13 @@
 //! syncs body transforms into ECS `Transform`s each tick. Render still only ever
 //! reads `core`. See docs/adr/0001-physics-engine.md for the rationale.
 //!
-//! Determinism is same-binary (matching our fixed-timestep loop). The world runs
-//! single-threaded for now: deterministic, wasm-friendly, and free of contact-
-//! listener data races (one ball doesn't need the job pool; many-body
-//! multithreading is a later step).
+//! Determinism is same-binary (matching our fixed-timestep loop). Native runs
+//! Jolt's job pool **multithreaded** (autodetected core count; `QUINE_PHYS_THREADS`
+//! overrides) — safe because Jolt is deterministic independent of thread count
+//! under cross-platform determinism (build.zig), and the contact listener's table
+//! is spinlock-guarded. `scripts/phys-determinism.sh` proves an identical state
+//! digest across 0/1/2/4/auto threads. Web stays single-threaded until wasm
+//! `-pthread` lands (Tier D).
 
 const std = @import("std");
 pub const jolt = @import("jolt");
@@ -19,6 +22,22 @@ pub const BodyId = jolt.BodyId;
 
 /// Jolt's global factory is initialized once per process (see `World.init`).
 var jolt_inited: bool = false;
+
+/// Jolt job-system worker-thread count, read once when Jolt first initializes.
+///
+/// **Web** is always single-threaded: the emscripten Jolt build has no threads
+/// (wasm `-pthread` is a separate step — Tier D). **Native** defaults to `-1`
+/// (Jolt autodetects all cores) — the Tier B flip — overridable via
+/// `QUINE_PHYS_THREADS` (`-1` = autodetect, `0` = single-threaded, `N` = N
+/// workers). The flip is safe because Jolt is deterministic independent of
+/// thread count under cross-platform determinism (enabled in build.zig), proven
+/// by `scripts/phys-determinism.sh` (identical state digest across 0/1/2/4/auto
+/// threads). The env knob keeps the single-threaded A/B path for that check.
+fn workerThreads() i32 {
+    if (comptime @import("builtin").target.cpu.arch.isWasm()) return 0;
+    const v = std.c.getenv("QUINE_PHYS_THREADS") orelse return -1;
+    return std.fmt.parseInt(i32, std.mem.span(v), 10) catch -1;
+}
 
 // User-data tags so the contact listener can tell bodies apart.
 pub const tag_none: u64 = 0;
@@ -209,7 +228,7 @@ pub const World = struct {
         // initing isn't reliable on the emscripten Jolt build (and one global
         // init + many systems is Jolt's intended usage anyway).
         if (!jolt_inited) {
-            try jolt.init(allocator, .{ .num_threads = 0 }); // single-threaded
+            try jolt.init(allocator, .{ .num_threads = workerThreads() });
             jolt_inited = true;
         }
         self.* = .{
