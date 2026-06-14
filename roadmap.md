@@ -33,7 +33,7 @@ authoritative on the immediate task breakdown.
 - [Scorecard at a glance](#scorecard-at-a-glance) — what Unreal has vs. quine
 - [Determinism stance](#determinism-stance-the-decision) — the load-bearing decision
 - [What quine has today](#what-quine-has-today-baseline) — verified baseline
-- [The gaps, by domain](#the-gaps-by-domain) — §1–§22, per-feature calls
+- [The gaps, by domain](#the-gaps-by-domain) — §1–§26, per-feature calls
 - [Phased plan](#phased-plan) — Phases 0–12 (ordering source of truth)
 - [Three-year arc](#three-year-arc) — phases grouped into Years 1–3
 
@@ -50,7 +50,8 @@ authoritative on the immediate task breakdown.
 > 16 Input/controllers · 17 Recording · 18 World (terrain/veg/hair) · 19 Observability ·
 > 20 AI-native (agents/voice/store) · 21 Movement & forces · 22 States of matter ·
 > 23 Props Store (typed asset taxonomy) · 24 Discovery (the third sense) ·
-> 25 Game stats & economy (health, QIN, QWB).
+> 25 Game stats & economy (health, QIN, QWB) ·
+> 26 Behaviour tiers (Module / Plugin / Script).
 
 ---
 
@@ -719,6 +720,65 @@ The RPG/sim layer: characters have **stats** (health, energy, attributes) and
   intent), the bank *confirms* (recorded into the decision log like any external
   result), so replays stay exact. **Where it lands:** stats whenever combat ships;
   **QIN + QWB with the shared-world / persistence work (Depth phase, Year 3).**
+
+### 26. Behaviour tiers — Module / Plugin / Script  — *cross-cutting; formalizes today's "skill"*
+Today there is one word — **skill** — for every unit of game logic, and it already
+ships in two forms over **one contract**: a behaviour registers `onPreStep`/
+`onPostStep` handlers that run *inside* the deterministic tick and drives the scene
+through a fixed host op-set. That op-set has **two backends already** — the
+interpreted QuickJS natives (`modules/script/script.zig`) are, by the code's own
+comment, "a thin wrapper over the same `SceneRuntime` ops the **native** keepie-
+uppie skill uses." So "compiled behaviour" and "interpreted behaviour over an
+unchanged surface" both exist. The move is to **name the three trust levels** that
+are latent in that one contract and give each its rails — not to build a new system.
+
+- **The three tiers (one contract, rising ceremony):**
+  - **Module** — a **compiled** unit of game logic, written or trusted by **us**:
+    a **native Zig** skill (exists: keepie-uppie) or a **q64 qube → wasm
+    component**. No manifest, no sandboxing ceremony — it's first-party. The
+    deterministic shell behaviours live in.
+  - **Plugin** — a Module published with a **stable public contract, permissions,
+    metadata, and versioning**. This is **exactly a q64 qube on the Continuum**:
+    `qube.json5` (metadata + semver), the **effect system** (`@realtime`/`@io`/
+    `@net`/`@pure`) as the contract, the **env capability model** as permissions,
+    content-addressed archives as distribution. We don't invent a permission scheme
+    — q64 already *is* one (see q64 `spec/effects.md`, `spec/env.md`,
+    `spec/qube.json5.md`).
+  - **Script** — **dynamic QuickJS** code (today's skill): hot-reloadable
+    (`loadSkill` + `rebind` swap behaviour without tearing down the runtime),
+    no compile step, for **glue and iteration**. The fast path; churns freely.
+- **The one piece of real new architecture: name the host op-set ONCE.** Right now
+  it's expressed twice (the `__quine_*` natives *and* the native skill's direct
+  `SceneRuntime` calls). Promote it to a **single versioned interface** (a WIT-style
+  contract) that each tier imports: Script via QuickJS natives (exists), Module(Zig)
+  via direct calls (exists), Module/Plugin(q64) via Component-Model host imports
+  (new — but q64's effect/env model already describes exactly this capability-gated
+  import surface). Scripts tolerate churn; **Plugins cannot** — a qube built against
+  **interface v1** must keep working, which is the whole reason the Plugin tier
+  needs the version pinned.
+- **Effects enforce the determinism boundary — for free.** A transform-only
+  behaviour is effectively `@realtime`/pure; an **LLM-brain** behaviour must declare
+  `@net`, and `@net` is therefore *statically forbidden inside the tick*. That is
+  precisely §20's rule ("LLM/TTS calls never run inside the tick — record into the
+  decision log") turned from a written convention into a **compiler-checked** one.
+  This is the strongest argument for routing Plugins through q64 rather than a
+  parallel sandbox: the capability contract *is* the determinism guarantee.
+- **It stays content, not engine.** Per the content-agnostic rule, the engine only
+  learns to **host the executor kinds** (QuickJS today; a Component-Model host
+  later); the Module/Plugin/Script distinction — manifest, permissions, versioning,
+  store — lives on the **Continuum + the scene's `script` link**, never baked into
+  the wasm. A behaviour is a **prop** (§23, the "behavior" element kind); a Plugin
+  is the **published, versioned, capability-declared** form of one.
+- **Where it lands:** **cross-cutting, sequenced behind the substrate it needs.**
+  *Now* — the Script tier exists; the first concrete slice is **extracting the host
+  op-set into one declared interface** that both the Zig native skill and the
+  QuickJS script import (removes the double definition, costs nothing else).
+  *Multithreading / q64 maturity* — stand up the **Module(q64)** path (a qube
+  compiled to a component the engine hosts). *AI-native phase (§20, Phase 9)* —
+  formalize the **Plugin** tier on the Continuum/qubepods substrate, where "a skill
+  *is* a qube," the effect/cost budget, and the Props-Store registry (§23) already
+  land. The tiers are the **typed "behavior" element** of the Props Store, made
+  precise.
 
 ---
 
