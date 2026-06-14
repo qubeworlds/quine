@@ -285,6 +285,25 @@ wasm), with **npm publish deferred** until going public. npm **scope = `@taluvi`
 (the parent org is *taluvi*) → it publishes as **`@taluvi/quine`**. Hard-requires the
 engine-CDN versioning (`/engine/<v>/` + `/sdk/<v>/`).
 
+### Query the engine for audio config + version *(forward-looking; host should ask the engine, not a JS global)*
+
+Today the host reads `window.quineAudio` (a snapshot `audio_web.js` publishes) for
+the audio path, and computes the engine version by hashing the wasm bytes host-side.
+The engine is the real authority and should be **queried**:
+
+- **Channels** — the engine already *learns* the negotiated count (`quine_web_audio_init`
+  returns it → `mx.configure`), so it can report it back.
+- **Sample rate** — the engine *dictates* it (`audio.sample_rate = 48000`).
+- **Block size** — currently device-only (the 128-frame worklet quantum lives in
+  `audio_web.js`); the device would report it back for the engine to expose.
+- **Engine version** — bake the build version / git SHA in (a `-Dgit_sha` build option,
+  like gameserver) and expose it, so the host gets the version *from the engine*
+  instead of hashing the bundle.
+
+Shape: one exported `quine_audio_info()` (+ `quine_version()`) the host `ccall`s —
+replacing both the `window.quineAudio` global and the host-side wasm hash. Lands
+naturally with the `@taluvi/quine` SDK (it wraps the query).
+
 ## 4. What else (proposed — pick what matters)
 
 Quick wins:
