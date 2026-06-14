@@ -230,6 +230,52 @@ Goal: the scene is heard, not just seen.
       events (contacts, foot-plants) and the **app drives audio**, exactly like
       it drives render — so headless/CI runs make no sound.
 
+> **Update:** the low-level engine landed differently than the miniaudio plan
+> above — we **rolled our own** N-channel synth mixer (`modules/audio`, with a
+> PCM sampler voice) + our **own device** (WebAudio worklet/SAB, ALSA), no
+> miniaudio/sokol_audio. The bounce/footstep/music/3D items above still stand;
+> they now ride that mixer + the 3D-audio module (below).
+
+### Audio DSP node graph — uniform node, swappable backends *(forward-looking; §26 "audio modules on top")*
+
+Generalize "a voice" into a **DSP node** with one interface, so an audio graph can
+host effects/instruments authored in different DSP technologies behind the same
+contract. The low-level mixer becomes one node among many; reverb, filters,
+spatialisers, and synths are nodes; the 3D-audio module wires a graph.
+
+```zig
+pub const AudioDSPNode = struct {
+    prepare: fn (sample_rate: u32, max_block_size: u32) void,
+    process: fn (
+        inputs: []const AudioBuffer,
+        outputs: []AudioBuffer,
+        frames: u32,
+    ) void,
+    setParam: fn (param_id: u32, value: f32) void,
+};
+```
+
+Backends that implement the node (all behind the one contract):
+
+- [ ] **Native Zig DSP node** — hand-written Zig (our mixer/sampler, a biquad, a
+      delay). Deterministic, headless, the default.
+- [ ] **Cmajor → wasm DSP node** — author DSP in Cmajor, compile to wasm, run the
+      `process` block in-engine. Deterministic if pure (no I/O).
+- [ ] **CLAP / WCLAP plugin node** — host CLAP plugins (and **WCLAP**, the wasm
+      CLAP profile) as nodes, so third-party/standard audio plugins slot into the
+      graph. Sandboxed via the wasm host.
+- [ ] **WebAudio node** — wrap a browser `AudioNode` (e.g. native convolver/reverb,
+      analyser) as a graph node. **App/render-side, non-deterministic** — lives
+      outside the tick (like the device).
+- [ ] **Q64 audio node (later)** — a DSP node *is* a qube: an `@realtime` q64
+      component implementing the contract, versioned on the Continuum (the §26
+      Plugin tier for audio). The effect system enforces the realtime/no-I/O
+      boundary statically.
+
+Boundary: Zig / Cmajor-wasm / q64 nodes can run **in-core deterministically**
+(inside the tick); CLAP host-side and WebAudio nodes are **app-side** — the same
+core→render split, decided per node by its effects.
+
 ## 4. What else (proposed — pick what matters)
 
 Quick wins:
