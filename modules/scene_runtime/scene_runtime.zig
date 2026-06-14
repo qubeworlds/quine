@@ -292,6 +292,20 @@ pub const SceneRuntime = struct {
                 .bloom_threshold = p.bloom_threshold,
                 .bloom_intensity = p.bloom_intensity,
             });
+            // Scene-declared audio: a positioned source and/or the listener mark.
+            // Clip-name → handle resolution lands with the clip registry; for now
+            // a clip-less source plays a synth tone (the synth-first path).
+            if (e.audio) |au| self.world.set(core.AudioSource, ent, .{
+                .gain = au.gain,
+                .pitch = au.pitch,
+                .loop = au.loop,
+                .spatial = au.spatial,
+                .playing = au.playing,
+                .ref_distance = au.ref_distance,
+                .max_distance = au.max_distance,
+                .out_pitch = au.pitch,
+            });
+            if (e.listener) self.world.set(core.AudioListener, ent, .{});
             bindings[i] = bnd;
         }
         // Reserve binding slots for eye sub-entities: each fitted `eyes` entity
@@ -1604,24 +1618,21 @@ fn clampf(v: f32, lo: f32, hi: f32) f32 {
 // Uses the C allocator (Jolt links libc) so engine bookkeeping isn't flagged.
 // =============================================================================
 
-test "the spatialisation system pans a source by its position relative to the listener" {
+test "a scene-declared audio source + listener spatialises by position after update" {
+    // Scene-declared: the listener mark + a positioned source, loaded from data.
     const sc = core.scene.Scene{ .schema_version = 1, .name = "spatial", .entities = &.{
-        .{ .name = "ear", .transform = .{ .position = .{ 0, 0, 0 } } },
-        .{ .name = "src", .transform = .{ .position = .{ 5, 0, 0 } } }, // 5 m to the right
+        .{ .name = "ear", .transform = .{ .position = .{ 0, 0, 0 } }, .listener = true },
+        .{ .name = "src", .transform = .{ .position = .{ 5, 0, 0 } }, .audio = .{ .gain = 1, .ref_distance = 1, .max_distance = 50 } },
     } };
     var rt: SceneRuntime = undefined;
     try rt.init(std.heap.c_allocator, sc, &.{});
     defer rt.deinit();
 
-    const ear = rt.find("ear").?.entity;
     const src = rt.find("src").?.entity;
-    rt.world.set(core.AudioListener, ear, .{});
-    rt.world.set(core.AudioSource, src, .{ .gain = 1, .ref_distance = 1, .max_distance = 50 });
-
     try rt.update(1.0 / 60.0); // the post-tick spatialisation pass runs
 
     const s = rt.world.get(core.AudioSource, src).?;
-    try std.testing.expect(s.out_pan > 0.9); // right of the listener
+    try std.testing.expect(s.out_pan > 0.9); // 5 m to the listener's right
     try std.testing.expect(s.out_gain > 0 and s.out_gain < 1); // attenuated by distance
 }
 

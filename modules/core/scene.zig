@@ -274,6 +274,22 @@ pub const Post = struct {
     bloom_intensity: f32 = 0.0,
 };
 
+/// A positioned sound emitter, scene-declared. `clip` names an audio asset (mono
+/// PCM, provided like a mesh; resolved to a handle at load) — null = a synth tone
+/// (the synth-first path until clips land). The spatialisation system reads the
+/// owning entity's Transform; these are the authored params.
+pub const AudioSource = struct {
+    clip: ?[]const u8 = null,
+    gain: f32 = 1,
+    pitch: f32 = 1,
+    loop: bool = false,
+    /// 3D-positioned (true) vs flat/2D for UI/music (false).
+    spatial: bool = true,
+    playing: bool = true,
+    ref_distance: f32 = 1,
+    max_distance: f32 = 50,
+};
+
 pub const Entity = struct {
     name: []const u8,
     transform: ?Transform = null,
@@ -290,6 +306,10 @@ pub const Entity = struct {
     light: ?Light = null,
     environment: ?Environment = null,
     post: ?Post = null,
+    /// A scene-declared audio emitter on this entity.
+    audio: ?AudioSource = null,
+    /// Marks this entity as the audio listener (its Transform is the ear/pose).
+    listener: bool = false,
     /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
     /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
     gaze: ?Vec3 = null,
