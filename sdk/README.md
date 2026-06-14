@@ -2,39 +2,76 @@
 
 The web SDK for the **Quine** engine. The engine wasm is content-agnostic and
 served from the CDN; this package loads it, feeds it a scene, and provides the
-assets the scene references — including **audio clips**, which the *host* decodes
-(the engine stays decoder-free).
+assets the scene references — meshes **and** audio clips (the latter decoded by
+the *host*, so the engine stays decoder-free).
 
 > Status: early. Built and consumed in-repo / via the CDN; a public **npm**
 > publish (`@taluvi/quine`) is deferred until the engine + SDK go public.
+>
+> Scope: this SDK is the thin, content-agnostic **engine loader**. The live
+> multiplayer room client (`QubeGame`, room + `base` + edit-log) is a separate
+> concern in the `world` repo — deliberately not bundled here.
 
 ## API
 
 ```ts
-import { mountScene, loadEngine, provideAudioClip, provideSceneClips, enqueue, SAMPLE_RATE } from '@taluvi/quine';
+import { mountScene } from '@taluvi/quine';
 
-// One-shot: load the engine, decode + inject the scene's clips, run it.
-const mod = await mountScene({
+// One-shot: fetch the scene + its assets/skill/clips, load the engine, inject
+// config → assets → scene → skill in order, start it. Returns a typed handle.
+const view = await mountScene({
   canvas: document.querySelector('canvas')!,
   sceneUrl: 'https://cdn.qubeworlds.com/scenes/electric-ball/scene.json',
-  engineBase: 'https://cdn.qubeworlds.com/engine', // default
-  version: '2026-06-14',                            // cache-bust / pin a build
+  engineBase: 'https://cdn.qubeworlds.com/engine', // default (version-pinned)
+  config: { session: { permissions: ['scene.edit'] } }, // host identity/prefs
+  audioContext,                                    // resumed on first gesture
   onStatus: (line) => console.log('[quine]', line),
 });
+
+view.engineVersion;          // the engine's own quine_version() (mismatch-checked)
+view.scene.overlayUrl;       // the scene's linked HTML overlay (host mounts it)
+const id = view.pick(x, y);  // entity under a canvas pixel
+view.updateConfig({ preferences: { hud: true } }); // live config patch
+view.pause(); view.resume();
+view.dispose();              // pause + detach (the emscripten runtime is a singleton)
 ```
 
-- `loadEngine(opts)` — inject the CDN engine bundle (`crossOrigin="anonymous"`),
-  resolve when the runtime is ready.
-- `provideAudioClip(mod, name, url)` — `fetch` → `OfflineAudioContext.decodeAudioData`
-  → mono `SAMPLE_RATE` PCM → `quine_provide_asset`.
-- `provideSceneClips(mod, scene, baseUrl)` — auto-provide every clip a scene lists.
-- `provideAsset` / `enqueue` — low-level asset + message helpers.
+**High-level** — `mountScene(opts) → QuineView`. Robust boot: OPFS-cached wasm,
+timed `instantiateWasm` with real error surfacing, a WebGL2 context-exhaustion
+probe, an `onAbort` + boot timeout, and the resize kick a fresh canvas needs.
+
+**Engine surface** (low-level):
+
+- `loadEngine(opts)` — inject the CDN bundle (`crossOrigin="anonymous"`), resolve
+  on runtime-ready. Prefetches the wasm cache-first and fires `onPrefetched` so the
+  caller can free its WebGL context (single-context handoff) before instantiation.
+- `provideAsset` / `provideAssets` — stage mesh/binary bytes (`quine_provide_asset`).
+- `enqueue` — host→engine message (`{type:"scene"|"skill"|"config"|"input"}`).
+- `setConfig` / `updateConfig` — inject the `EngineConfig` doc (boot) / live-patch it.
+- `setAutoplay` / `setHud` / `setRunning` — flag setters.
+- `pick(mod, x, y)` — screen→entity picking (`quine_pick`).
+- `queryVersion(mod)` — the engine's own build version (`quine_version`).
+
+**Scene** — `fetchScene(url) → { json, doc, assets, clipNames, skillCode, overlayUrl, … }`
+resolves the assets/skill/overlay a scene links, relative to its URL.
+
+**Audio** — `provideAudioClip` (URL → mono `SAMPLE_RATE` PCM → asset),
+`provideAudioClipBytes`, `provideSceneClips`, and `resumeAudioOnGesture` (unblock
+the autoplay-gated AudioWorklet on the first user gesture).
+
+**Config** — `buildEngineConfig` / `detectEngineRuntime` / `detectEngineCapabilities`
+build the dependency-injected `EngineConfig` (identity, permissions, preferences,
+detected device class + capabilities).
+
+**Versioning** — `version`, `DEFAULT_ENGINE_BASE`, `fetchManifest()` (the CDN
+`latest` pointer).
 
 ## Build
 
 ```sh
 pnpm install
 pnpm typecheck
+pnpm test       # vitest — pure/host-side logic (scene fetch, config, byte cache)
 pnpm build      # → dist/index.js (ESM) + dist/index.d.ts
 ```
 

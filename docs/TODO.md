@@ -289,8 +289,30 @@ default engine base is `/engine/<version>/` — a versioned SDK pins the matchin
 engine. `scripts/publish-sdk.sh` writes the immutable `/engine/<v>/` + `/sdk/<v>/`
 without touching prod `/engine/`; `publish-cdn.sh` (prod) writes the versioned
 paths alongside the moving `/engine/` latest. So apps `import …/sdk/<v>/quine.js`
-and get an SDK locked to its engine. *(Next: a `latest` pointer/manifest; the
-in-engine `quine_version()` query; migrate consumers onto the SDK.)*
+and get an SDK locked to its engine.
+
+**Done (completeness pass):** the SDK reached parity with `world`'s reference
+`mountScene` for the loader/asset/config path (deliberately excluding the
+app-specific tunnel/overlay-nav/live-room bits, which stay host-side):
+
+- **Mesh assets** — `mountScene` now fetches the scene's `assets[]` and provides
+  them *before* the scene builds (previously only audio clips were injected).
+- **`EngineConfig`** — ported the config document + `buildEngineConfig` /
+  `detectEngineRuntime` / `detectEngineCapabilities`; injected via `quine_set_config`
+  *before* the scene, with live `updateConfig` (`{type:"config"}`) after.
+- **Robust loader** — OPFS content-addressed wasm `ByteCache` (instant/offline
+  repeats), a timed `instantiateWasm` that surfaces the real instantiate error, a
+  WebGL2 context-exhaustion probe, an `onAbort` handler + boot timeout, and the
+  `onPrefetched` single-context handoff.
+- **Typed handle** — `mountScene → QuineView` (`pause`/`resume`/`pick`/
+  `updateConfig`/`dispose`) + a resize kick so a fresh canvas sizes correctly.
+- **`quine_version()` query** — `queryVersion(mod)`; `mountScene` warns on an
+  SDK↔engine version mismatch.
+- **`fetchManifest()`** — reads the CDN `latest` pointer.
+- **vitest suite** — scene fetch, config build, byte cache, clip-name collection.
+
+*(Next: wrap `quine_audio_info()` once the engine exposes it; a pointer→pick
+interaction helper; migrate `world`'s consumers onto the SDK.)*
 
 ### Query the engine for audio config + version *(forward-looking; host should ask the engine, not a JS global)*
 
