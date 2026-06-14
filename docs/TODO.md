@@ -279,11 +279,18 @@ core→render split, decided per node by its effects.
 ### Web SDK — `@taluvi/quine` *(forward-looking; see the spatial-audio plan)*
 
 The publishable web harness (loader + boot trace + `mountScene` + `provideAudioClip`)
-will live as a standalone package **in this monorepo** and distribute **via the CDN**
-(a versioned ESM bundle at `/sdk/<version>/`, imported by URL — same as the engine
-wasm), with **npm publish deferred** until going public. npm **scope = `@taluvi`**
-(the parent org is *taluvi*) → it publishes as **`@taluvi/quine`**. Hard-requires the
-engine-CDN versioning (`/engine/<v>/` + `/sdk/<v>/`).
+lives as a standalone package **in this monorepo** (`sdk/`, `@taluvi/quine`) and
+distributes **via the CDN** (a versioned ESM bundle at `/sdk/<version>/quine.js`,
+imported by URL — same as the engine wasm), with **npm publish deferred** until
+going public.
+
+**Done (CDN versioning):** the SDK bakes the build version (git SHA) in, so its
+default engine base is `/engine/<version>/` — a versioned SDK pins the matching
+engine. `scripts/publish-sdk.sh` writes the immutable `/engine/<v>/` + `/sdk/<v>/`
+without touching prod `/engine/`; `publish-cdn.sh` (prod) writes the versioned
+paths alongside the moving `/engine/` latest. So apps `import …/sdk/<v>/quine.js`
+and get an SDK locked to its engine. *(Next: a `latest` pointer/manifest; the
+in-engine `quine_version()` query; migrate consumers onto the SDK.)*
 
 ### Query the engine for audio config + version *(forward-looking; host should ask the engine, not a JS global)*
 
