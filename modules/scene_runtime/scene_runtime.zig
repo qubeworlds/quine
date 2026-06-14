@@ -1170,6 +1170,56 @@ pub const SceneRuntime = struct {
                 if (self.world.get(core.Gaze, b.entity)) |gz| aimEyeBones(model, pose, gz.dir);
             };
         }
+
+        // 7. Spatial audio: from the AudioListener + each AudioSource's now-synced
+        //    Transform (and physics velocity), compute per-source gain/pan/pitch.
+        //    Deterministic — the app reads `out_*` to drive the mixer voices.
+        self.spatializeAudio();
+    }
+
+    /// World-space linear velocity of an entity, from its physics body if it has
+    /// one (else zero — static / no-body entities don't move, for Doppler).
+    fn bodyVelOf(self: *SceneRuntime, e: core.Entity) m.Vec3 {
+        for (self.bindings) |b| {
+            if (std.meta.eql(b.entity, e)) {
+                if (b.body) |body| {
+                    const v = self.physics.bodyVelocity(body);
+                    return m.Vec3.init(v[0], v[1], v[2]);
+                }
+                return m.Vec3{};
+            }
+        }
+        return m.Vec3{};
+    }
+
+    /// Deterministic spatialisation pass: update every `AudioSource`'s `out_*` from
+    /// the `AudioListener`'s pose. With no listener, sources play flat (centred) so
+    /// audio still works. Runs each tick after positions are synced.
+    fn spatializeAudio(self: *SceneRuntime) void {
+        var lis_pos = m.Vec3{};
+        var lis_right = m.Vec3.init(1, 0, 0);
+        var lis_vel = m.Vec3{};
+        var have_listener = false;
+        var lit = self.world.query(&.{ core.AudioListener, core.Transform });
+        if (lit.next()) |le| {
+            const lt = self.world.get(core.Transform, le).?;
+            lis_pos = lt.position;
+            lis_right = lt.right();
+            lis_vel = self.bodyVelOf(le);
+            have_listener = true;
+        }
+        var sit = self.world.query(&.{ core.AudioSource, core.Transform });
+        while (sit.next()) |se| {
+            const src = self.world.get(core.AudioSource, se).?;
+            const st = self.world.get(core.Transform, se).?;
+            if (have_listener) {
+                core.spatialize(src, st.position, self.bodyVelOf(se), lis_pos, lis_right, lis_vel);
+            } else {
+                src.out_gain = src.gain;
+                src.out_pan = 0;
+                src.out_pitch = src.pitch;
+            }
+        }
     }
 
     /// Resolve a scene entity name to its binding, or null.
@@ -1553,6 +1603,27 @@ fn clampf(v: f32, lo: f32, hi: f32) f32 {
 // Headless test: load scene data into a live world + physics, run it.
 // Uses the C allocator (Jolt links libc) so engine bookkeeping isn't flagged.
 // =============================================================================
+
+test "the spatialisation system pans a source by its position relative to the listener" {
+    const sc = core.scene.Scene{ .schema_version = 1, .name = "spatial", .entities = &.{
+        .{ .name = "ear", .transform = .{ .position = .{ 0, 0, 0 } } },
+        .{ .name = "src", .transform = .{ .position = .{ 5, 0, 0 } } }, // 5 m to the right
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{});
+    defer rt.deinit();
+
+    const ear = rt.find("ear").?.entity;
+    const src = rt.find("src").?.entity;
+    rt.world.set(core.AudioListener, ear, .{});
+    rt.world.set(core.AudioSource, src, .{ .gain = 1, .ref_distance = 1, .max_distance = 50 });
+
+    try rt.update(1.0 / 60.0); // the post-tick spatialisation pass runs
+
+    const s = rt.world.get(core.AudioSource, src).?;
+    try std.testing.expect(s.out_pan > 0.9); // right of the listener
+    try std.testing.expect(s.out_gain > 0 and s.out_gain < 1); // attenuated by distance
+}
 
 test "SceneRuntime loads physics bodies from scene data; the ball falls and rests" {
     const sc = core.scene.Scene{
