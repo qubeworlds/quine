@@ -952,6 +952,8 @@ export fn frame() void {
     // deterministic (the audio boundary mirrors the render boundary).
     audio_device.applyEvents(App.stage.events());
     App.stage.clearEvents();
+    // Drive scene-declared spatial sources from the core's spatialisation output.
+    audio_device.syncSources(&App.stage.world);
     audio_device.pump();
 
     const w = sapp.widthf();

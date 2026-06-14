@@ -8,11 +8,26 @@
 //! there's no data race with the sim that feeds the intents. On a host with no
 //! device, `backend.ready()` is false and every call no-ops — engine silent.
 
+const std = @import("std");
 const mixer = @import("audio");
 const backend = @import("audio_backend.zig");
 const sr = @import("scene_runtime");
+const core = @import("core");
 
 var mx: mixer.Mixer = .{};
+
+/// A clean-looping 200 Hz sine (20 periods at 48 kHz) the synth-first path hums
+/// for clip-less sources, until real clips feed the registry. Filled once.
+var tone: [4800]f32 = undefined;
+var tone_ready = false;
+fn fillTone() void {
+    const freq: f32 = 200;
+    for (&tone, 0..) |*s, i| {
+        const t = @as(f32, @floatFromInt(i)) / mixer.sample_rate;
+        s.* = @sin(std.math.tau * freq * t) * 0.6;
+    }
+    tone_ready = true;
+}
 /// Scratch for one pump's worth of interleaved PCM: up to 8 channels × 1024
 /// frames. `pump` renders into prefixes of this and never overruns it.
 var buf: [mixer.max_channels * 1024]f32 = undefined;
@@ -37,6 +52,29 @@ pub fn applyEvents(evs: []const sr.Event) void {
         sr.event.sfx => mx.trigger(@intFromFloat(@max(e.p[0], 0)), e.p[1], e.p[2], 0),
         else => {},
     };
+}
+
+/// Drive a sampler voice per `AudioSource` from the spatialisation output
+/// (`out_gain`/`out_pan`/`out_pitch`, computed deterministically in core). Keyed
+/// by entity index so the voice persists across frames. Clip-less sources hum the
+/// generated `tone` (synth-first); real clips will read the clip registry (next
+/// slice). Call each frame before `pump`.
+pub fn syncSources(world: *core.World) void {
+    if (!tone_ready) fillTone();
+    var it = world.query(&.{ core.AudioSource, core.Transform });
+    while (it.next()) |e| {
+        const src = world.get(core.AudioSource, e).?;
+        const id = e.index; // stable per live entity
+        if (!src.playing or src.out_gain <= 1e-4) {
+            if (mx.clipActive(id)) mx.stopClip(id, 8); // quick fade out
+            continue;
+        }
+        if (mx.clipActive(id)) {
+            mx.updateClip(id, src.out_gain, src.out_pitch, src.out_pan);
+        } else {
+            mx.playClip(id, &tone, src.out_gain, src.out_pitch, src.out_pan, true);
+        }
+    }
 }
 
 /// Push as many freshly-rendered frames as the device wants this frame. The
