@@ -180,6 +180,65 @@ Steps, in order:
    can exceed `max_contacts` (64), the spinlock'd table becomes order-dependent
    at the eviction boundary — upgrade to **per-thread scratch buffers reduced in
    a fixed (thread, slot) order** so the merge stays deterministic at scale.
-4. **Keep web single-threaded** until Tier D (wasm `-pthread` + SharedArrayBuffer
-   + pthread-enabled libc++ for Jolt). Cross-origin isolation (COOP/COEP), the SAB
-   prerequisite, is already handled by the npm SDK harness.
+4. **Keep web single-threaded** until Tier D (below).
+
+## Tier D plan — wasm threads (web parity)
+
+Bringing threads to the web build. Investigating it surfaced that the two thread
+users have **very different readiness**, so Tier D splits in two.
+
+### D1 — Jolt threads on wasm (achievable now)
+
+Jolt's job pool is C++ `std::thread`/`std::mutex` compiled into the emcc Jolt
+object (`build.zig` `build_joltc`), **not** Zig's `std.Thread` — so it's
+independent of the Zig-stdlib blocker below. What it needs:
+
+1. **`-pthread` on the Jolt emcc compile** (`build_joltc`) and on the final
+   `emLinkStep`, plus `-sPTHREAD_POOL_SIZE=<n>` to pre-spawn workers (emscripten
+   can't synchronously `pthread_create` on the main thread mid-frame).
+2. **Wasm features:** the web target needs `atomics` + `bulk_memory` and shared
+   memory; emscripten `ALLOW_MEMORY_GROWTH` + shared memory is supported but
+   growth must be handled (the heap is a `SharedArrayBuffer`).
+3. **Flip `physics.workerThreads()`** — today it hard-returns `0` on wasm; let
+   wasm read a thread count once D1's link flags are in.
+4. Determinism is unchanged: cross-platform determinism is on, so Jolt stays
+   thread-count-independent (the native A/B harness already proves the property;
+   the wasm build inherits it). **Browser verification is out of band** — this
+   sandbox has no cross-origin-isolated browser.
+
+### D2 — Zig bake threads on wasm (blocked)
+
+The Tier A bake pool (`scene_runtime/bake.zig`) uses `std.Thread`, which pulls in
+`std.Io.Threaded`. **That does not compile for `wasm32-emscripten` in Zig 0.16**
+— a `childWait`/signal-enum mismatch in the stdlib (this is why `bake.zig` is
+gated `threading_supported = !isWasm`, and why `main.zig` overrides `panic`).
+Unblock by either:
+
+- a Zig stdlib fix (upstream or vendored patch to `std/os/emscripten.zig`), or
+- a **minimal extern `pthread_create`/`pthread_join` shim** in Zig that backs the
+  bake fork-join directly, bypassing `std.Thread` (and thus `std.Io.Threaded`)
+  entirely — a small, self-contained C-ABI wrapper.
+
+Until then, web bakes run serially (correct, just not parallel). Widening
+`bake.zig`'s `threading_supported` flag is the single switch that turns them on.
+
+### Cross-cutting: the SharedArrayBuffer / two-bundle problem
+
+A `-pthread` emscripten module **requires `SharedArrayBuffer` to instantiate at
+all**, and SAB requires the page be **cross-origin isolated** (COOP:
+`same-origin` + COEP: `require-corp`/`credentialless`). Not every embedding
+context is isolated, so the threaded module can't be the only bundle:
+
+- Ship a **separate threaded bundle** (e.g. `quine-webgl2-mt.{js,wasm}`) and have
+  the loader select it **only when `crossOriginIsolated`**, else fall back to the
+  current single-threaded bundle. (Two more artifacts in `publish-cdn.sh`.)
+- COOP/COEP on the host pages (qubeworlds.com / editor / play) is handled by the
+  npm SDK harness; the CDN assets must stay CORP-compatible (the open
+  wildcard-GET CORS already set is compatible).
+
+### Recommended order
+
+D1 first (unblocked, high value — physics is the heavy web cost), behind the
+two-bundle + feature-detect loader. D2 follows once the stdlib blocker is cleared.
+Neither flips a default until in-browser determinism + a no-SAB fallback are
+confirmed — the single-threaded bundle must keep working untouched.

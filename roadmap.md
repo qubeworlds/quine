@@ -850,12 +850,27 @@ skip C, hold the "result must not depend on thread count" invariant.
       is thread-count-independent. *Remaining for scale:* if contact pairs/step
       can exceed the 64-slot table, swap to per-thread scratch + fixed-order
       merge (ADR-0001 §"Tier B plan"). Web stays single-threaded → Tier D.
-- [ ] **Tier D — wasm threads (web parity)** — emscripten `-pthread`,
-      SharedArrayBuffer, pthread-enabled libc++ for the Jolt build, warmed thread
-      pool. Verify same-binary determinism still holds on web.
-      *Cross-origin isolation (COOP/COEP) — the SharedArrayBuffer prerequisite —
-      is **done**, handled by the npm SDK harness, so this no longer waits on
-      Cloudflare Worker header config.*
+- [ ] **Tier D — wasm threads (web parity)** — splits cleanly into two
+      independent halves with very different readiness (see ADR-0001 §"Tier D
+      plan"):
+      - **D1 — Jolt threads on wasm** (achievable now): Jolt's pool is C++
+        `std::thread` in the emcc-compiled object, so it does *not* depend on
+        Zig's `std.Thread`. Needs `-pthread` on the Jolt emcc compile + the
+        `emLinkStep`, `-sPTHREAD_POOL_SIZE`, the `atomics`/`bulk_memory` wasm
+        features + shared memory, and flipping `physics.workerThreads()` to allow
+        wasm. Determinism holds (cross-platform determinism is on); browser
+        verification is out of band.
+      - **D2 — Zig bake threads on wasm** (**blocked**): `std.Thread` pulls
+        `std.Io.Threaded`, which **does not compile for emscripten in Zig 0.16**
+        (the `childWait`/signal-enum bug this session hit — bake.zig is gated off
+        wasm because of it). Unblock by either a Zig stdlib fix or a small extern
+        `pthread_create`/`join` shim that bypasses `std.Thread`. Until then web
+        bakes stay serial.
+      - **Cross-cutting:** a `-pthread` module needs SharedArrayBuffer to even
+        instantiate, so this ships as a **separate threaded bundle** selected at
+        runtime when `crossOriginIsolated`, falling back to the current
+        single-threaded bundle otherwise. COOP/COEP cross-origin isolation (the
+        SAB prerequisite) is handled by the npm SDK harness.
 - [ ] **Scale check** — push toward ADR-0001's 10k+ bodies; profile.
 
 ### Phase 2 — Observability & debug tooling  *(foundational debug — see §19)*
