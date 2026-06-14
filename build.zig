@@ -437,6 +437,21 @@ pub fn build(b: *Build) !void {
         b.installArtifact(phys_det); // installed so the A/B driver can set env per run
         const run_phys_det = b.addRunArtifact(phys_det);
         b.step("phys-determinism", "Run the threaded-physics determinism runner once").dependOn(&run_phys_det.step);
+
+        // phys-scale: a dense-pile stress runner (Tier B scale check). Reports
+        // throughput + a position digest (deterministic across thread counts) +
+        // the peak contact-table occupancy. Driver: scripts/phys-scale.sh.
+        const mod_phys_scale = b.createModule(.{
+            .root_source_file = b.path("tools/phys_scale.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "physics", .module = mod_physics }},
+        });
+        const phys_scale = b.addExecutable(.{ .name = "phys-scale", .root_module = mod_phys_scale });
+        b.installArtifact(phys_scale);
+        const run_phys_scale = b.addRunArtifact(phys_scale);
+        b.step("phys-scale", "Run the physics scale/throughput runner once").dependOn(&run_phys_scale.step);
     }
 
     // --- tests: ecs + core are headless, so they run anywhere (CI-friendly) --

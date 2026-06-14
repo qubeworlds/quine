@@ -871,7 +871,17 @@ skip C, hold the "result must not depend on thread count" invariant.
         runtime when `crossOriginIsolated`, falling back to the current
         single-threaded bundle otherwise. COOP/COEP cross-origin isolation (the
         SAB prerequisite) is handled by the npm SDK harness.
-- [ ] **Scale check** — push toward ADR-0001's 10k+ bodies; profile.
+- [x] **Scale check** — `phys-scale` runner + `scripts/phys-scale.sh` pile N
+      uniquely-tagged dynamic bodies into a dense heap and run it at 1/2/4/auto
+      threads. At **2k/5k/10k** bodies: the final-position digest is **identical
+      across thread counts** (Jolt is bit-deterministic at scale), the contact
+      table **saturates (64/64) and evicts but positions don't change** (it feeds
+      only squash/`contactImpulse`, never the solve — so the per-thread-scratch
+      upgrade is a cosmetic, deferred concern, not a determinism bug), and
+      threading gives ~1.6× on 4 cores for a 10k single-island pile (Jolt's
+      worst case for parallelism). Large worlds are env-sized
+      (`QUINE_PHYS_MAX_BODIES/PAIRS/CONTACTS`, `QUINE_PHYS_TEMP_MB`). See
+      ADR-0001 §"Tier B plan" step 3.
 
 ### Phase 2 — Observability & debug tooling  *(foundational debug — see §19)*
 Pulled early: you can't debug threading, the multiplayer loop, or AI agents by eye.

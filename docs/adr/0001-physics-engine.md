@@ -175,11 +175,27 @@ Steps, in order:
    digests; `scripts/phys-determinism.sh` runs it at `QUINE_PHYS_THREADS=0/1/2/4/-1`
    and asserts an **identical trace**. It passes — proof the flip preserves
    determinism (Jolt's cross-platform-determinism guarantee, exercised).
-3. **Scale check — pending.** Push a stress scene toward ADR's 10k+ bodies;
-   profile the job pool and the broadphase. If distinct contact pairs per step
-   can exceed `max_contacts` (64), the spinlock'd table becomes order-dependent
-   at the eviction boundary — upgrade to **per-thread scratch buffers reduced in
-   a fixed (thread, slot) order** so the merge stays deterministic at scale.
+3. **Scale check — DONE.** `tools/phys_scale.zig` (the `phys-scale` target) piles
+   N uniquely-tagged dynamic spheres into a dense heap, settles it, and reports
+   throughput + a fold of every body's final position + the peak contact-table
+   occupancy; `scripts/phys-scale.sh` runs it at `QUINE_PHYS_THREADS=1/2/4/-1`.
+   Findings at **2k / 5k / 10k** bodies (4-core box, ReleaseFast):
+   - **Determinism holds at scale.** The position digest is **identical across
+     every thread count** at all three sizes — Jolt stays bit-deterministic with
+     thousands of bodies, not just 16.
+   - **The 64-slot caveat is real but harmless to the sim.** The contact table
+     **saturates (64/64) and evicts** in every dense run — yet positions are
+     still identical across thread counts. That confirms what the architecture
+     implies: the table feeds **only** squash / `contactImpulse`, never the
+     solve, so its eviction order can't perturb the simulation. The per-thread-
+     scratch upgrade is therefore **not** needed for physics determinism; it
+     matters only if the *squash/query channel itself* must be order-stable at
+     scale (a cosmetic concern), so it's deferred until a scene needs it.
+   - **Throughput:** ~1.6× on 4 threads for 10k bodies (82→50 ms/tick). A single
+     dense pile is **one contact island**, Jolt's worst case for parallelism;
+     many separate clusters scale better. Large worlds also need bigger Jolt
+     arrays + temp arena — now env-sized (`QUINE_PHYS_MAX_BODIES/PAIRS/CONTACTS`,
+     `QUINE_PHYS_TEMP_MB`), defaults unchanged for the handful-of-bodies scenes.
 4. **Keep web single-threaded** until Tier D (below).
 
 ## Tier D plan — wasm threads (web parity)

@@ -39,6 +39,16 @@ fn workerThreads() i32 {
     return std.fmt.parseInt(i32, std.mem.span(v), 10) catch -1;
 }
 
+/// A Jolt PhysicsSystem capacity (`max_bodies` etc.), overridable by env so the
+/// scale-test runner can size a 10k-body world without touching the default
+/// (the live scenes use a handful of bodies). Native only — wasm keeps the
+/// compact defaults (no env there).
+fn capacity(comptime name: [:0]const u8, default: u32) u32 {
+    if (comptime @import("builtin").target.cpu.arch.isWasm()) return default;
+    const v = std.c.getenv(name) orelse return default;
+    return std.fmt.parseInt(u32, std.mem.span(v), 10) catch default;
+}
+
 // User-data tags so the contact listener can tell bodies apart.
 pub const tag_none: u64 = 0;
 pub const tag_ball: u64 = 1;
@@ -228,15 +238,22 @@ pub const World = struct {
         // initing isn't reliable on the emscripten Jolt build (and one global
         // init + many systems is Jolt's intended usage anyway).
         if (!jolt_inited) {
-            try jolt.init(allocator, .{ .num_threads = workerThreads() });
+            // Jolt's temp allocator is a fixed arena (default 16 MiB) it `abort()`s
+            // on if a step's narrow-phase/solver scratch exceeds it — which a
+            // many-thousand-body pile does. Size it via env (MiB) for the scale
+            // runner; the handful-of-bodies default is unchanged.
+            try jolt.init(allocator, .{
+                .num_threads = workerThreads(),
+                .temp_allocator_size = capacity("QUINE_PHYS_TEMP_MB", 16) * 1024 * 1024,
+            });
             jolt_inited = true;
         }
         self.* = .{
             .system = try jolt.PhysicsSystem.create(&bpli, &obp_filter, &pair_filter, .{
-                .max_bodies = 1024,
+                .max_bodies = capacity("QUINE_PHYS_MAX_BODIES", 1024),
                 .num_body_mutexes = 0,
-                .max_body_pairs = 1024,
-                .max_contact_constraints = 1024,
+                .max_body_pairs = capacity("QUINE_PHYS_MAX_PAIRS", 1024),
+                .max_contact_constraints = capacity("QUINE_PHYS_MAX_CONTACTS", 1024),
             }),
             .listener = .{ .interface = jolt.ContactListener.init(Listener) },
         };
@@ -422,6 +439,19 @@ pub const World = struct {
     pub fn contactImpulse(self: *const World, a: u64, b: u64) f32 {
         return self.listener.query(a, b);
     }
+
+    /// Distinct contacting tag-pairs recorded in the last `step`. Saturates at
+    /// `contact_table_cap`; reaching the cap means the listener started **evicting**
+    /// pairs, which is the only place the contact table's order-stability can
+    /// matter under threading (it feeds only the squash/`contactImpulse` query,
+    /// never the solve — see ADR-0001 §"Tier B plan"). The scale runner watches
+    /// this to tell whether the per-thread-scratch upgrade is actually needed.
+    pub fn contactCount(self: *const World) usize {
+        return self.listener.count;
+    }
+
+    /// Capacity of the per-step contact table (`contactCount` saturates here).
+    pub const contact_table_cap: usize = max_contacts;
 
     /// Closing speed of the ball's strongest contact with the head / ground last
     /// step (thin wrappers over `contactImpulse`).
