@@ -214,6 +214,10 @@ pub const AudioSource = struct {
     /// `max_distance`.
     ref_distance: f32 = 1,
     max_distance: f32 = 50,
+    /// Stereo-width exaggeration: the azimuth pan is multiplied by this (then
+    /// clamped). 1 = physically correct; >1 widens the image (e.g. 3 makes a
+    /// modestly off-centre source pan hard) without moving the scene.
+    width: f32 = 1,
     // --- computed each tick by `spatialize` (the app reads these) ---
     out_gain: f32 = 0,
     out_pan: f32 = 0,
@@ -235,6 +239,7 @@ pub fn spatialize(
     lis_pos: m.Vec3,
     lis_right: m.Vec3,
     lis_vel: m.Vec3,
+    speed_of_sound: f32,
 ) void {
     if (!src.spatial) {
         src.out_gain = src.gain;
@@ -256,11 +261,12 @@ pub fn spatialize(
 
     // Azimuth pan: lateral component of the unit direction along listener-right.
     const u = if (dist > 1e-6) to.scale(1.0 / dist) else m.Vec3{};
-    src.out_pan = std.math.clamp(u.dot(lis_right), -1, 1);
+    src.out_pan = std.math.clamp(u.dot(lis_right) * src.width, -1, 1);
 
     // Doppler: closing speed along the line shifts pitch (approaching → higher).
     const v_radial = src_vel.sub(lis_vel).dot(u);
-    src.out_pitch = src.pitch * std.math.clamp(sound_speed / (sound_speed + v_radial), 0.5, 2.0);
+    const c = if (speed_of_sound > 1) speed_of_sound else sound_speed;
+    src.out_pitch = src.pitch * std.math.clamp(c / (c + v_radial), 0.5, 2.0);
 }
 
 test "spatialize: azimuth pans by side; distance attenuates; past max is silent" {
@@ -268,14 +274,14 @@ test "spatialize: azimuth pans by side; distance attenuates; past max is silent"
     const o = m.Vec3{};
     var s = AudioSource{ .gain = 1, .ref_distance = 1, .max_distance = 50 };
 
-    spatialize(&s, m.Vec3.init(5, 0, 0), o, o, right, o); // 5 m to the listener's right
+    spatialize(&s, m.Vec3.init(5, 0, 0), o, o, right, o, sound_speed); // 5 m to the listener's right
     try std.testing.expect(s.out_pan > 0.9);
     try std.testing.expect(s.out_gain > 0 and s.out_gain < 1);
 
-    spatialize(&s, m.Vec3.init(-5, 0, 0), o, o, right, o); // mirror to the left
+    spatialize(&s, m.Vec3.init(-5, 0, 0), o, o, right, o, sound_speed); // mirror to the left
     try std.testing.expect(s.out_pan < -0.9);
 
-    spatialize(&s, m.Vec3.init(100, 0, 0), o, o, right, o); // beyond max_distance
+    spatialize(&s, m.Vec3.init(100, 0, 0), o, o, right, o, sound_speed); // beyond max_distance
     try std.testing.expectEqual(@as(f32, 0), s.out_gain);
 }
 
@@ -284,8 +290,8 @@ test "spatialize: closer is louder" {
     const o = m.Vec3{};
     var near = AudioSource{};
     var far = AudioSource{};
-    spatialize(&near, m.Vec3.init(0, 0, 2), o, o, right, o);
-    spatialize(&far, m.Vec3.init(0, 0, 20), o, o, right, o);
+    spatialize(&near, m.Vec3.init(0, 0, 2), o, o, right, o, sound_speed);
+    spatialize(&far, m.Vec3.init(0, 0, 20), o, o, right, o, sound_speed);
     try std.testing.expect(near.out_gain > far.out_gain);
 }
 
@@ -293,9 +299,9 @@ test "spatialize: Doppler raises pitch approaching, lowers receding" {
     const right = m.Vec3.init(1, 0, 0);
     const o = m.Vec3{};
     var s = AudioSource{ .pitch = 1 };
-    spatialize(&s, m.Vec3.init(0, 0, 10), m.Vec3.init(0, 0, -30), o, right, o); // toward listener
+    spatialize(&s, m.Vec3.init(0, 0, 10), m.Vec3.init(0, 0, -30), o, right, o, sound_speed); // toward listener
     try std.testing.expect(s.out_pitch > 1.0);
-    spatialize(&s, m.Vec3.init(0, 0, 10), m.Vec3.init(0, 0, 30), o, right, o); // away
+    spatialize(&s, m.Vec3.init(0, 0, 10), m.Vec3.init(0, 0, 30), o, right, o, sound_speed); // away
     try std.testing.expect(s.out_pitch < 1.0);
 }
 
@@ -303,7 +309,7 @@ test "spatialize: a non-spatial source passes through unchanged" {
     const right = m.Vec3.init(1, 0, 0);
     const o = m.Vec3{};
     var s = AudioSource{ .gain = 0.7, .pitch = 1.3, .spatial = false };
-    spatialize(&s, m.Vec3.init(99, 0, 0), o, o, right, o);
+    spatialize(&s, m.Vec3.init(99, 0, 0), o, o, right, o, sound_speed);
     try std.testing.expectEqual(@as(f32, 0.7), s.out_gain);
     try std.testing.expectEqual(@as(f32, 0), s.out_pan);
     try std.testing.expectEqual(@as(f32, 1.3), s.out_pitch);

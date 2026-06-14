@@ -288,6 +288,8 @@ pub const AudioSource = struct {
     playing: bool = true,
     ref_distance: f32 = 1,
     max_distance: f32 = 50,
+    /// Stereo-width exaggeration of the pan (1 = correct, >1 widens).
+    width: f32 = 1,
 };
 
 pub const Entity = struct {
@@ -323,6 +325,9 @@ pub const Scene = struct {
     name: []const u8,
     script: ?Script = null,
     gravity: Vec3 = .{ 0, -9.81, 0 },
+    /// Speed of sound (m/s) for the audio Doppler effect — the medium control.
+    /// Lower = more dramatic pitch shift. 0 keeps the engine default (343).
+    sound_speed: f32 = 343,
     /// Gerstner ocean (waves + buoyancy params). Null for a dry scene.
     ocean: ?Ocean = null,
     entities: []const Entity,
@@ -353,6 +358,7 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
         .entities = undefined,
     };
     if (o.get("gravity")) |g| scene.gravity = try asVec3(g);
+    if (o.get("soundSpeed")) |x| scene.sound_speed = try asF32(x);
     if (o.get("script")) |s| scene.script = try parseScript(arena, s);
     if (o.get("timeline")) |t| scene.timeline = try parseTimeline(arena, t);
     if (o.get("ocean")) |x| scene.ocean = try parseOcean(arena, x);
@@ -486,6 +492,7 @@ fn parseAudio(v: Value) !AudioSource {
     if (o.get("playing")) |x| a.playing = (x == .bool and x.bool);
     if (o.get("refDistance")) |x| a.ref_distance = try asF32(x);
     if (o.get("maxDistance")) |x| a.max_distance = try asF32(x);
+    if (o.get("width")) |x| a.width = try asF32(x);
     return a;
 }
 

@@ -113,6 +113,8 @@ pub const SceneRuntime = struct {
     physics: phys.World = undefined,
     bindings: []Binding = &.{},
     gravity: [3]f32 = .{ 0, -9.81, 0 },
+    /// Speed of sound (m/s) for audio Doppler — from the scene.
+    sound_speed: f32 = 343,
     /// Accumulated animation/sim time (seconds).
     time: f32 = 0,
     /// Behaviour hooks, run by `update` before/after the physics step (the seam
@@ -176,7 +178,7 @@ pub const SceneRuntime = struct {
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
     /// `assets` resolves geometry sources (e.g. a glTF `source` -> its bytes).
     pub fn init(self: *SceneRuntime, gpa: std.mem.Allocator, scene_data: core.SceneData, assets: []const Asset) !void {
-        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity };
+        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity, .sound_speed = scene_data.sound_speed };
         errdefer self.arena.deinit();
         const a = self.arena.allocator();
 
@@ -315,6 +317,7 @@ pub const SceneRuntime = struct {
                     .playing = au.playing,
                     .ref_distance = au.ref_distance,
                     .max_distance = au.max_distance,
+                    .width = au.width,
                     .out_pitch = au.pitch,
                 });
             }
@@ -1240,7 +1243,7 @@ pub const SceneRuntime = struct {
             const src = self.world.get(core.AudioSource, se).?;
             const st = self.world.get(core.Transform, se).?;
             if (have_listener) {
-                core.spatialize(src, st.position, self.bodyVelOf(se), lis_pos, lis_right, lis_vel);
+                core.spatialize(src, st.position, self.bodyVelOf(se), lis_pos, lis_right, lis_vel, self.sound_speed);
             } else {
                 src.out_gain = src.gain;
                 src.out_pan = 0;
