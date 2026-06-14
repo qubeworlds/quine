@@ -216,14 +216,27 @@ want it, and why / why not).
   of thread count) once two concrete blockers are fixed — the unsynchronized
   contact listener and `num_body_mutexes = 0` — see §12 for the staged plan.
 
-### 5. Audio  — *flagged as next big piece*
+### 5. Audio  — *flagged as next big piece; low-level core landed*
 - **Unreal:** MetaSounds graph, 3D spatialization, attenuation, reverb, buses.
-- **quine:** **none.**
-- **Call:** **Yes.** Adopt a wasm-safe lib (miniaudio — single-header C, builds
-  like quickjs). Mirror the render boundary: **core raises audio events**
-  (bounce from a Jolt contact impulse, footstep from an anim event), the **app**
-  drives playback. Want: one-shot SFX, 3D attenuation, a music bed. MetaSounds-
-  style graph is **out of scope**.
+- **quine:** **our own low-level engine** — a pure, content-agnostic **N-channel
+  synth mixer** (`modules/audio`): continuous buses + one-shot voices, per-voice
+  pan, rendered to **1..8 interleaved channels** (mono → 7.1) at a count the host
+  **negotiates from the device/browser** (`destination.maxChannelCount`, capped at
+  8). Mirrors the render boundary: the mixer is device-free and headless; the app
+  owns the device and pumps it. Decision: **roll our own** (no miniaudio for the
+  core) so the engine carries its own deterministic-friendly audio path.
+- **Call:** **Yes — and the architecture is "low-level engine + modules on top".**
+  - **Low-level engine** (have a first cut): the N-channel mixer above. Still
+    driven through `sokol_audio` (≤ stereo) on the device side — the next step is
+    our **own device layer** (a custom **WebAudio AudioWorklet** with
+    `outputChannelCount:[N]` on web, native backends elsewhere) that **drops
+    `sokol_audio`** and negotiates the real channel count.
+  - **Audio modules on top** (the §26 Module tier): advanced tasks — **true
+    positional/surround placement, distance attenuation, reverb, a music bed,
+    HRTF** — are compiled modules over the low-level engine, not baked into it.
+  - **Engine-raised events** still drive playback: **bounce** from a Jolt contact
+    impulse, **footstep** from an anim event; one-shot SFX + a music bed. A
+    MetaSounds-style node graph is **out of scope**.
 
 ### 6. Post-processing & camera
 - **Unreal:** TAA/TSR, bloom, DOF, SSAO, motion blur, tonemapping, color grade,
@@ -831,9 +844,16 @@ Pulled early: you can't debug threading, the multiplayer loop, or AI agents by e
 - [ ] **Worker-side** — Tail Workers / Logpush; room-health surfacing.
 
 ### Phase 3 — Audio & character voice  *(see §5; TTS in §20)*
-- [ ] **Audio engine** — miniaudio integration (single-header C, builds like
-      quickjs/wasm-safe). Core raises events, the app plays (mirrors the render
-      boundary).
+- [x] **Low-level engine** — our own pure **N-channel synth mixer**
+      (`modules/audio`): buses + one-shots + per-voice pan, rendered to 1..8
+      interleaved channels, channel count set by the host. Headless + tested.
+- [ ] **Own device layer** — replace `sokol_audio` (≤ stereo) with a custom
+      **WebAudio AudioWorklet** (`outputChannelCount:[N]`, N = min(8,
+      `destination.maxChannelCount`)) on web + native backends, so >2 channels
+      actually reach the browser. Core raises events, the app plays (mirrors the
+      render boundary).
+- [ ] **Audio modules on top** (§26 Module tier) — positional/surround placement,
+      reverb, HRTF as compiled modules over the low-level engine, not in the core.
 - [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the
       contact listener already records.
 - [ ] **3D spatialization + attenuation**; **anim-event footsteps**; **music bed**.
