@@ -1078,6 +1078,7 @@ export fn frame() void {
         thumb_frame += 1;
         if (thumb_frame >= 6) {
             captureThumb(t.out);
+            if (std.c.getenv("QUINE_STATE_OUT") != null) dumpWorldState();
             sapp.requestQuit();
         }
     }
@@ -1129,6 +1130,7 @@ export fn event(ev: [*c]const sapp.Event) void {
         .KEY_DOWN => switch (e.key_code) {
             .UP => App.key_up_held = true,
             .DOWN => App.key_down_held = true,
+            .F3 => dumpWorldState(), // debug: dump live world state to JSON
             else => {},
         },
         .KEY_UP => switch (e.key_code) {
@@ -1301,6 +1303,25 @@ fn writeFileLibc(path: [*:0]const u8, data: []const u8) void {
     const f = std.c.fopen(path, "wb") orelse return;
     _ = std.c.fwrite(data.ptr, 1, data.len, f);
     _ = std.c.fclose(f);
+}
+
+/// Dump the live world state to JSON for debugging (`core.snapshot.writeJson`):
+/// the simulation-output components of every entity at the current tick. Bound
+/// to **F3**, and emitted once at thumb-capture exit when `QUINE_STATE_OUT` is
+/// set (so the headless screenshot harness can grab state next to the PNG).
+///
+/// This is a one-way *debug* dump of live runtime state — not a scene save (the
+/// normalized-scene round-trip is separate). Native/libc file write; pairs with
+/// the determinism harness (`core.DigestTrace`) — when a trace says *which* tick
+/// two runs diverged, dump both and diff the JSON to see *what*.
+fn dumpWorldState() void {
+    const alloc = std.heap.c_allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+    core.snapshot.writeJson(&App.stage.world, alloc, &buf) catch return;
+    const path: [*:0]const u8 = std.c.getenv("QUINE_STATE_OUT") orelse "quine-state.json";
+    writeFileLibc(path, buf.items);
+    std.debug.print("[quine] world state @ tick {d}: {d} bytes -> {s}\n", .{ App.world_tick, buf.items.len, std.mem.span(path) });
 }
 
 pub fn main() void {
