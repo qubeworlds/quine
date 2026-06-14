@@ -954,6 +954,7 @@ export fn frame() void {
     App.stage.clearEvents();
     // Drive scene-declared spatial sources from the core's spatialisation output.
     audio_device.syncSources(&App.stage.world);
+    audio_device.setStereoWidth(App.stage.stereo_width); // scene Mid/Side width
     audio_device.pump();
 
     const w = sapp.widthf();

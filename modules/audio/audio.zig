@@ -79,6 +79,10 @@ pub const Mixer = struct {
     /// LCG state for the noise source (audio needs no determinism vs. the sim).
     rng: u32 = 0x9e3779b9,
     master: f32 = 0.4,
+    /// Mid/Side stereo width applied to the final L/R bus. 1 = neutral; toward 2
+    /// reduces the centre (Mid) and boosts the sides (Side) → wider; toward 0
+    /// collapses to mono. (`L = Mid*(2-w) + Side*w`, `R = Mid*(2-w) - Side*w`.)
+    stereo_width: f32 = 1,
 
     /// Set the output channel count (what the host's device allows, capped at
     /// `max_channels`). 1 = mono, 2 = stereo, 6 = 5.1, 8 = 7.1.
@@ -324,8 +328,14 @@ pub const Mixer = struct {
                 }
                 if (v.release and v.fade <= 0) v.active = false;
             }
-            l = std.math.clamp(l * self.master, -1.0, 1.0);
-            r = std.math.clamp(r * self.master, -1.0, 1.0);
+            l *= self.master;
+            r *= self.master;
+            // Mid/Side width: widen by reducing the centre and boosting the sides.
+            const w = std.math.clamp(self.stereo_width, 0, 2);
+            const mid = (l + r) * 0.5;
+            const side = (l - r) * 0.5;
+            l = std.math.clamp(mid * (2 - w) + side * w, -1.0, 1.0);
+            r = std.math.clamp(mid * (2 - w) - side * w, -1.0, 1.0);
             self.writeFrame(out[f * ch .. (f + 1) * ch], l, r);
         }
     }
@@ -489,6 +499,21 @@ test "pan steers a sampler clip between the left and right channels" {
         right += @abs(buf[i + 1]);
     }
     try std.testing.expect(left > right * 100);
+}
+
+test "Mid/Side width: width 2 removes a centred (mono) source" {
+    var mx: Mixer = .{};
+    const clip = [_]f32{0.5} ** 16;
+    mx.playClip(1, &clip, 1.0, 1.0, 0, true); // centred (L == R)
+    var buf: [256]f32 = undefined;
+
+    mx.stereo_width = 1; // neutral: the centred source is audible
+    mx.render(&buf);
+    try std.testing.expect(energy(&buf) > 0);
+
+    mx.stereo_width = 2; // full width: the Mid (centre) is removed → silence
+    mx.render(&buf);
+    try std.testing.expectEqual(@as(f32, 0), energy(&buf));
 }
 
 test "fade silences a clip (pause); stop frees the voice" {

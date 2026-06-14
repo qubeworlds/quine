@@ -328,6 +328,9 @@ pub const Scene = struct {
     /// Speed of sound (m/s) for the audio Doppler effect — the medium control.
     /// Lower = more dramatic pitch shift. 0 keeps the engine default (343).
     sound_speed: f32 = 343,
+    /// Mid/Side stereo width for the audio bus: 1 = neutral, >1 widens (reduces
+    /// the centre, boosts the sides), 0 = mono.
+    stereo_width: f32 = 1,
     /// Gerstner ocean (waves + buoyancy params). Null for a dry scene.
     ocean: ?Ocean = null,
     entities: []const Entity,
@@ -359,6 +362,7 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
     };
     if (o.get("gravity")) |g| scene.gravity = try asVec3(g);
     if (o.get("soundSpeed")) |x| scene.sound_speed = try asF32(x);
+    if (o.get("stereoWidth")) |x| scene.stereo_width = try asF32(x);
     if (o.get("script")) |s| scene.script = try parseScript(arena, s);
     if (o.get("timeline")) |t| scene.timeline = try parseTimeline(arena, t);
     if (o.get("ocean")) |x| scene.ocean = try parseOcean(arena, x);

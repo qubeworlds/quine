@@ -43,6 +43,11 @@ pub fn shutdown() void {
     backend.shutdown();
 }
 
+/// Set the Mid/Side stereo width on the mixer bus (the scene's `stereoWidth`).
+pub fn setStereoWidth(w: f32) void {
+    mx.stereo_width = w;
+}
+
 /// Apply the skill's queued audio intents (drained from the SceneRuntime each
 /// frame) to the mixer. Runs even with no device so mixer state stays in sync.
 /// (Pan defaults to centre — the intent ABI doesn't carry a position yet.)

@@ -115,6 +115,13 @@ pub const SceneRuntime = struct {
     gravity: [3]f32 = .{ 0, -9.81, 0 },
     /// Speed of sound (m/s) for audio Doppler — from the scene.
     sound_speed: f32 = 343,
+    /// Mid/Side stereo width for the audio bus — from the scene; the app applies
+    /// it to the mixer.
+    stereo_width: f32 = 1,
+    /// Listener pose tracking for Doppler: the camera has no physics body, so its
+    /// velocity is the smoothed frame-to-frame motion of its Transform.
+    prev_listener_pos: ?m.Vec3 = null,
+    listener_vel: m.Vec3 = .{},
     /// Accumulated animation/sim time (seconds).
     time: f32 = 0,
     /// Behaviour hooks, run by `update` before/after the physics step (the seam
@@ -178,7 +185,7 @@ pub const SceneRuntime = struct {
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
     /// `assets` resolves geometry sources (e.g. a glTF `source` -> its bytes).
     pub fn init(self: *SceneRuntime, gpa: std.mem.Allocator, scene_data: core.SceneData, assets: []const Asset) !void {
-        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity, .sound_speed = scene_data.sound_speed };
+        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity, .sound_speed = scene_data.sound_speed, .stereo_width = scene_data.stereo_width };
         errdefer self.arena.deinit();
         const a = self.arena.allocator();
 
@@ -1204,7 +1211,7 @@ pub const SceneRuntime = struct {
         // 7. Spatial audio: from the AudioListener + each AudioSource's now-synced
         //    Transform (and physics velocity), compute per-source gain/pan/pitch.
         //    Deterministic — the app reads `out_*` to drive the mixer voices.
-        self.spatializeAudio();
+        self.spatializeAudio(dt);
     }
 
     /// World-space linear velocity of an entity, from its physics body if it has
@@ -1225,7 +1232,7 @@ pub const SceneRuntime = struct {
     /// Deterministic spatialisation pass: update every `AudioSource`'s `out_*` from
     /// the `AudioListener`'s pose. With no listener, sources play flat (centred) so
     /// audio still works. Runs each tick after positions are synced.
-    fn spatializeAudio(self: *SceneRuntime) void {
+    fn spatializeAudio(self: *SceneRuntime, dt: f32) void {
         var lis_pos = m.Vec3{};
         var lis_right = m.Vec3.init(1, 0, 0);
         var lis_vel = m.Vec3{};
@@ -1235,7 +1242,15 @@ pub const SceneRuntime = struct {
             const lt = self.world.get(core.Transform, le).?;
             lis_pos = lt.position;
             lis_right = lt.right();
-            lis_vel = self.bodyVelOf(le);
+            // Listener velocity = smoothed frame-to-frame motion of its Transform
+            // (the camera has no body, so orbiting it is what produces Doppler).
+            var instant = m.Vec3{};
+            if (dt > 0) if (self.prev_listener_pos) |pp| {
+                instant = lis_pos.sub(pp).scale(1.0 / dt);
+            };
+            self.prev_listener_pos = lis_pos;
+            self.listener_vel = self.listener_vel.scale(0.6).add(instant.scale(0.4));
+            lis_vel = self.listener_vel;
             have_listener = true;
         }
         var sit = self.world.query(&.{ core.AudioSource, core.Transform });
