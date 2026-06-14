@@ -218,19 +218,19 @@ want it, and why / why not).
 
 ### 5. Audio  — *flagged as next big piece; low-level core landed*
 - **Unreal:** MetaSounds graph, 3D spatialization, attenuation, reverb, buses.
-- **quine:** **our own low-level engine** — a pure, content-agnostic **N-channel
-  synth mixer** (`modules/audio`): continuous buses + one-shot voices, per-voice
-  pan, rendered to **1..8 interleaved channels** (mono → 7.1) at a count the host
-  **negotiates from the device/browser** (`destination.maxChannelCount`, capped at
-  8). Mirrors the render boundary: the mixer is device-free and headless; the app
-  owns the device and pumps it. Decision: **roll our own** (no miniaudio for the
-  core) so the engine carries its own deterministic-friendly audio path.
+- **quine:** **our own low-level engine, end to end** — a pure, content-agnostic
+  **N-channel synth mixer** (`modules/audio`: buses + one-shots + per-voice pan,
+  rendered to **1..8 interleaved channels**, mono → 7.1) driven by our **own
+  output device** (no `sokol_audio`): a custom **WebAudio** path on web that
+  negotiates the browser's real channel count (`destination.maxChannelCount`,
+  capped at 8) and schedules the PCM, and **ALSA** on native Linux. Mirrors the
+  render boundary: the mixer is device-free and headless; the device is app-side
+  and no-ops where there's none. Decision: **roll our own** (no miniaudio /
+  sokol_audio) so the engine owns its deterministic-friendly audio path.
 - **Call:** **Yes — and the architecture is "low-level engine + modules on top".**
-  - **Low-level engine** (have a first cut): the N-channel mixer above. Still
-    driven through `sokol_audio` (≤ stereo) on the device side — the next step is
-    our **own device layer** (a custom **WebAudio AudioWorklet** with
-    `outputChannelCount:[N]` on web, native backends elsewhere) that **drops
-    `sokol_audio`** and negotiates the real channel count.
+  - **Low-level engine** (landed): the N-channel mixer + our own device. Web
+    negotiates up to 8 channels via WebAudio; native Linux runs ALSA (stereo);
+    macOS/Windows use a null device until CoreAudio/WASAPI backends land.
   - **Audio modules on top** (the §26 Module tier): advanced tasks — **true
     positional/surround placement, distance attenuation, reverb, a music bed,
     HRTF** — are compiled modules over the low-level engine, not baked into it.
@@ -847,11 +847,11 @@ Pulled early: you can't debug threading, the multiplayer loop, or AI agents by e
 - [x] **Low-level engine** — our own pure **N-channel synth mixer**
       (`modules/audio`): buses + one-shots + per-voice pan, rendered to 1..8
       interleaved channels, channel count set by the host. Headless + tested.
-- [ ] **Own device layer** — replace `sokol_audio` (≤ stereo) with a custom
-      **WebAudio AudioWorklet** (`outputChannelCount:[N]`, N = min(8,
-      `destination.maxChannelCount`)) on web + native backends, so >2 channels
-      actually reach the browser. Core raises events, the app plays (mirrors the
-      render boundary).
+- [x] **Own device layer** — dropped `sokol_audio`. Our own WebAudio device on
+      web (negotiates N = min(8, `destination.maxChannelCount`), schedules the
+      mixer's PCM) + ALSA on native Linux; macOS/Windows null for now. Core raises
+      events, the app plays (mirrors the render boundary). *Next:* an AudioWorklet
+      + SAB ring for lower-latency web output; CoreAudio/WASAPI native backends.
 - [ ] **Audio modules on top** (§26 Module tier) — positional/surround placement,
       reverb, HRTF as compiled modules over the low-level engine, not in the core.
 - [ ] **Contact-impulse SFX** — bounce volume from the Jolt closing-speed the

@@ -367,6 +367,11 @@ pub fn build(b: *Build) !void {
                 "-sSTACK_SIZE=8388608",
                 "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,addRunDependency,removeRunDependency",
                 "-sEXPORTED_FUNCTIONS=_main,_quine_enqueue,_quine_provide_asset,_quine_set_config,_quine_set_autoplay,_quine_set_hud,_quine_set_running,_quine_pick,_malloc,_free",
+                // Our own WebAudio output device (replaces sokol_audio): negotiates
+                // the browser's real channel count (up to 8) and schedules the
+                // mixer's PCM. See apps/desktop/audio_web.js.
+                "--js-library",
+                b.path("apps/desktop/audio_web.js").getPath(b),
             },
         });
         // `zig build` emits the web bundle into zig-out/web.
@@ -377,6 +382,12 @@ pub fn build(b: *Build) !void {
         b.step("run", "Build the web bundle and serve it via emrun").dependOn(&run_web.step);
     } else {
         const exe = b.addExecutable(.{ .name = "quine", .root_module = mod_app });
+        // Our own native audio device. On Linux that's ALSA (libasound); other
+        // OSes use the null device in audio_backend.zig for now. No sokol_audio.
+        if (target.result.os.tag == .linux) {
+            exe.root_module.link_libc = true;
+            exe.root_module.linkSystemLibrary("asound", .{});
+        }
         b.installArtifact(exe);
 
         const run = b.addRunArtifact(exe);
