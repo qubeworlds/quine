@@ -102,10 +102,29 @@ pub const BodySpec = struct {
 const max_contacts = 64;
 const Contact = struct { a: u64, b: u64, closing: f32 };
 
+/// Tiny atomic spinlock. Zig 0.16 dropped the blocking `std.Thread.Mutex` (the
+/// replacement needs an `Io`), so — like the Jolt binding's allocator lock — a
+/// spinlock guards the contact table. Contacts per step are few, so it is
+/// near-uncontended; single-threaded it is an uncontended swap (a no-op cost).
+const SpinLock = struct {
+    flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    fn lock(self: *SpinLock) void {
+        while (self.flag.swap(true, .acquire)) std.atomic.spinLoopHint();
+    }
+    fn unlock(self: *SpinLock) void {
+        self.flag.store(false, .release);
+    }
+};
+
 const Listener = struct {
     interface: jolt.ContactListener = undefined,
     contacts: [max_contacts]Contact = undefined,
     count: usize = 0,
+    /// Guards `add` once Jolt runs its solver across worker threads (Tier B):
+    /// `onContactAdded`/`Persisted` then fire concurrently, so the table mutation
+    /// must be serialized. `count = 0` (in `step`) and `query` run between steps
+    /// with no workers live, so they need no lock.
+    add_lock: SpinLock = .{},
 
     fn record(self: *Listener, b1: *const jolt.Body, b2: *const jolt.Body, n: [3]f32) void {
         const v1 = b1.getLinearVelocity();
@@ -116,7 +135,14 @@ const Listener = struct {
     }
 
     /// Accumulate a contact, keeping the max closing speed per unordered pair.
+    /// The per-pair `@max` is commutative, so the recorded value is independent
+    /// of which worker thread reports a contact first — the table is order- and
+    /// thread-count-deterministic as long as distinct pairs stay within
+    /// `max_contacts` (true for current scenes; see the Tier B note in ADR-0001
+    /// for the per-thread-scratch upgrade once that ceiling is in play).
     fn add(self: *Listener, a: u64, b: u64, closing: f32) void {
+        self.add_lock.lock();
+        defer self.add_lock.unlock();
         for (self.contacts[0..self.count]) |*c| {
             if ((c.a == a and c.b == b) or (c.a == b and c.b == a)) {
                 c.closing = @max(c.closing, closing);

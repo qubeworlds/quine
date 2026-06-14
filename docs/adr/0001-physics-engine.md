@@ -132,6 +132,52 @@ honest impact data were wanted — "don't fake it."
    animation), and give it controllable abilities, so the dance itself carries
    weight, not just the ball.
 3. **Scale + threads** — one ball needs neither, but the 10k+/multicore target
-   wants the Jolt job pool re-enabled (with a thread-safe contact path).
+   wants the Jolt job pool re-enabled (with a thread-safe contact path). This is
+   roadmap **Phase 1, Tier B**; the concrete plan is below.
 4. **Scientific layer** — orbital / continuous dynamics still ride on top as our
    own integrator feeding external forces into Jolt bodies.
+
+## Tier B plan — threaded Jolt (native)
+
+The roadmap gates this behind the determinism harness (`core.snapshot` /
+`DigestTrace`), which has landed. Re-examining the code, threading is a **smaller,
+better-de-risked change than "re-enable the job pool" suggests**:
+
+- The binding **already builds** a `JobSystem` + `TempAllocator` at `jolt.init`
+  regardless of thread count (`zphysics.zig` `JPC_JobSystem_Create(max_jobs,
+  max_barriers, num_threads)`), and `update` already uses them. So `num_threads`
+  is the **only lever** — no extra plumbing.
+- **Cross-platform determinism is already on** (`build.zig`
+  `enable_cross_platform_determinism = true` + `-DJPH_CROSS_PLATFORM_DETERMINISTIC=`).
+  Jolt guarantees results **independent of thread count** under this flag — which
+  is exactly what the harness verifies. This is what makes the flip low-risk.
+- The **only** data race in our code was the contact `Listener` (a bare
+  `count++` / array write hit concurrently by `onContactAdded/Persisted` from
+  worker threads). **Done:** `modules/physics/physics.zig` now guards
+  `Listener.add` with a `SpinLock` (no behavior change single-threaded; the
+  per-pair `@max` is commutative, so the recorded value is order- and
+  thread-count-independent).
+
+Remaining steps, in order:
+
+1. **Flip threads on, native only.** `World.init` passes `num_threads = 0`; make
+   it `0` on `wasm32` (the emscripten Jolt build is single-threaded — Tier D
+   owns wasm threads) and a native worker count otherwise (e.g.
+   `@max(1, cpuCount - 1)`), behind an env/config override (`QUINE_PHYS_THREADS`)
+   for A/B testing. `num_body_mutexes = 0` already means "Jolt auto-picks a
+   default for the thread count" — leave it unless profiling shows lock
+   contention, then set a power-of-two.
+2. **Verify thread-count-independent determinism.** Jolt is init-once per process
+   (`jolt_inited`), so a single in-process test can't compare counts. Add a
+   harness driver that runs the same scene + input script at `QUINE_PHYS_THREADS=0`
+   and `=N` (two subprocesses, or a small native runner that records a
+   `DigestTrace` per setting) and asserts `divergedAt == null`. This is the proof
+   the flip preserves determinism.
+3. **Scale check.** Push a stress scene toward ADR's 10k+ bodies; profile the job
+   pool and the broadphase. If distinct contact pairs per step can exceed
+   `max_contacts` (64), the spinlock'd table becomes order-dependent at the
+   eviction boundary — upgrade to **per-thread scratch buffers reduced in a fixed
+   (thread, slot) order** so the merge stays deterministic at scale.
+4. **Keep web single-threaded** until Tier D (wasm `-pthread` + SharedArrayBuffer
+   + pthread-enabled libc++ for Jolt). Cross-origin isolation (COOP/COEP), the SAB
+   prerequisite, is already handled by the npm SDK harness.

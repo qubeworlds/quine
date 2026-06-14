@@ -829,9 +829,13 @@ skip C, hold the "result must not depend on thread count" invariant.
 - [ ] **Tier A — thread the bakes** — app-layer thread pool for PNG/glTF decode,
       SDF meshing / marching-cubes, navmesh bake, texture upload. Core stays pure.
       *(zero determinism risk, no wasm dependency)*
-- [ ] **Tier B — threaded Jolt (native)** — make the contact listener
-      thread-safe (mutex around `add()`, or per-thread scratch reduced in fixed
-      order), set `num_body_mutexes`, flip `num_threads > 0`.
+- [ ] **Tier B — threaded Jolt (native)** *(contact listener done)* — the
+      listener's `add` is now spinlock-guarded and thread-count-independent (the
+      per-pair `@max` is commutative). Remaining: flip `num_threads > 0`
+      native-only (the binding already builds the job pool; cross-platform
+      determinism is already on, so Jolt stays deterministic across thread
+      counts), verify with a subprocess A/B `DigestTrace`, then scale-check.
+      Concrete plan: ADR-0001 §"Tier B plan".
 - [ ] **Tier D — wasm threads (web parity)** — emscripten `-pthread`,
       SharedArrayBuffer, pthread-enabled libc++ for the Jolt build, warmed thread
       pool. Verify same-binary determinism still holds on web.
