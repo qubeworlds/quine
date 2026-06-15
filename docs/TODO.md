@@ -264,9 +264,11 @@ Scene → sound:
 - [ ] **water (the boat)** — ocean/wave ambience loop + a splash/spray SFX on hull
       slam (reuse the buoyancy force / wave-crest crossing as the trigger).
 - [ ] **cockpit** — low sci-fi hum / console bleeps (the Navigator hub ambience).
-- [ ] **rabbits** — soft bunny hop thumps (per hop) + a quiet field/meadow bed.
-- [ ] **tunnel** — the teleport whoosh for the world-to-world transition.
-- [ ] **eyes** (`/docs/eyes`) — a subtle idle/blink tick (optional; it's a demo).
+- [ ] **rabbits** — a meadow **environmental bed: bees + birdsong** (the headline
+      ambience), plus soft bunny hop thumps per hop.
+- [ ] **tunnel** — a **bespoke, custom-authored sample** for the world-to-world
+      teleport (a one-off we create, not pulled from the shared SFX library).
+- [ ] **eyes** (`/docs/eyes`) — a **clock ticking** loop.
 
 Shared work this implies: a small **clip library** on the CDN (loop beds + SFX),
 authored `audio` links in each scene's JSON, and a few new `core` events to drive
