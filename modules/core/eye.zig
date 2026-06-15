@@ -12,12 +12,13 @@
 //! allocator (it fills caller-owned buffers like the other generators).
 //!
 //! Local frame: every part is built in the eye's own space with the eyeball
-//! centred at the origin and +Z pointing straight ahead (the gaze rest axis).
-//! The sclera is concentric with the origin; the iris/cornea are spherical caps
-//! concentric with the eyeball (so they ride exactly on its surface); the pupil
-//! and tear-line are pushed forward along +Z by `offset_z`. Because the gaze
-//! parts are concentric with the origin, rotating them about it sweeps them
-//! across the eyeball front — which is exactly how `Gaze.dir` drives them.
+//! centred at the origin and **−Z** pointing straight ahead (the gaze rest axis,
+//! the world forward — see docs/coordinates.md). The sclera is concentric with
+//! the origin; the iris/cornea are spherical caps concentric with the eyeball
+//! (so they ride exactly on its surface); the pupil and tear-line are pushed
+//! forward along −Z by `offset_z`. Because the gaze parts are concentric with the
+//! origin, rotating them about it sweeps them across the eyeball front — which is
+//! exactly how `Gaze.dir` drives them.
 
 const std = @import("std");
 const m = @import("math");
@@ -62,7 +63,7 @@ const tearline_lift_k: f32 = 0.30; // pushed forward so it frames the front
 const cap_rings: u32 = 8;
 
 /// A fully-resolved part: which primitive to build, its dimensions, how far to
-/// push it forward along +Z, the material to give its entity, and the two flags.
+/// push it forward along −Z, the material to give its entity, and the two flags.
 pub const PartGeom = struct {
     primitive: enum { sphere, cap, disk, annulus },
     radius: f32 = 0, // sphere/cap sphere-radius, or disk radius
@@ -71,7 +72,9 @@ pub const PartGeom = struct {
     outer: f32 = 0, // annulus
     rings: u32 = 0,
     segments: u32 = 0,
-    /// Forward shift along +Z applied to every vertex after building.
+    /// Forward shift applied to every vertex after building. Authored as a +Z
+    /// magnitude here; `buildPart` mirrors the part onto the −Z forward axis, so
+    /// the net push lands toward the eye's front (−Z).
     offset_z: f32 = 0,
     material: Material,
     transparent: bool = false,
@@ -153,10 +156,10 @@ pub fn partIndexCount(g: PartGeom) usize {
 }
 
 /// Build `part`'s mesh into caller-owned buffers (sized by `part*Count`) in the
-/// eye's local frame, applying its forward `offset_z`. Vertex colour is white —
-/// the per-part `Material` carries the real colour as a uniform, exactly like
-/// the sphere/fedora generators. Buffers must hold `partVertexCount`/
-/// `partIndexCount` entries.
+/// eye's local frame, applying its forward `offset_z` and orienting the part onto
+/// the world's −Z forward axis. Vertex colour is white — the per-part `Material`
+/// carries the real colour as a uniform, exactly like the sphere/fedora
+/// generators. Buffers must hold `partVertexCount`/`partIndexCount` entries.
 pub fn buildPart(g: PartGeom, verts: []assets.Vertex, indices: []u32) assets.MeshData {
     const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
     const mesh = switch (g.primitive) {
@@ -165,8 +168,16 @@ pub fn buildPart(g: PartGeom, verts: []assets.Vertex, indices: []u32) assets.Mes
         .disk => assets.disk(g.radius, g.segments, white, verts, indices),
         .annulus => assets.annulus(g.inner, g.outer, g.segments, white, verts, indices),
     };
-    if (g.offset_z != 0) {
-        for (@constCast(mesh.vertices)) |*v| v.position.z += g.offset_z;
+    // The primitives build around +Z; push the offset along +Z first, then mirror
+    // the whole part onto the −Z forward axis (docs/coordinates.md). Negating both
+    // X and Z is a 180° turn about Y — a proper rotation, so winding and normals
+    // stay valid, and the parts (symmetric about their axis) only change facing.
+    for (@constCast(mesh.vertices)) |*v| {
+        if (g.offset_z != 0) v.position.z += g.offset_z;
+        v.position.x = -v.position.x;
+        v.position.z = -v.position.z;
+        v.normal.x = -v.normal.x;
+        v.normal.z = -v.normal.z;
     }
     return mesh;
 }
@@ -216,6 +227,7 @@ test "buildPart fills the predicted buffers and applies the forward offset" {
     const mesh = buildPart(g, verts[0..nv], idx[0..ni]);
     try std.testing.expectEqual(nv, mesh.vertices.len);
     try std.testing.expectEqual(ni, mesh.indices.len);
-    // Every vertex was pushed forward to the iris surface (offset_z > 0).
-    for (mesh.vertices) |v| try std.testing.expect(v.position.z > 0);
+    // Every vertex was pushed forward to the iris surface along −Z (the part is
+    // mirrored onto the world forward axis), so all z are negative.
+    for (mesh.vertices) |v| try std.testing.expect(v.position.z < 0);
 }

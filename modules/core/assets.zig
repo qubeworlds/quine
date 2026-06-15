@@ -539,9 +539,10 @@ pub fn fedoraContour(
 
 // -----------------------------------------------------------------------------
 // Eye primitives — the building blocks the eye assembly composes. All
-// allocator-free with closed-form normals, oriented around +Z so they stack
-// along a gaze axis: a spherical cap (iris bulge / cornea), a flat disk
-// (pupil), and a flat ring/annulus (the wet tear-line rim).
+// allocator-free with closed-form normals, oriented around +Z as generic stacked
+// caps: a spherical cap (iris bulge / cornea), a flat disk (pupil), and a flat
+// ring/annulus (the wet tear-line rim). `core.eye` mirrors them onto the world's
+// −Z forward axis when it builds a part (see docs/coordinates.md).
 // -----------------------------------------------------------------------------
 
 pub fn capVertexCount(rings: u32, segments: u32) usize {
@@ -699,9 +700,9 @@ pub fn noseIndexCount(rings: u32, segments: u32) usize {
 }
 
 /// Generate a nose of `length` (bridge→base, down -Y), `base_width` (half-width
-/// at the nostrils) and `projection` (how far the tip bulges +Z). The protrusion
-/// grows from the bridge to a peak near the tip; the width grows toward the
-/// base. Buffers must hold nose{Vertex,Index}Count entries.
+/// at the nostrils) and `projection` (how far the tip bulges along forward, −Z).
+/// The protrusion grows from the bridge to a peak near the tip; the width grows
+/// toward the base. Buffers must hold nose{Vertex,Index}Count entries.
 pub fn nose(
     length: f32,
     base_width: f32,
@@ -722,8 +723,11 @@ pub fn nose(
         var s: u32 = 0;
         while (s <= segments) : (s += 1) {
             const a = -std.math.pi * 0.5 + @as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments)) * std.math.pi; // front half −90..+90
-            const x = half_w * @sin(a);
-            const z = proj * @cos(a); // most forward on the centreline
+            // Forward is −Z (world convention): the tip projects along −Z. Negating
+            // both x and z is a 180° turn about Y, so winding stays correct and the
+            // X-symmetric profile is unchanged — only the facing flips to −Z.
+            const x = -half_w * @sin(a);
+            const z = -proj * @cos(a); // most forward on the centreline (−Z)
             verts[vi] = .{ .position = m.Vec3.init(x, y, z), .normal = .{}, .color = color };
             vi += 1;
         }
@@ -752,10 +756,11 @@ pub fn nose(
 }
 
 // -----------------------------------------------------------------------------
-// Oval head — an egg/ellipsoid built around +Y up, +Z forward (the face). Taller
+// Oval head — an egg/ellipsoid built around +Y up, −Z forward (the face). Taller
 // than wide, with the lower half tapered inward toward a smaller chin, so it
-// reads as a head rather than a plain sphere. The face features (eyes/nose/brows/
-// lips) anchor to this in the same +Z-forward frame.
+// reads as a head rather than a plain sphere. The bare head is symmetric front-
+// to-back; the face features (eyes/nose/brows/lips) anchor to it on the forward
+// (−Z) side, in the same world frame (see docs/coordinates.md).
 // -----------------------------------------------------------------------------
 
 pub fn headVertexCount(rings: u32, segments: u32) usize {
@@ -899,7 +904,7 @@ test "ring fills ringCount with inner/outer radii in z=0" {
     }
 }
 
-test "nose fills noseCount, runs bridge→base down -Y and bulges +Z, with unit normals" {
+test "nose fills noseCount, runs bridge→base down -Y and bulges −Z, with unit normals" {
     const rings: u32 = 8;
     const segments: u32 = 10;
     var verts: [noseVertexCount(rings, segments)]Vertex = undefined;
@@ -908,14 +913,14 @@ test "nose fills noseCount, runs bridge→base down -Y and bulges +Z, with unit 
     try std.testing.expectEqual(noseVertexCount(rings, segments), mesh.vertices.len);
     try std.testing.expectEqual(noseIndexCount(rings, segments), mesh.indices.len);
     var min_y: f32 = 0;
-    var max_z: f32 = 0;
+    var min_z: f32 = 0;
     for (mesh.vertices) |v| {
         if (v.position.y < min_y) min_y = v.position.y;
-        if (v.position.z > max_z) max_z = v.position.z;
+        if (v.position.z < min_z) min_z = v.position.z;
         try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-4);
     }
     try std.testing.expect(min_y < -0.25); // runs down toward the base
-    try std.testing.expect(max_z > 0.1); // bulges forward
+    try std.testing.expect(min_z < -0.1); // bulges forward (−Z, docs/coordinates.md)
 }
 
 test "ovalHead: taller than wide, chin narrower than the crown" {

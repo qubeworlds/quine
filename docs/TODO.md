@@ -182,8 +182,12 @@ Open work:
       work above to look right (geometry-only = flat skin). Source the asset
       legitimately — Sketchfab "view-only" models are not usable.
 - [ ] **Rig the face onto the animated dancer.** Mount the `face` on CesiumMan's
-      head joint with a fixed *face-mount* rotation (its bone frame is rotated:
-      local X=world-up, Y=world-right, Z=world-back), so the face rides the walk.
+      head joint with a fixed *face-mount* rotation that maps the bone frame (its
+      local X=world-up, Y=world-right, Z=world-back) to the engine's world
+      convention (+X right, +Y up, **−Z forward** — see `docs/coordinates.md`), so
+      the face rides the walk. The procedural rig itself is now authored −Z-front,
+      so the mount only has to account for CesiumMan's bone-frame rotation — no
+      extra "rig faces the wrong way" flip on top.
 - [ ] **Bake good playground values** into the schema defaults once the look is
       dialed; let a **look-at skill** drive `Gaze` (track the ball).
 

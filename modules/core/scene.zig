@@ -70,8 +70,8 @@ pub const Geometry = union(enum) {
         /// head radius: how far forward onto the face, and how far down.
         forward_fraction: f32 = 0.9,
         drop_fraction: f32 = 0.3,
-        /// Rest look direction in the head-local frame (+Z ahead).
-        gaze: Vec3 = .{ 0, 0, 1 },
+        /// Rest look direction in the head-local frame (−Z ahead).
+        gaze: Vec3 = .{ 0, 0, -1 },
         pupil_scale: f32 = 0.5,
         sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
         iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
@@ -101,7 +101,8 @@ pub const Geometry = union(enum) {
     /// eyes, nose, eyebrows, lips and a fedora on it in one shared facial frame
     /// (so everything lines up), expanding into individually-riggable sub-
     /// entities. Standalone — no skeleton needed; the face entity's transform
-    /// places/orients it (+Z forward). All sizes are fractions of `head_radius`.
+    /// places/orients it (−Z forward — docs/coordinates.md). Sizes are fractions
+    /// of `head_radius`.
     face: struct {
         /// When set, use this glTF asset as the (sculpted) head base instead of
         /// the procedural oval head — the eyes seat in its sockets, the fedora on
@@ -119,7 +120,7 @@ pub const Geometry = union(enum) {
         eye_level_fraction: f32 = 0.18, // above head centre
         eye_forward_fraction: f32 = 0.80,
         pupil_scale: f32 = 0.5,
-        gaze: Vec3 = .{ 0, 0, 1 },
+        gaze: Vec3 = .{ 0, 0, -1 },
         sclera_color: Rgba = .{ 0.93, 0.92, 0.90, 1 },
         iris_color: Rgba = .{ 0.22, 0.13, 0.07, 1 },
         // nose
@@ -312,7 +313,7 @@ pub const Entity = struct {
     audio: ?AudioSource = null,
     /// Marks this entity as the audio listener (its Transform is the ear/pose).
     listener: bool = false,
-    /// Look direction for a rigged actor's eye bones (head-local, +Z ahead). A
+    /// Look direction for a rigged actor's eye bones (head-local, −Z ahead). A
     /// skill updates it to track a target; the engine aims `LeftEye`/`RightEye`.
     gaze: ?Vec3 = null,
 };

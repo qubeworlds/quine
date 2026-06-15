@@ -73,10 +73,11 @@ pub fn hop(world: anytype, dt: f64) void {
 }
 
 /// Clamp a look direction into the forward cone of half-angle `max_angle` around
-/// +Z: directions already inside pass through; ones outside are pulled back to
-/// the cone wall keeping their azimuth, so the eye never rolls past its limit.
+/// −Z (the world forward axis — docs/coordinates.md): directions already inside
+/// pass through; ones outside are pulled back to the cone wall keeping their
+/// azimuth, so the eye never rolls past its limit.
 fn clampToCone(dir: m.Vec3, max_angle: f32) m.Vec3 {
-    const fwd = m.Vec3.init(0, 0, 1);
+    const fwd = m.Vec3.init(0, 0, -1);
     const n = dir.normalize();
     const cos_a = n.dot(fwd);
     const max_cos = @cos(max_angle);

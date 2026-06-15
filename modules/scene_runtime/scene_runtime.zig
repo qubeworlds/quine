@@ -614,7 +614,7 @@ pub const SceneRuntime = struct {
         // neck / skull base — behind and below the face — so anchoring "forward"
         // off it buries the eyeballs in the skull and only a sliver pokes through
         // ("stuck in sockets"). Anchor on the head's vertex centroid (the real
-        // middle of the skull) first, THEN push +Z onto the face and ±X apart.
+        // middle of the skull) first, THEN push forward (−Z) onto the face and ±X apart.
         const joint_x = pose.global[head_node].m[12];
         const joint_y = pose.global[head_node].m[13];
         const joint_z = pose.global[head_node].m[14];
@@ -639,7 +639,8 @@ pub const SceneRuntime = struct {
 
         const sides = [_]f32{ -1.0, 1.0 };
         for (sides) |sx| {
-            const eye_off = [3]f32{ base_x + sx * lateral, off_y, base_z + forward };
+            // Forward is −Z (docs/coordinates.md): push the eye centre onto the face.
+            const eye_off = [3]f32{ base_x + sx * lateral, off_y, base_z - forward };
             for (core.eye.all_parts) |part| {
                 const g = core.eye.partGeom(spec, part);
                 const verts = try a.alloc(core.Vertex, core.eye.partVertexCount(g));
@@ -704,11 +705,12 @@ pub const SceneRuntime = struct {
         self.world.set(core.MeshRef, b.entity, .{ .mesh = self.world.meshes.add(mesh) });
         self.world.set(core.Material, b.entity, .{ .base_color = vec4(ny.color), .roughness = 0.5 });
 
-        // Seat the bridge at eye level (same drop as the eyes), on the face surface.
+        // Seat the bridge at eye level (same drop as the eyes), on the face surface
+        // (forward is −Z — docs/coordinates.md).
         b.parent_offset = .{
             base_x,
             base_y - ny.bridge_drop_fraction * head_radius_w,
-            base_z + ny.forward_fraction * head_radius_w,
+            base_z - ny.forward_fraction * head_radius_w,
         };
     }
 
@@ -743,7 +745,8 @@ pub const SceneRuntime = struct {
 
     /// Build a whole procedural face on its entity: the oval head goes on the
     /// face entity itself; the eyes, nose, eyebrows, lips and fedora become child
-    /// parts seated in the head-local frame (centre at origin, +Z forward, +Y up).
+    /// parts seated in the head-local frame (centre at origin, −Z forward, +Y up —
+    /// see docs/coordinates.md).
     fn buildFace(self: *SceneRuntime, a: std.mem.Allocator, face_idx: usize, f: anytype, assets: []const Asset, all: []Binding, cursor: *usize) !void {
         const white = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
         const ent = self.bindings[face_idx].entity;
@@ -756,13 +759,13 @@ pub const SceneRuntime = struct {
         var R = f.head_radius;
         const sculpted = head_bytes != null; // the mesh already has nose/brows/lips
 
-        // Placement in the head-local frame (+Y up, +Z forward). Defaults are the
-        // PROCEDURAL oval-head fractions; the sculpted branch overwrites them from
-        // real measurements of the mesh.
+        // Placement in the head-local frame (+Y up, −Z forward — docs/coordinates.md;
+        // the face sits on −Z). Defaults are the PROCEDURAL oval-head fractions; the
+        // sculpted branch overwrites them from real measurements of the mesh.
         var eyeball_r = f.eye_size_fraction * R;
         var eye_x = 0.5 * f.eye_spacing_fraction * R;
         var eye_y = f.eye_level_fraction * R;
-        var eye_z = f.eye_forward_fraction * R;
+        var eye_z = -f.eye_forward_fraction * R;
         var crown_y = f.head_height * 0.30;
         const gaze_dir = m.Vec3.init(f.gaze[0], f.gaze[1], f.gaze[2]);
 
@@ -846,7 +849,9 @@ pub const SceneRuntime = struct {
             for (mesh.vertices) |v| {
                 if (@abs(v.position.y - eye_y) < band and @abs(@abs(v.position.x) - eye_x) < 0.06 * R) depth_c = @max(depth_c, v.position.z);
             }
-            eye_z = depth_c - eyeball_r * 1.0; // front ~ flush with the socket rim
+            // Front ~ flush with the socket rim. Negated because the convention's
+            // forward is −Z and the mesh is mirrored onto it below (docs/coordinates.md).
+            eye_z = -(depth_c - eyeball_r * 1.0);
 
             // Carve the closed-lid eye region out of the head so the eyeballs show
             // through OPEN sockets — the hole's rim occludes the eyeball's sides,
@@ -866,6 +871,17 @@ pub const SceneRuntime = struct {
                     kept.appendSlice(a, &.{ mesh.indices[ti], mesh.indices[ti + 1], mesh.indices[ti + 2] }) catch {};
                 }
                 mesh.indices = kept.toOwnedSlice(a) catch mesh.indices;
+            }
+
+            // The sculpted mesh was loaded + measured +Z-front; mirror it onto the
+            // −Z forward axis (docs/coordinates.md) so it shares the engine's one
+            // convention. Negating X and Z together is a 180° turn about Y, so
+            // winding/normals stay valid; the seated eyes use the negated eye_z.
+            for (@constCast(mesh.vertices)) |*v| {
+                v.position.x = -v.position.x;
+                v.position.z = -v.position.z;
+                v.normal.x = -v.normal.x;
+                v.normal.z = -v.normal.z;
             }
 
             self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
@@ -906,7 +922,7 @@ pub const SceneRuntime = struct {
         // Nose / eyebrows / lips: only for the PROCEDURAL head — a sculpted head
         // mesh already carries them, so we'd just double them up.
         if (!sculpted) {
-            // Nose: bridge at eye level on the centreline, running down + forward.
+            // Nose: bridge at eye level on the centreline, running down + forward (−Z).
             {
                 const verts = try a.alloc(core.Vertex, core.noseVertexCount(10, f.segments));
                 const idx = try a.alloc(u32, core.noseIndexCount(10, f.segments));
@@ -1496,11 +1512,12 @@ fn aimEyeBones(model: *core.Model, pose: *core.Pose, dir: m.Vec3) void {
     }
 }
 
-/// The rotation that maps +Z (the gaze rest axis) onto `dir`. Used to swing the
-/// gaze-driven eye parts toward a look direction. Degenerate cases (already
-/// aligned, or pointing straight back) fall back cleanly.
+/// The rotation that maps −Z (the gaze rest axis / world forward — see
+/// docs/coordinates.md) onto `dir`. Used to swing the gaze-driven eye parts
+/// toward a look direction. Degenerate cases (already aligned, or pointing
+/// straight back) fall back cleanly.
 fn rotZTo(dir: m.Vec3) m.Mat4 {
-    const f = m.Vec3.init(0, 0, 1);
+    const f = m.Vec3.init(0, 0, -1);
     const d = dir.normalize();
     const c = f.dot(d);
     if (c > 0.99999) return m.Mat4.identity;
@@ -1930,12 +1947,13 @@ test "sculpted face is correctly proportioned: head ~ headRadius, eyes small + o
     const hm = rt.world.meshes.get(rt.world.get(core.MeshRef, face.entity).?.mesh);
     var face_half_width: f32 = 0;
     for (hm.vertices) |v| {
-        if (v.position.y > 0 and v.position.z > 0) face_half_width = @max(face_half_width, @abs(v.position.x));
+        // Forward is −Z (docs/coordinates.md): the face region is at z < 0.
+        if (v.position.y > 0 and v.position.z < 0) face_half_width = @max(face_half_width, @abs(v.position.x));
     }
     try std.testing.expect(face_half_width > 0.08 and face_half_width < 0.18); // ≈ headRadius, NOT the ~0.27 shoulders
 
     // Every gaze eyeball is SMALL (≤ ¼ headRadius — not the giant spheres bug) and
-    // sits ON the face: in front (+Z), near the eye line (|y| small), within width.
+    // sits ON the face: in front (−Z), near the eye line (|y| small), within width.
     const face_pos = rt.world.get(core.Transform, face.entity).?.position;
     var checked: usize = 0;
     for (rt.bindings) |bnd| {
@@ -1947,7 +1965,7 @@ test "sculpted face is correctly proportioned: head ~ headRadius, eyes small + o
         try std.testing.expect(rad < 0.4 * head_radius); // socket-sized eye, not a beach ball
         const p = rt.world.get(core.Transform, bnd.entity).?.position;
         const rel = p.sub(face_pos);
-        try std.testing.expect(rel.z > 0); // on the front of the face
+        try std.testing.expect(rel.z < 0); // on the front of the face (−Z forward)
         try std.testing.expect(@abs(rel.y) < head_radius); // near the eye line
         try std.testing.expect(@abs(rel.x) < head_radius); // within the face width
         checked += 1;

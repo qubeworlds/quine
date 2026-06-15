@@ -813,7 +813,7 @@ fn dispatchMessage(raw: []const u8) void {
         // bones follow each tick. This is the per-frame channel an animator (or a
         // "look at the target" skill) drives, so eyes can move smoothly with no
         // scene reload / mesh re-upload. Shape:
-        //   {type:"gaze", entity:"dancer", dir:[x,y,z]}  (head-local, +Z ahead)
+        //   {type:"gaze", entity:"dancer", dir:[x,y,z]}  (head-local, −Z ahead)
         const nv = v.object.get("entity") orelse return;
         if (nv != .string) return;
         const b = App.stage.find(nv.string) orelse return;

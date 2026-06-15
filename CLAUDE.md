@@ -131,6 +131,12 @@ R2 creds). **User-uploaded assets are a separate, private concern** (the
 
 ## Conventions
 
+- **World coordinates (one frame, everywhere):** right-handed, **+X = right,
+  +Y = up, −Z = forward** (+Z back). `Transform.forward()` is local −Z; an
+  entity's front is its −Z, so the procedural rig (head/eyes/nose/gaze) is built
+  and seated −Z-front. Full spec + canonical direction vectors in
+  [`docs/coordinates.md`](./docs/coordinates.md) — read it before touching the
+  camera, physics, or any rig/face geometry.
 - **Backends are auto-selected** by platform (Metal/D3D11/GL). Do not add
   MoltenVK or the Vulkan SDK.
 - **Shaders:** edit only `shaders/triangle.glsl`. It is cross-compiled to every

@@ -102,19 +102,19 @@ pub const Squash = struct {
 };
 
 /// Steers a gaze-driven eye part (the iris/pupil/cornea group) to look along
-/// `dir`, expressed in the eye's rest frame where +Z is straight ahead (the
-/// head's forward). A skill writes `target` each tick (e.g. the direction to the
-/// ball); the `gaze` system eases `dir` toward it, clamped to a cone of
-/// `max_angle` radians so the eye can't roll back into the skull. `scene_runtime`
-/// composes `dir` onto the head-joint follow each tick, so the parts swing across
-/// the eyeball front while still nodding with the head. The sclera and tear-line
-/// don't carry this component — only the parts that move.
+/// `dir`, expressed in the eye's rest frame where −Z is straight ahead (the
+/// head's forward — see docs/coordinates.md). A skill writes `target` each tick
+/// (e.g. the direction to the ball); the `gaze` system eases `dir` toward it,
+/// clamped to a cone of `max_angle` radians so the eye can't roll back into the
+/// skull. `scene_runtime` composes `dir` onto the head-joint follow each tick, so
+/// the parts swing across the eyeball front while still nodding with the head.
+/// The sclera and tear-line don't carry this component — only the parts that move.
 pub const Gaze = struct {
-    /// Desired look direction in the eye's rest frame (+Z = ahead).
-    target: m.Vec3 = .{ .x = 0, .y = 0, .z = 1 },
+    /// Desired look direction in the eye's rest frame (−Z = ahead).
+    target: m.Vec3 = .{ .x = 0, .y = 0, .z = -1 },
     /// Current (eased, cone-clamped) look direction the runtime reads.
-    dir: m.Vec3 = .{ .x = 0, .y = 0, .z = 1 },
-    /// Half-angle of the reachable cone around +Z (radians).
+    dir: m.Vec3 = .{ .x = 0, .y = 0, .z = -1 },
+    /// Half-angle of the reachable cone around −Z (radians).
     max_angle: f32 = 0.6, // ~34°
     /// Approach rate toward `target` per second (higher = snappier).
     ease: f32 = 12.0,
