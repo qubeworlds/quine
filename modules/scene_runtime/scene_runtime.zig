@@ -1418,7 +1418,7 @@ pub const SceneRuntime = struct {
         }
         if (slot >= max_textures) return null;
         const bytes = resolve(assets, name) orelse return null;
-        const tex = core.png.decode(a, bytes) catch return null;
+        const tex = core.image.decode(a, bytes) catch return null;
         self.textures[slot] = tex;
         self.texture_names[slot] = a.dupe(u8, name) catch return null;
         return @intCast(slot);

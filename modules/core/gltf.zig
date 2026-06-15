@@ -13,7 +13,7 @@ const std = @import("std");
 const m = @import("math");
 const assets = @import("assets.zig");
 const anim = @import("anim.zig");
-const png = @import("png.zig");
+const image = @import("image.zig");
 
 const glb_magic: u32 = 0x46546C67; // "glTF"
 const chunk_json: u32 = 0x4E4F534A; // "JSON"
@@ -411,8 +411,9 @@ pub fn loadModel(allocator: std.mem.Allocator, glb: []const u8) !anim.Model {
 
 /// Decode the primitive's PBR base-colour texture from a glb's binary chunk, if
 /// it has one: `material.pbrMetallicRoughness.baseColorTexture` -> texture ->
-/// image -> bufferView -> PNG bytes. Returns null when any link is missing or
-/// the image isn't an embedded PNG (the only format the loader decodes).
+/// image -> bufferView -> image bytes (PNG or JPEG; CesiumMan embeds a
+/// progressive JPEG). Returns null when any link is missing or the embedded
+/// image isn't a format `image.decode` recognises.
 fn extractBaseColor(allocator: std.mem.Allocator, root: std.json.ObjectMap, buffer_views: std.json.Array, bin: []const u8, prim: std.json.ObjectMap) !?assets.Texture {
     const mat_idx = jint(prim.get("material") orelse return null);
     const materials = (root.get("materials") orelse return null).array;
@@ -421,10 +422,10 @@ fn extractBaseColor(allocator: std.mem.Allocator, root: std.json.ObjectMap, buff
     const tex_idx = jint(bct.get("index").?);
     const textures = (root.get("textures") orelse return null).array;
     const img_idx = jint(textures.items[tex_idx].object.get("source") orelse return null);
-    const image = (root.get("images") orelse return null).array.items[img_idx].object;
-    const bv_idx = jint(image.get("bufferView") orelse return null); // glb: embedded, not a URI
+    const img_node = (root.get("images") orelse return null).array.items[img_idx].object;
+    const bv_idx = jint(img_node.get("bufferView") orelse return null); // glb: embedded, not a URI
     const bv = buffer_views.items[bv_idx].object;
     const off = jintOr(bv, "byteOffset", 0);
     const len: usize = @intCast(bv.get("byteLength").?.integer);
-    return try png.decode(allocator, bin[off .. off + len]);
+    return try image.decode(allocator, bin[off .. off + len]);
 }

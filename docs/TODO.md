@@ -117,9 +117,13 @@ Work, smallest-first:
       texture references (base-colour first, then MR/normal/AO/emissive) + the
       embedded/we-referenced image bytes. CesiumMan is already textured — use it
       as the first real case.
-- [ ] **Image decode (wasm-safe).** Decode PNG/JPG to RGBA. Options: `zigimg`
-      (pure Zig, no C — simplest for wasm) or `stb_image` (single-header C, builds
-      via Zig like miniaudio). Pick one; verify the Emscripten build early.
+- [x] **Image decode (wasm-safe).** PNG was already hand-rolled (`png.zig`);
+      added a hand-rolled **baseline + progressive JPEG** decoder (`jpeg.zig`) and a
+      magic-byte dispatcher (`image.zig`). Pure Zig, no new build dep (so no
+      web-buildcache regen), one code path native + web. CesiumMan's atlas is a
+      *progressive* JPEG — decoded output matches libjpeg to ≤4/channel (verified
+      against a PIL reference in the core test). Chose this over `zigimg`/`stb_image`
+      to keep `core` dependency-free, deterministic, and headless-testable.
 - [ ] **CPU texture registry in `core`.** Mirror `MeshRegistry`: handles → CPU
       image data (no GPU dep), with a revision counter for live edits, so
       headless/batch/replay still works.

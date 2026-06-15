@@ -87,6 +87,15 @@ pub const eye = @import("eye.zig");
 /// loads, e.g. the static-mesh atlas via `QUINE_FACE_TEX`).
 pub const png = @import("png.zig");
 
+/// RGBA8 baseline+progressive JPEG decoder — the other format glTF exporters
+/// embed for base-colour atlases (CesiumMan ships a progressive JPEG).
+pub const jpeg = @import("jpeg.zig");
+
+/// Decode an image asset to RGBA8, dispatching on its magic bytes (PNG or JPEG).
+/// The single entry point both decode sites use, so the engine stays one code
+/// path regardless of the source codec.
+pub const image = @import("image.zig");
+
 /// Signed-distance fields + surface-nets mesher — the continuous-surface path
 /// (a face as one blended skin rather than assembled primitives).
 pub const sdf = @import("sdf.zig");
@@ -541,6 +550,38 @@ test "RPM avatar decodes its base-colour atlas and carries per-vertex UVs" {
         max_v = @max(max_v, vtx.uv[1]);
     }
     try std.testing.expect(max_u > 0.1 and max_v > 0.1);
+}
+
+test "CesiumMan decodes its embedded progressive-JPEG base-colour atlas" {
+    const glb = @embedFile("character.glb");
+    const alloc = std.testing.allocator;
+    var model = try gltf.loadModel(alloc, glb);
+    defer model.deinit(alloc);
+
+    // CesiumMan's atlas is a 1024² progressive JPEG embedded in the .glb; the
+    // loader must decode it so the man renders textured instead of flat grey.
+    const tex = model.base_color orelse return error.NoBaseColor;
+    try std.testing.expectEqual(@as(u32, 1024), tex.width);
+    try std.testing.expectEqual(@as(u32, 1024), tex.height);
+    try std.testing.expectEqual(tex.width * tex.height * 4, @as(u32, @intCast(tex.pixels.len)));
+
+    // Ground-truth RGB from libjpeg (via PIL) at a few points. Our float IDCT and
+    // nearest chroma upsample differ slightly from libjpeg's integer path, so
+    // allow a small tolerance — this catches a broken decode, not rounding.
+    const Ref = struct { x: u32, y: u32, r: u8, g: u8, b: u8 };
+    const refs = [_]Ref{
+        .{ .x = 0, .y = 0, .r = 255, .g = 255, .b = 255 },
+        .{ .x = 100, .y = 200, .r = 132, .g = 166, .b = 92 },
+        .{ .x = 255, .y = 255, .r = 232, .g = 245, .b = 254 },
+        .{ .x = 700, .y = 900, .r = 91, .g = 135, .b = 38 },
+        .{ .x = 900, .y = 100, .r = 107, .g = 173, .b = 223 },
+    };
+    for (refs) |ref| {
+        const i = (ref.y * tex.width + ref.x) * 4;
+        try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(ref.r)), @as(f32, @floatFromInt(tex.pixels[i])), 8);
+        try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(ref.g)), @as(f32, @floatFromInt(tex.pixels[i + 1])), 8);
+        try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(ref.b)), @as(f32, @floatFromInt(tex.pixels[i + 2])), 8);
+    }
 }
 
 test "measureJointBounds finds a head-sized region on CesiumMan" {
