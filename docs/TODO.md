@@ -240,6 +240,49 @@ Goal: the scene is heard, not just seen.
 > miniaudio/sokol_audio. The bounce/footstep/music/3D items above still stand;
 > they now ride that mixer + the 3D-audio module (below).
 
+### Per-scene sound design — give every scene a voice
+
+Goal: each example scene is *heard*. Two kinds of sound per scene: an **ambient
+bed** (a looping `AudioSource`, spatialised where it has a location) and
+**event-driven SFX** the app fires from `core` events (contacts, foot-plants,
+carve ticks, hull slams) — `core` stays silent/deterministic and emits events;
+the app plays them (same boundary as render). Clips are authored + shared on the
+CDN and linked from each scene (`entities[].audio.clip`), fed via
+`quine_provide_asset` like meshes.
+
+Scene → sound:
+
+- [ ] **sundial** — birdsong ambience (gentle dawn loop); optional wind. Pairs
+      with the day cycle (busier at "noon", quieter at "night").
+- [ ] **drill** — a drilling/grinding loop while the carve advances, pitch/volume
+      scaled by carve rate; debris-chunk clatter on the bodies the carve spawns.
+- [ ] **keepie-uppie (the man)** — footsteps on foot-plant (already an item under
+      §3) + the ball-bounce SFX from real contacts (also §3). The two headline
+      event-driven cues.
+- [ ] **terrain / pathfinding** — a comic "wush" swoosh as the agent moves /
+      re-paths (trigger on path-segment advance or step), spatialised at the agent.
+- [ ] **water (the boat)** — ocean/wave ambience loop + a splash/spray SFX on hull
+      slam (reuse the buoyancy force / wave-crest crossing as the trigger).
+- [ ] **cockpit** — low sci-fi hum / console bleeps (the Navigator hub ambience).
+- [ ] **rabbits** — soft bunny hop thumps (per hop) + a quiet field/meadow bed.
+- [ ] **tunnel** — the teleport whoosh for the world-to-world transition.
+- [ ] **eyes** (`/docs/eyes`) — a subtle idle/blink tick (optional; it's a demo).
+
+Shared work this implies: a small **clip library** on the CDN (loop beds + SFX),
+authored `audio` links in each scene's JSON, and a few new `core` events to drive
+the SFX (carve-tick, path-advance, hull-slam) alongside the existing
+contact/foot-plant events.
+
+### Known engine bug — skinned pipeline `VALIDATE_AU_SIZE` (blocks headless skinned snapshots)
+
+- [ ] Any scene with a **skinned actor** (e.g. `keepie-uppie`) panics under the
+      headless software-GL capture path with sokol `VALIDATE_AU_SIZE`
+      ("sg_apply_uniforms: data size doesn't match declared uniform block size")
+      — a CPU↔shader uniform-block size mismatch on the skinned pipeline. Renders
+      fine on real GPUs (RPM avatars ship textured), so it's headless-only, but it
+      blocks `QUINE_THUMB` regression snapshots of the man. Reconcile the skinned
+      vs-params uniform struct with the shader's declared block size.
+
 ### Audio DSP node graph — uniform node, swappable backends *(forward-looking; §26 "audio modules on top")*
 
 Generalize "a voice" into a **DSP node** with one interface, so an audio graph can
