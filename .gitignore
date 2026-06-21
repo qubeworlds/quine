@@ -14,6 +14,9 @@ zig-pkg/
 # Cloudflare Wrangler local state / node deps
 .wrangler/
 node_modules/
+# On-demand deps for the backend-parity runner (installed by backend-parity.sh)
+scripts/backend-parity/package-lock.json
+scripts/backend-parity/package.json
 
 # OS cruft
 .DS_Store

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>quine backend-parity harness</title>
+  <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;width:100vw;height:100vh}</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script type="text/javascript">
+// Minimal, dependency-free replica of the host boot sequence
+// (world/packages/qubegame `mountScene`): load one engine bundle, feed it a
+// scene, render a single static frame. Exists ONLY so the parity runner can A/B
+// the webgl2 and webgpu bundles headlessly. The engine is content-agnostic, so
+// the host (this page) owns scene + asset injection — see docs/engine-config.md.
+//
+// State the runner reads back: window.__quine = { log, ready, deviceLost, aborted }.
+(async function () {
+  const q = new URLSearchParams(location.search);
+  const backend = q.get("render") === "webgpu" ? "webgpu" : "webgl2";
+  const sceneUrl = q.get("scene");
+  const S = { log: [], ready: false, deviceLost: false, aborted: false };
+  window.__quine = S;
+  const note = (m) => { S.log.push(String(m)); };
+  note("backend=" + backend + " scene=" + sceneUrl);
+
+  window.addEventListener("error", (e) => note("window.error: " + (e.error?.stack || e.message)));
+  window.addEventListener("unhandledrejection", (e) => note("unhandledrejection: " + (e.reason?.stack || e.reason)));
+
+  // Watch the WebGPU device sokol requests internally for loss/uncaptured errors
+  // — the engine usually only logs these, so the host has to observe them.
+  if (backend === "webgpu" && navigator.gpu) {
+    const reqAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+    navigator.gpu.requestAdapter = async (...a) => {
+      const adapter = await reqAdapter(...a);
+      if (!adapter) { note("webgpu: requestAdapter returned null"); return adapter; }
+      const reqDevice = adapter.requestDevice.bind(adapter);
+      adapter.requestDevice = async (...b) => {
+        const dev = await reqDevice(...b);
+        note("webgpu: device acquired");
+        dev.lost.then((info) => { S.deviceLost = true; note("webgpu: DEVICE LOST reason=" + info.reason + " msg=" + info.message); });
+        dev.addEventListener?.("uncapturederror", (ev) => note("webgpu: uncapturederror " + (ev.error?.message || ev.error)));
+        return dev;
+      };
+      return adapter;
+    };
+  }
+
+  let sceneJson;
+  try {
+    const r = await fetch(sceneUrl);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    sceneJson = await r.text();
+    note("scene fetched bytes=" + sceneJson.length);
+  } catch (e) { note("scene fetch failed: " + e); return; }
+
+  const M = {
+    canvas: document.getElementById("canvas"),
+    print: (t) => note("engine: " + t),
+    printErr: (t) => note("engine[err]: " + t),
+    onAbort: (w) => { S.aborted = true; note("onAbort: " + w); },
+    onRuntimeInitialized: () => {
+      note("runtime ready");
+      try {
+        M.ccall("quine_set_config", null, ["string"],
+          [JSON.stringify({ capabilities: { gpu: backend }, preferences: { hud: false, autoplay: false } })]);
+      } catch (e) { note("set_config threw: " + e); }
+      try {
+        M.ccall("quine_enqueue", null, ["string"], [JSON.stringify({ type: "scene", json: sceneJson })]);
+        note("scene enqueued");
+      } catch (e) { note("enqueue threw: " + e); }
+      S.ready = true;
+      // A couple of resize kicks so sokol sizes the swapchain to the canvas.
+      window.dispatchEvent(new Event("resize"));
+      setTimeout(() => window.dispatchEvent(new Event("resize")), 60);
+    },
+  };
+  window.Module = M;
+  const s = document.createElement("script");
+  s.async = true;
+  s.src = "engine/quine-" + backend + ".js";
+  s.onerror = () => note("bundle load failed: " + s.src);
+  document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>

@@ -801,6 +801,11 @@ pub const Renderer = struct {
         if (do_post) {
             const bw = @max(@divTrunc(self.post_w, 4), 1);
             const bh = @max(@divTrunc(self.post_h, 4), 1);
+            // Offscreen targets sampled as textures need a uv.y flip on
+            // origin-top-left backends (WebGPU/Metal/D3D); GL/GLES3 store bottom
+            // row first and don't. Pass the flag to every post sample so the one
+            // shader source blits the right way up on all backends.
+            const flip: f32 = if (sg.queryFeatures().origin_top_left) 1 else 0;
             // 1. Bright-pass extract, full -> quarter res. The scene pass has
             // already tonemapped, so the threshold is LDR (authored ~1.0 maps
             // to ~0.86 — only near-white emissives bloom).
@@ -810,14 +815,14 @@ pub const Renderer = struct {
             bind.views[shd_post.VIEW_src] = self.post_color_tex;
             bind.samplers[shd_post.SMP_psmp] = self.post_smp;
             sg.applyBindings(bind);
-            const bp = shd_post.BrightParams{ .bp = .{ std.math.clamp(queue.post.bloom_threshold * 0.86, 0.0, 0.97), 0, 0, 0 } };
+            const bp = shd_post.BrightParams{ .bp = .{ std.math.clamp(queue.post.bloom_threshold * 0.86, 0.0, 0.97), flip, 0, 0 } };
             sg.applyUniforms(shd_post.UB_bright_params, sg.asRange(&bp));
             sg.draw(0, 3, 1);
             sg.endPass();
             // 2+3. Separable gaussian blur, ping-pong at quarter res.
             const steps = [2]struct { dst: u32, src: u32, dir: [4]f32 }{
-                .{ .dst = 1, .src = 0, .dir = .{ 1.0 / @as(f32, @floatFromInt(bw)), 0, 0, 0 } },
-                .{ .dst = 0, .src = 1, .dir = .{ 0, 1.0 / @as(f32, @floatFromInt(bh)), 0, 0 } },
+                .{ .dst = 1, .src = 0, .dir = .{ 1.0 / @as(f32, @floatFromInt(bw)), 0, flip, 0 } },
+                .{ .dst = 0, .src = 1, .dir = .{ 0, 1.0 / @as(f32, @floatFromInt(bh)), flip, 0 } },
             };
             for (steps) |st| {
                 sg.beginPass(colorPass(self.bloom_att[st.dst], .{}));
@@ -839,7 +844,7 @@ pub const Renderer = struct {
             cb.views[shd_post.VIEW_bloom_tex] = self.bloom_tex[0];
             cb.samplers[shd_post.SMP_psmp] = self.post_smp;
             sg.applyBindings(cb);
-            const cp = shd_post.CompParams{ .cp = .{ queue.post.bloom_intensity, 0, 0, 0 } };
+            const cp = shd_post.CompParams{ .cp = .{ queue.post.bloom_intensity, flip, 0, 0 } };
             sg.applyUniforms(shd_post.UB_comp_params, sg.asRange(&cp));
             sg.draw(0, 3, 1);
             if (hud) |info| drawHud(info);
