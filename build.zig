@@ -112,6 +112,19 @@ pub fn build(b: *Build) !void {
     mod_core.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
     mod_core.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
 
+    // --- sim: headless deterministic sim-core (the `qubeworlds:sim` WIT world).
+    // Pure core + math, no sokol/physics/script — so it tests headless like core
+    // and is the body of the `sim-core` wasm component target (below).
+    const mod_sim = b.createModule(.{
+        .root_source_file = b.path("apps/sim/sim.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "core", .module = mod_core },
+            .{ .name = "math", .module = mod_math },
+        },
+    });
+
     // --- scene_runtime: loads core.SceneData into a live World + physics. Sits
     // above the core->render boundary (imports core + the physics sibling), so
     // it's where the data-driven replacement for the app's `loadDancer` lives.
@@ -433,6 +446,57 @@ pub fn build(b: *Build) !void {
 
     const core_tests = b.addTest(.{ .root_module = mod_core });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
+
+    // Headless sim-core (load-scene/tick/set-material/snapshot determinism).
+    const sim_tests = b.addTest(.{ .root_module = mod_sim });
+    test_step.dependOn(&b.addRunArtifact(sim_tests).step);
+
+    // --- sim-core: the headless sim compiled to a wasm32 reactor — the body of
+    // the `qubeworlds:sim` component (wit/qubeworlds-sim.wit). Freestanding (no
+    // OS, no emscripten, no GL): pure core + math, the wasm linear memory grown
+    // by `std.heap.wasm_allocator`. The typed canonical-ABI component is produced
+    // by wrapping this module with `wasm-tools component new` against the WIT
+    // (see wit/README.md). Built for wasm32 regardless of the host target.
+    {
+        const wasm_query = std.Target.Query{ .cpu_arch = .wasm32, .os_tag = .freestanding };
+        const wasm_target = b.resolveTargetQuery(wasm_query);
+        const mod_math_w = b.createModule(.{
+            .root_source_file = b.path("modules/math/math.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        });
+        const mod_ecs_w = b.createModule(.{
+            .root_source_file = b.path("modules/ecs/ecs.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        });
+        const mod_core_w = b.createModule(.{
+            .root_source_file = b.path("modules/core/core.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ecs", .module = mod_ecs_w },
+                .{ .name = "math", .module = mod_math_w },
+            },
+        });
+        mod_core_w.addAnonymousImport("character.glb", .{ .root_source_file = b.path("assets/CesiumMan.glb") });
+        mod_core_w.addAnonymousImport("rpm.glb", .{ .root_source_file = b.path("assets/rpm-head.glb") });
+        const mod_sim_w = b.createModule(.{
+            .root_source_file = b.path("apps/sim/wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = mod_core_w },
+                .{ .name = "math", .module = mod_math_w },
+            },
+        });
+        const sim_wasm = b.addExecutable(.{ .name = "quine-sim", .root_module = mod_sim_w });
+        sim_wasm.entry = .disabled; // a reactor: exports only, no _start
+        sim_wasm.rdynamic = true; // keep the `sim_*` exports
+        sim_wasm.stack_size = 4 * 1024 * 1024; // headroom for std.json parse recursion
+        b.step("sim-core", "Build the headless sim-core wasm (qubeworlds:sim body)")
+            .dependOn(&b.addInstallArtifact(sim_wasm, .{}).step);
+    }
 
     // Physics tests compile Jolt's C++ (slow on a cold cache), so they also get
     // their own step for running in isolation.
