@@ -1,0 +1,32 @@
+{
+  // The quine engine published to the Continuum as a versioned library qube, so
+  // a qubepods front-end (or any consumer) can declare it as a dependency and
+  // resolve it through the registry. The runnable engine itself ships as the
+  // content-agnostic wasm bundle on the CDN (cdn.qubeworlds.com/engine); what the
+  // Continuum carries is this qube's IDENTITY + its WIT CONTRACT — the typed
+  // surface a consumer links against.
+  //
+  // This is a FOREIGN component (the engine is Zig, not q64 source), so the WIT
+  // world is hand-authored, not synthesized by the q64 compiler — published via
+  // the manifest's `wit.file` (see `qube publish`).
+  $schema: "https://q64.dev/schema/qube.json5",
+
+  name: "com.qubeworlds.quine",
+  version: "0.1.0",
+  license: "MIT OR Apache-2.0",
+  description: "The quine 3D engine — content-agnostic real-world simulation runtime (sim-core component contract).",
+  homepage: "https://qubeworlds.com",
+  repository: "https://github.com/qubeworlds/quine",
+  keywords: ["engine", "3d", "wasm", "component", "simulation"],
+  type: "library",
+
+  // The published contract: the deterministic sim-core world (qubeworlds:sim).
+  // The `.wit` is bundled IN this package (wit/) so the archive is self-contained,
+  // and `qube publish` also uploads it as the registry's WIT artifact — served at
+  // /v1/qubes/<name>/<version>/world and as an OCI layer at /v2.
+  wit: {
+    file: "wit/qubeworlds-sim.wit",
+    package: "qubeworlds:sim",
+    world: "sim",
+  },
+}
