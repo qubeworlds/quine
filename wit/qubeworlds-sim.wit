@@ -1,0 +1,71 @@
+// qubeworlds:sim — the headless deterministic sim-core as a true component
+// contract. This is Phase 5 of the engine-as-component plan (qubepods
+// docs/engine-as-component.md): quine's `core/` (no GL) lifted to a
+// canonical-ABI WIT world, for headless / server / multiplayer / replay.
+//
+// HOW THIS DIFFERS FROM `qubeworlds:engine/scene` (Phase 1). That world is the
+// host-INJECT surface of the full GL engine — the host owns the canvas and
+// pushes content in (it can't be a canonical-ABI component today because the GPU
+// surface can't cross the boundary). THIS world is the opposite end: the
+// deterministic sim ONLY, with NO render and NO host imports, so it CAN be a real
+// canonical-ABI component. It computes a render-AGNOSTIC snapshot; whoever holds
+// it (a GL renderer, a remote peer, a replay verifier) reads the same bytes.
+//
+// THE INVARIANT: same scene + same tick count → byte-identical `snapshot`. That
+// determinism is what lets a server and a client advance one world in lockstep,
+// and a replay reproduce a session exactly. (Unit-tested in apps/sim/sim.zig.)
+//
+// The wasm BODY is apps/sim/wasm.zig (a flat reactor: `sim_*` C-ABI exports +
+// a static snapshot buffer); `zig build sim-core` emits it. Wrapping that core
+// module into this typed component is `wasm-tools component new` against this
+// file — see ../wit/README.md.
+
+package qubeworlds:sim@0.1.0;
+
+/// The deterministic simulation surface this component EXPORTS. No imports: the
+/// sim reaches for nothing (no GPU, no host, no wall clock) — the host drives it
+/// and reads the snapshot back.
+interface core {
+  /// Errors `load-scene` can report.
+  variant load-error {
+    /// The bytes were not a valid scene document.
+    parse(string),
+    /// The scene parsed but could not be built into the world.
+    build(string),
+  }
+
+  /// Load a scene from its JSON document into a fresh world (replaces any current
+  /// scene; resets the clock to t=0). Returns the spawned entity count — the
+  /// index space `set-material` addresses — or a `load-error`.
+  load-scene: func(json: string) -> result<u32, load-error>;
+
+  /// Advance the simulation by exactly `dt` seconds (one fixed step). The host
+  /// owns the clock; the result depends only on the accumulated tick count.
+  tick: func(dt: f64);
+
+  /// In-place recolour of the entity at scene index `entity` (out-of-range is a
+  /// no-op) — the headless mirror of the engine's `{type:"material"}` edit, with
+  /// no scene reload. `r`/`g`/`b`/`a` are linear 0.0–1.0.
+  set-material: func(entity: u32, r: f32, g: f32, b: f32, a: f32);
+
+  /// The render-agnostic draw list for the current tick — the "snapshot the
+  /// render layer reads". A flat, deterministic description (camera intrinsics +
+  /// view, then per item: mesh id, base colour, model matrix, texture id); NO
+  /// projection (the clip convention is the backend's), NO pixels. The same bytes
+  /// feed any renderer, a remote peer, or a replay verifier. Wire layout is
+  /// documented at `apps/sim/sim.zig` (`QSN1` magic + version).
+  snapshot: func() -> list<u8>;
+
+  /// Reset to an empty world at t=0 — the start state a replay rewinds to.
+  reset: func();
+
+  /// Accumulated simulated time in seconds.
+  time: func() -> f64;
+}
+
+/// The sim component. Exports the deterministic surface; imports NOTHING — that
+/// is what makes it a true, portable canonical-ABI component (unlike the
+/// GL-bound `qubeworlds:engine`, which must import a host surface).
+world sim {
+  export core;
+}
