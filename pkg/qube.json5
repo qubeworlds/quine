@@ -9,9 +9,6 @@
   // This is a FOREIGN component (the engine is Zig, not q64 source), so the WIT
   // world is hand-authored, not synthesized by the q64 compiler — published via
   // the manifest's `wit.file` (see `qube publish`).
-  //
-  // No `repository` field: the engine source repo is private, and the Continuum
-  // is public — a source link would 404 for everyone and leak a private path.
   $schema: "https://q64.dev/schema/qube.json5",
 
   name: "com.qubeworlds.quine",
@@ -19,6 +16,7 @@
   license: "MIT OR Apache-2.0",
   description: "The quine 3D engine — content-agnostic real-world simulation runtime (sim-core component contract).",
   homepage: "https://qubeworlds.com",
+  repository: "https://github.com/qubeworlds/quine",
   keywords: ["engine", "3d", "wasm", "component", "simulation"],
   type: "library",
 
