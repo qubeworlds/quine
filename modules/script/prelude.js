@@ -72,6 +72,17 @@ var world = (function () {
     get: function (name) {
       return entity(name);
     },
+    // Spawn a new entity by cloning a template entity's mesh + material (e.g. a
+    // bullet or rock fragment). Returns an entity handle (same API as get) you
+    // position via `.transform`, or null if the template is unknown / the pool is
+    // full. Despawn it with world.despawn(handle) when it expires or is hit.
+    spawn: function (template) {
+      var n = __quine_spawn(template);
+      return n ? entity(n) : null;
+    },
+    despawn: function (e) {
+      __quine_despawn(typeof e === "string" ? e : e.name);
+    },
     contactImpulse: function (a, b) {
       return __quine_contact(a.name, b.name);
     },

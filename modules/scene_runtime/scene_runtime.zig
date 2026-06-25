@@ -92,6 +92,24 @@ pub const max_textures = 8;
 pub const max_out_events = 128;
 /// Max input axes the app exposes to the skill (`__quine_axis`).
 pub const max_axes = 8;
+/// Max concurrently-live skill-spawned entities (bullets, fragments, …). Spawn
+/// is unbounded in calls but bounded in live count by this pool — every engine
+/// bounds live entities; here a fixed slot pool keeps names stable and memory
+/// flat (no per-spawn allocation), and the count is deterministic.
+pub const max_spawned = 128;
+
+/// One skill-spawned entity: a pure ECS entity (Transform + cloned MeshRef +
+/// Material) the skill drives by name. Lives in a slot pool on the runtime, NOT
+/// in the `bindings` table (no body/model/parent) — render picks it up via the
+/// `Transform`+`MeshRef` query like any other drawable.
+const Spawned = struct {
+    entity: core.Entity = undefined,
+    /// Generated handle name (e.g. "@s7"), stored inline so it needs no alloc and
+    /// keeps a stable address the skill's JS string copies from.
+    name_buf: [12]u8 = undefined,
+    name_len: u8 = 0,
+    active: bool = false,
+};
 
 /// A skill→app output event: a tag plus four scalar params. The app drains these
 /// after each tick and routes by tag. This is the determinism boundary in action
@@ -124,6 +142,9 @@ pub const SceneRuntime = struct {
     /// Whether the host should interpolate transforms between sim ticks when
     /// rendering — from the scene (opt-in). Carried here; honoured by the host.
     interpolate: bool = false,
+    /// Slot pool for skill-spawned entities (see `Spawned` / `spawn`). Reset to
+    /// all-inactive on `init`, so a freshly loaded scene starts with no spawns.
+    spawned: [max_spawned]Spawned = [_]Spawned{.{}} ** max_spawned,
     /// Listener pose tracking for Doppler: the camera has no physics body, so its
     /// velocity is the smoothed frame-to-frame motion of its Transform.
     prev_listener_pos: ?m.Vec3 = null,
@@ -1279,6 +1300,55 @@ pub const SceneRuntime = struct {
             if (std.mem.eql(u8, b.name, name)) return b;
         }
         return null;
+    }
+
+    /// Resolve a skill-facing entity name to its `core.Entity`: a scene binding
+    /// first (existing named entities are unchanged), else a live spawned slot.
+    /// This is what the transform natives use, so a skill drives spawned entities
+    /// by their handle name exactly like authored ones.
+    pub fn entityOf(self: *SceneRuntime, name: []const u8) ?core.Entity {
+        if (self.find(name)) |b| return b.entity;
+        for (&self.spawned) |*s| {
+            if (s.active and std.mem.eql(u8, s.name_buf[0..s.name_len], name)) return s.entity;
+        }
+        return null;
+    }
+
+    /// Spawn a new entity by cloning a template binding's renderable components
+    /// (Transform + MeshRef + Material — the mesh handle is shared, no re-upload),
+    /// and return its generated handle name (lives in the slot, valid until the
+    /// matching `despawn`). Returns null if the template is unknown or the pool is
+    /// full. The skill then positions it via `world.get(name).transform`.
+    pub fn spawn(self: *SceneRuntime, template: []const u8) ?[]const u8 {
+        const tb = self.find(template) orelse return null;
+        var slot: usize = 0;
+        while (slot < max_spawned and self.spawned[slot].active) : (slot += 1) {}
+        if (slot == max_spawned) return null; // pool full — caller despawns to free a slot
+
+        const e = self.world.spawn();
+        if (self.world.get(core.Transform, tb.entity)) |t| self.world.set(core.Transform, e, t.*);
+        if (self.world.get(core.MeshRef, tb.entity)) |mr| self.world.set(core.MeshRef, e, mr.*);
+        if (self.world.get(core.Material, tb.entity)) |mt| self.world.set(core.Material, e, mt.*);
+
+        var s = &self.spawned[slot];
+        s.entity = e;
+        s.active = true;
+        const name = std.fmt.bufPrint(&s.name_buf, "@s{d}", .{slot}) catch return null;
+        s.name_len = @intCast(name.len);
+        return name;
+    }
+
+    /// Despawn a previously spawned entity by its handle name: remove it from the
+    /// world (render drops it next frame) and free its slot. No-op for an unknown
+    /// or already-freed name.
+    pub fn despawn(self: *SceneRuntime, name: []const u8) void {
+        for (&self.spawned) |*s| {
+            if (s.active and std.mem.eql(u8, s.name_buf[0..s.name_len], name)) {
+                self.world.despawn(s.entity);
+                s.active = false;
+                return;
+            }
+        }
     }
 
     // --- Keyframe playback --------------------------------------------------

@@ -128,6 +128,8 @@ pub const Js = struct {
         self.def("__quine_setTransformPos", jsSetTransformPos, 4);
         self.def("__quine_transformRot", jsTransformRot, 2);
         self.def("__quine_setTransformRot", jsSetTransformRot, 4);
+        self.def("__quine_spawn", jsSpawn, 1);
+        self.def("__quine_despawn", jsDespawn, 1);
         self.def("__quine_radius", jsRadius, 1);
         self.def("__quine_contact", jsContact, 2);
         self.def("__quine_squashValue", jsSquashValue, 1);
@@ -191,6 +193,16 @@ fn argBinding(js: *Js, ctx: ?*c.JSContext, val: c.JSValue) ?*sr.Binding {
     if (cs == null) return null;
     defer c.JS_FreeCString(ctx, cs);
     return js.scene.find(std.mem.sliceTo(cs, 0));
+}
+/// Resolve an entity-name argument to a `core.Entity` via the runtime (a scene
+/// binding or a live spawned slot). Used by the transform natives so they drive
+/// authored and skill-spawned entities alike; body/radius natives keep
+/// `argBinding` since spawned entities have no physics body.
+fn argEntity(js: *Js, ctx: ?*c.JSContext, val: c.JSValue) ?core.Entity {
+    const cs = c.JS_ToCString(ctx, val);
+    if (cs == null) return null;
+    defer c.JS_FreeCString(ctx, cs);
+    return js.scene.entityOf(std.mem.sliceTo(cs, 0));
 }
 fn argF32(ctx: ?*c.JSContext, val: c.JSValue) f32 {
     var o: f64 = 0;
@@ -261,8 +273,8 @@ fn jsTransformPos(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*
     _ = this_val;
     if (argc < 2) return undef(ctx);
     const js = ctxJs(ctx);
-    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
-    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
     const p = [3]f32{ t.position.x, t.position.y, t.position.z };
     return c.JS_NewFloat64(ctx, p[argAxis(ctx, argv[1])]);
 }
@@ -270,8 +282,8 @@ fn jsSetTransformPos(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv:
     _ = this_val;
     if (argc < 4) return undef(ctx);
     const js = ctxJs(ctx);
-    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
-    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
     t.position = .{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) };
     return undef(ctx);
 }
@@ -279,8 +291,8 @@ fn jsTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*
     _ = this_val;
     if (argc < 2) return undef(ctx);
     const js = ctxJs(ctx);
-    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
-    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
     const r = [3]f32{ t.rotation.x, t.rotation.y, t.rotation.z };
     return c.JS_NewFloat64(ctx, r[argAxis(ctx, argv[1])]);
 }
@@ -288,9 +300,31 @@ fn jsSetTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv:
     _ = this_val;
     if (argc < 4) return undef(ctx);
     const js = ctxJs(ctx);
-    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
-    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
     t.rotation = .{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) };
+    return undef(ctx);
+}
+fn jsSpawn(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 1) return undef(ctx);
+    const js = ctxJs(ctx);
+    const cs = c.JS_ToCString(ctx, argv[0]);
+    if (cs == null) return undef(ctx);
+    defer c.JS_FreeCString(ctx, cs);
+    // 0 (a falsy number) on failure; the prelude's `n ? entity(n) : null` treats
+    // it as "no spawn". A success returns the handle name string.
+    const name = js.scene.spawn(std.mem.sliceTo(cs, 0)) orelse return undef(ctx);
+    return c.JS_NewStringLen(ctx, name.ptr, name.len);
+}
+fn jsDespawn(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 1) return undef(ctx);
+    const js = ctxJs(ctx);
+    const cs = c.JS_ToCString(ctx, argv[0]);
+    if (cs == null) return undef(ctx);
+    defer c.JS_FreeCString(ctx, cs);
+    js.scene.despawn(std.mem.sliceTo(cs, 0));
     return undef(ctx);
 }
 fn jsRadius(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -577,4 +611,40 @@ test "a skill reads and writes transform.rotation (steering)" {
     const ship = rt.find("ship").?;
     const t = rt.world.get(core.Transform, ship.entity).?;
     try std.testing.expectApproxEqAbs(@as(f32, 0.25 + dt), t.rotation.y, 1e-4);
+}
+
+test "a skill spawns from a template, drives it, and despawns it" {
+    const scn = core.scene.Scene{ .schema_version = 1, .name = "spawn", .entities = &.{
+        .{ .name = "proto", .transform = .{}, .material = .{ .color = .{ 1, 0.5, 0, 1 } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scn, &.{});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // Spawn a clone of `proto` on the first tick; despawn it once axis 0 is held.
+    try js.loadSkill(
+        \\var b = null;
+        \\onPreStep(function (dt) {
+        \\  if (!b) { b = world.spawn('proto'); b.transform.position = { x: 5, y: 0, z: 0 }; }
+        \\  else if (input(0) > 0.5) { world.despawn(b); b = null; }
+        \\});
+    );
+
+    try rt.update(1.0 / 60.0); // spawn + position
+
+    // The spawned entity resolves by its handle name, carries the cloned material
+    // (green channel 0.5), and was moved to x=5 through the facade.
+    const e = rt.entityOf("@s0").?;
+    try std.testing.expectApproxEqAbs(@as(f32, 5), rt.world.get(core.Transform, e).?.position.x, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), rt.world.get(core.Material, e).?.base_color.y, 1e-4);
+
+    // Hold the despawn axis: next tick the skill removes it; the slot frees and
+    // the ECS entity is gone (render would drop it).
+    rt.setAxis(0, 1.0);
+    try rt.update(1.0 / 60.0);
+    try std.testing.expect(rt.entityOf("@s0") == null);
+    try std.testing.expect(!rt.world.isAlive(e));
 }
