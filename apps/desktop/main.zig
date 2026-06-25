@@ -53,7 +53,10 @@ fn toggleHud() void {
 }
 
 /// Fixed simulation step: 60 Hz. Deterministic and decoupled from render rate.
-const fixed_dt: f64 = 1.0 / 60.0;
+/// Default fixed simulation step (60 Hz) when a scene doesn't set `fixedHz`. The
+/// effective step is `App.fixed_dt`, set per-scene on load — deterministic and
+/// decoupled from render rate either way.
+const default_fixed_dt: f64 = 1.0 / 60.0;
 /// Safety cap so a long stall can't spiral into unbounded catch-up ticks.
 const max_ticks_per_frame: u32 = 8;
 
@@ -88,6 +91,18 @@ const App = struct {
     var renderer: render.Renderer = .{};
     var queue: core.RenderQueue = .{};
     var accumulator: f64 = 0;
+    /// Effective fixed simulation step, set from the loaded scene's `fixedHz`
+    /// (default 60 Hz). The sim advances in these increments regardless of render
+    /// rate; only the count of steps per frame varies.
+    var fixed_dt: f64 = default_fixed_dt;
+    /// When set (scene opt-in), the renderer lerps transforms from `prev_world`
+    /// toward the live world by the accumulator's overstep fraction, so a sim
+    /// rate that doesn't divide the display refresh renders smoothly.
+    var interpolate: bool = false;
+    /// Previous-tick transform snapshot for `interpolate`. Holds only the entity
+    /// alive-set + Transform column (see `World.copyTransformsFrom`); the rest
+    /// stays empty and unused. Only written/read while `interpolate` is on.
+    var prev_world: core.World = .{};
     /// Whether the fixed-step sim is advancing. The engine does NOT auto-run on
     /// web: it boots idle (an empty stage) and starts when a scene is loaded /
     /// the host calls `quine_set_running`, so the sim clock starts clean instead
@@ -646,6 +661,11 @@ fn buildStage(json: []const u8) !void {
 
     try App.stage.init(alloc, scene_data, App.assets.items);
 
+    // Size the fixed-timestep accumulator from the scene's sim rate (Bevy's
+    // `from_hz`); a scene without `fixedHz` keeps the historical 60 Hz step.
+    App.fixed_dt = if (App.stage.fixed_hz > 0) 1.0 / @as(f64, App.stage.fixed_hz) else default_fixed_dt;
+    App.interpolate = App.stage.interpolate;
+
     // Upload the runtime's decoded scene textures (material.texture assets)
     // into the render layer's per-entity slots. Slot 0 stays the 1x1 white.
     for (App.stage.textures[1..], 1..) |maybe_tex, slot| {
@@ -949,13 +969,18 @@ export fn frame() void {
     const kb0 = (if (App.key_up_held) @as(f32, 1) else 0) - (if (App.key_down_held) @as(f32, 1) else 0);
     App.stage.setAxis(0, std.math.clamp(App.host_axis[0] + kb0, -1, 1));
 
+    const fdt = App.fixed_dt;
     if (App.running)
-        App.accumulator += @min(frame_dt, fixed_dt * @as(f64, @floatFromInt(max_ticks_per_frame)));
+        App.accumulator += @min(frame_dt, fdt * @as(f64, @floatFromInt(max_ticks_per_frame)));
     var ticks: u32 = 0;
-    while (App.running and App.accumulator >= fixed_dt and ticks < max_ticks_per_frame) {
-        App.stage.update(@floatCast(fixed_dt)) catch {};
+    while (App.running and App.accumulator >= fdt and ticks < max_ticks_per_frame) {
+        // Keep `prev_world` one tick behind the live world: snapshot just before
+        // each step, so after the drain it holds tick N-1 and the live world is
+        // tick N — the two endpoints the render lerp blends between.
+        if (App.interpolate) App.prev_world.copyTransformsFrom(&App.stage.world);
+        App.stage.update(@floatCast(fdt)) catch {};
         App.world_tick += 1; // advance the shared world clock, one per fixed step
-        App.accumulator -= fixed_dt;
+        App.accumulator -= fdt;
         ticks += 1;
     }
 
@@ -1039,8 +1064,16 @@ export fn frame() void {
 
     // Extract the frame's geometry. The ball + fedora are regular mesh entities
     // (the fedora's Transform is carried by the parenting each tick); the skinned
-    // actor is drawn separately. No interpolation yet (prev == current).
-    core.extract(&App.stage.world, &App.stage.world, 1.0, &App.queue);
+    // actor is drawn separately. With `interpolate` on, blend last tick → current
+    // by the accumulator's overstep fraction (alpha in [0,1)); otherwise pass the
+    // live world as both endpoints with alpha 1 — a no-op that reproduces the
+    // historical "render the latest tick" behaviour exactly.
+    const alpha: f32 = if (App.interpolate)
+        @floatCast(std.math.clamp(App.accumulator / fdt, 0, 1))
+    else
+        1.0;
+    const prev = if (App.interpolate) &App.prev_world else &App.stage.world;
+    core.extract(prev, &App.stage.world, alpha, &App.queue);
     App.last_vp = render.viewProj(&App.queue, aspect);
 
     // The skinned actor: palette from this tick's pose, placed at its Transform.

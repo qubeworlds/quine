@@ -220,3 +220,38 @@ test "extract places a single mesh and the camera intrinsics" {
     try testing.expect(q.fov_y > 0 and q.far > q.near);
     try testing.expect(q.view.m[14] != 0); // camera pulled back along Z
 }
+
+test "extract interpolates a moved transform between prev and cur by alpha" {
+    const testing = std.testing;
+    // `prev` snapshots tick N-1, `cur` is tick N. The host keeps `prev` via
+    // World.copyTransformsFrom; mirror that here, then move the drawable so the
+    // two endpoints differ along x and the lerp is observable.
+    const prev = try testing.allocator.create(World);
+    defer testing.allocator.destroy(prev);
+    prev.* = .{}; // empty; copyTransformsFrom populates the alive-set + Transform
+    const cur = try testing.allocator.create(World);
+    defer testing.allocator.destroy(cur);
+    cur.* = World.init(); // one drawable (the triangle) at x = 0, plus a camera
+
+    prev.copyTransformsFrom(cur); // prev = tick N-1 (x = 0)
+    var it = cur.query(&.{ Transform, MeshRef });
+    const e = it.next().?;
+    cur.get(Transform, e).?.position.x = 2.0; // tick N (x = 2)
+
+    const q = try testing.allocator.create(RenderQueue);
+    defer testing.allocator.destroy(q);
+
+    // The model matrix's translation column is m[12] (T*R*S, no rotation/scale
+    // change here), so it reads back the lerped x directly.
+    q.* = .{};
+    extract(prev, cur, 0.0, q); // alpha 0 -> prev
+    try testing.expectApproxEqAbs(@as(f32, 0.0), q.items[0].model.m[12], 1e-5);
+
+    q.* = .{};
+    extract(prev, cur, 1.0, q); // alpha 1 -> cur (the historical no-interp path)
+    try testing.expectApproxEqAbs(@as(f32, 2.0), q.items[0].model.m[12], 1e-5);
+
+    q.* = .{};
+    extract(prev, cur, 0.5, q); // alpha 0.5 -> midpoint
+    try testing.expectApproxEqAbs(@as(f32, 1.0), q.items[0].model.m[12], 1e-5);
+}

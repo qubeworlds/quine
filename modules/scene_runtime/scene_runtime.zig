@@ -118,6 +118,12 @@ pub const SceneRuntime = struct {
     /// Mid/Side stereo width for the audio bus — from the scene; the app applies
     /// it to the mixer.
     stereo_width: f32 = 1,
+    /// Fixed simulation rate (Hz) — from the scene. The host reads this to size
+    /// its fixed-timestep accumulator; the runtime itself just carries the value.
+    fixed_hz: f32 = 60,
+    /// Whether the host should interpolate transforms between sim ticks when
+    /// rendering — from the scene (opt-in). Carried here; honoured by the host.
+    interpolate: bool = false,
     /// Listener pose tracking for Doppler: the camera has no physics body, so its
     /// velocity is the smoothed frame-to-frame motion of its Transform.
     prev_listener_pos: ?m.Vec3 = null,
@@ -185,7 +191,7 @@ pub const SceneRuntime = struct {
     /// arena and Jolt; `scene_data` need not outlive the call (names are duped).
     /// `assets` resolves geometry sources (e.g. a glTF `source` -> its bytes).
     pub fn init(self: *SceneRuntime, gpa: std.mem.Allocator, scene_data: core.SceneData, assets: []const Asset) !void {
-        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity, .sound_speed = scene_data.sound_speed, .stereo_width = scene_data.stereo_width };
+        self.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .gravity = scene_data.gravity, .sound_speed = scene_data.sound_speed, .stereo_width = scene_data.stereo_width, .fixed_hz = scene_data.fixed_hz, .interpolate = scene_data.interpolate };
         errdefer self.arena.deinit();
         const a = self.arena.allocator();
 

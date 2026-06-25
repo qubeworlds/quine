@@ -312,6 +312,19 @@ pub const World = struct {
         return self.reg.query(Comps);
     }
 
+    /// Snapshot the alive-set and the `Transform` column from `src` into `self`,
+    /// so the render layer can read last-tick transforms and interpolate toward
+    /// the current tick (see `render_queue.extract`'s `interpolated`). Only the
+    /// data `interpolated` reads is copied — the entity allocator (so the same
+    /// handles validate against `self`) and the Transform storage; meshes/SDF/
+    /// audio are left untouched (the renderer reads those from the live `cur`
+    /// world). Both are plain value types, so this is two array-struct copies,
+    /// not a full clone.
+    pub fn copyTransformsFrom(self: *World, src: *World) void {
+        self.reg.entities = src.reg.entities;
+        self.reg.storage(Transform).* = src.reg.storage(Transform).*;
+    }
+
     // --- simulation ----------------------------------------------------------
 
     /// Advance the simulation by exactly `dt` seconds by running the systems

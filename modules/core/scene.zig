@@ -331,6 +331,18 @@ pub const Scene = struct {
     /// Mid/Side stereo width for the audio bus: 1 = neutral, >1 widens (reduces
     /// the centre, boosts the sides), 0 = mono.
     stereo_width: f32 = 1,
+    /// Fixed simulation rate in Hz — the host's accumulator advances the sim in
+    /// `1/fixed_hz`-second steps, independent of render frame rate (Bevy's
+    /// `Time::<Fixed>::from_hz`). Default 60 reproduces the historical hardcoded
+    /// step, so a scene that omits `fixedHz` is unchanged.
+    fixed_hz: f32 = 60,
+    /// Render-side interpolation between sim ticks: when set, the renderer lerps
+    /// each transform from the previous tick toward the current by the
+    /// accumulator's overstep fraction, so a sim rate that doesn't divide the
+    /// display refresh (e.g. 64 Hz sim on a 60 Hz panel) is smooth instead of
+    /// beating. Opt-in (default off) so existing scenes render bit-identically —
+    /// notably ones mixing per-tick parenting with skinned poses.
+    interpolate: bool = false,
     /// Gerstner ocean (waves + buoyancy params). Null for a dry scene.
     ocean: ?Ocean = null,
     entities: []const Entity,
@@ -363,6 +375,8 @@ pub fn parse(arena: std.mem.Allocator, bytes: []const u8) !Scene {
     if (o.get("gravity")) |g| scene.gravity = try asVec3(g);
     if (o.get("soundSpeed")) |x| scene.sound_speed = try asF32(x);
     if (o.get("stereoWidth")) |x| scene.stereo_width = try asF32(x);
+    if (o.get("fixedHz")) |x| scene.fixed_hz = try asF32(x);
+    if (o.get("interpolate")) |x| scene.interpolate = x == .bool and x.bool;
     if (o.get("script")) |s| scene.script = try parseScript(arena, s);
     if (o.get("timeline")) |t| scene.timeline = try parseTimeline(arena, t);
     if (o.get("ocean")) |x| scene.ocean = try parseOcean(arena, x);
@@ -960,6 +974,29 @@ test "material parses PBR factors, defaulting the ones the scene omits" {
     try testing.expectEqual(@as(f32, 0.0), b.metallic);
     try testing.expectEqual(@as(f32, 0.5), b.roughness);
     try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
+}
+
+test "fixedHz / interpolate parse, and default to the historical 60 Hz no-interp" {
+    const with =
+        \\{ "schemaVersion": 1, "name": "fast", "fixedHz": 64, "interpolate": true,
+        \\  "entities": [ { "name": "a", "geometry": { "kind": "sphere", "radius": 1 } } ] }
+    ;
+    const without =
+        \\{ "schemaVersion": 1, "name": "plain",
+        \\  "entities": [ { "name": "a", "geometry": { "kind": "sphere", "radius": 1 } } ] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const s = try parse(arena.allocator(), with);
+    try testing.expectEqual(@as(f32, 64), s.fixed_hz);
+    try testing.expect(s.interpolate);
+
+    // A scene that omits both fields reproduces the old hardcoded behaviour:
+    // 60 Hz sim, no render interpolation (so existing scenes are unchanged).
+    const d = try parse(arena.allocator(), without);
+    try testing.expectEqual(@as(f32, 60), d.fixed_hz);
+    try testing.expect(!d.interpolate);
 }
 
 test "parses a scene-declared audio source + listener mark" {
