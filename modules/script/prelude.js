@@ -19,6 +19,14 @@ var world = (function () {
           set position(v) {
             __quine_setTransformPos(name, v.x, v.y, v.z);
           },
+          // Euler XYZ radians. A skill turns an entity (e.g. an Asteroids ship)
+          // by writing this; the renderer reads the same Transform.rotation.
+          get rotation() {
+            return vec(name, __quine_transformRot);
+          },
+          set rotation(v) {
+            __quine_setTransformRot(name, v.x, v.y, v.z);
+          },
         };
       },
       get body() {

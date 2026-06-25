@@ -126,6 +126,8 @@ pub const Js = struct {
         self.def("__quine_setBodyVel", jsSetBodyVel, 4);
         self.def("__quine_transformPos", jsTransformPos, 2);
         self.def("__quine_setTransformPos", jsSetTransformPos, 4);
+        self.def("__quine_transformRot", jsTransformRot, 2);
+        self.def("__quine_setTransformRot", jsSetTransformRot, 4);
         self.def("__quine_radius", jsRadius, 1);
         self.def("__quine_contact", jsContact, 2);
         self.def("__quine_squashValue", jsSquashValue, 1);
@@ -271,6 +273,24 @@ fn jsSetTransformPos(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv:
     const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
     const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
     t.position = .{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) };
+    return undef(ctx);
+}
+fn jsTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 2) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    const r = [3]f32{ t.rotation.x, t.rotation.y, t.rotation.z };
+    return c.JS_NewFloat64(ctx, r[argAxis(ctx, argv[1])]);
+}
+fn jsSetTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const t = js.scene.world.get(@import("core").Transform, b.entity) orelse return undef(ctx);
+    t.rotation = .{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) };
     return undef(ctx);
 }
 fn jsRadius(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -527,4 +547,34 @@ test "a skill reads an input axis, queues audio intents, and sets emissive" {
     const ball = rt.find("ball").?;
     const mat = rt.world.get(core.Material, ball.entity).?;
     try std.testing.expectApproxEqAbs(@as(f32, 0.7), mat.emissive.x, 1e-4);
+}
+
+test "a skill reads and writes transform.rotation (steering)" {
+    const scn = core.scene.Scene{ .schema_version = 1, .name = "rot", .entities = &.{
+        .{ .name = "ship", .transform = .{ .rotation = .{ 0, 0.25, 0 } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scn, &.{});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // Turn the ship by the input axis each tick — the Asteroids steering pattern,
+    // reading the existing rotation and writing it back through the facade.
+    try js.loadSkill(
+        \\var ship = world.get('ship');
+        \\onPreStep(function (dt) {
+        \\  var r = ship.transform.rotation;      // getter sees the authored 0.25
+        \\  ship.transform.rotation = { x: 0, y: r.y + input(0) * dt, z: 0 };
+        \\});
+    );
+
+    rt.setAxis(0, 1.0);
+    const dt: f32 = 1.0 / 60.0;
+    try rt.update(dt); // +1.0*dt rad about Y
+
+    const ship = rt.find("ship").?;
+    const t = rt.world.get(core.Transform, ship.entity).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25 + dt), t.rotation.y, 1e-4);
 }
