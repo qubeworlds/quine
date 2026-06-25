@@ -35,6 +35,8 @@ zig build -Dtarget=wasm32-emscripten -Doptimize=ReleaseSmall -Dgpu=webgpu
 # alongside it so /editor serves the app too (auto-trailing-slash asset routing).
 cp web/index.html zig-out/web/index.html
 cp web/editor.html zig-out/web/editor.html
+# llms.txt — a concise orientation for LLMs, served at /llms.txt (llmstxt.org).
+cp web/llms.txt zig-out/web/llms.txt
 
 echo "==> Deploying Worker + assets"
 npx --yes wrangler@latest deploy

@@ -1,0 +1,44 @@
+# Quine
+
+> Quine is a content-agnostic, real-time 3D simulation engine compiled to
+> WebAssembly. It renders **only the scene it is handed** and the meshes the host
+> provides at boot — it ships with no game content, no menus, and no UI. Hosts
+> (a web page, the editor, a native app) load the engine bundle, feed it a scene
+> as data, and composite any HTML overlay on top.
+
+The engine is built on one hard rule: **data flows core → render, never back.**
+A headless, deterministic core advances the simulation by a fixed timestep; a
+render layer reads that state and draws it but never mutates it. The core runs
+windowless (CI, replay, server) with identical results. Because the engine knows
+nothing about specific worlds, the same wasm renders every scene; content lives
+in data (scene JSON), behaviour in skills (sandboxed JS), and UI in overlays
+(plain HTML) — all supplied by the host, none baked into the engine.
+
+Distribution is the CDN's job: engine bundles and shared assets are served from
+`https://cdn.qubeworlds.com` (`/engine/quine-{webgl2,webgpu}.{js,wasm}`). Apps
+reference those URLs; they do not bundle the engine.
+
+## Core concepts
+
+- [Scenes are data](https://github.com/qubeworlds/quine/blob/main/modules/core/scene.zig): A scene is JSON — a list of `entities`, each carrying components (`transform`, `geometry`, `material`, `camera`, `light`, `body`, `spin`, …). Unknown fields are ignored (forward-compatible). The engine builds the scene's entities and renders them; it never authors content.
+- [Fixed timestep, decoupled from render](https://github.com/qubeworlds/quine/blob/main/apps/desktop/main.zig): The host advances the sim in fixed `1/fixedHz`-second steps drained from a wall-clock accumulator, independent of render frame rate. A scene sets its rate with `"fixedHz": 64` (default 60) — the `Time::<Fixed>::from_hz` analogue. Set `"interpolate": true` to have the renderer lerp transforms between sim ticks by the accumulator's overstep fraction, so a sim rate that doesn't divide the display refresh stays smooth.
+- [Skills are behaviour](https://github.com/qubeworlds/quine/blob/main/modules/script/prelude.js): A scene may link a `script` (a sandboxed QuickJS skill). It runs *inside* the fixed step via `onPreStep(dt)` / `onPostStep()`, reading and writing the live world through a small facade: `world.get(name).transform.position` / `.rotation`, `.body.velocity`, `.material.emissive`, `world.contactImpulse(a,b)`, `audio.bus/sfx`, and `input(axis)`. The skill owns game logic; the engine stays generic.
+- [Input is a device-agnostic axis bus](https://github.com/qubeworlds/quine/blob/main/modules/script/script.zig): The engine exposes 8 float input axes a skill reads via `input(axis)`. The engine knows nothing about keyboards, touch, or gamepads — the **host** maps physical devices onto axes by enqueuing `{ "type": "input", "axis": N, "value": v }`. On the web this is owned by an overlay (see below).
+- [Scenes link a reusable HTML overlay](https://github.com/qubeworlds/world/blob/main/overlays/navigator.js): A scene's optional `"overlay": "<url>"` points at a reusable, hydrating HTML module exporting `mount(container, host) → { unmount() }`. The engine ignores it; the host mounts it over the `<canvas>` and composites. Overlays are where menus, navigation (`navigator.js`), and on-screen game controls (`controls.js`, which maps touch + keys onto the input axes) live — never engine code.
+
+## Loading the engine
+
+- [Run it live](https://quine.qubeworlds.com/): The runtime loader auto-detects WebGPU and falls back to WebGL2 (`?render=webgl|webgpu` to force).
+- [Boot sequence + on-page debugger](https://qubeworlds.com/scene): A framework-free harness that loads the engine on one scene in isolation, echoing every `print`/error and a WebGL2-context-exhaustion probe. Use `?url=<scene.json>&autoload=1`. The canonical way to tell an engine/scene bug from a host-integration bug.
+- The host boots the engine empty, then feeds it messages in order via `quine_enqueue(json)`: `{type:"config"}`, assets via `quine_provide_asset`, `{type:"scene", json}`, then `{type:"skill", code}`. The web SDK (`mountScene`) wraps this with an OPFS wasm cache, a timed `instantiateWasm`, and single-WebGL-context handoff.
+
+## Source
+
+- [Repository (qubeworlds/quine)](https://github.com/qubeworlds/quine): The engine. Zig, wgpu/sokol, Jolt physics, QuickJS skills.
+- [CLAUDE.md — architecture & rules](https://github.com/qubeworlds/quine/blob/main/CLAUDE.md): The core→render rule, the "engine knows nothing about content" rule, the CDN distribution rule, and the build/headless-render commands.
+- [render_queue.zig — the render snapshot](https://github.com/qubeworlds/quine/blob/main/modules/core/render_queue.zig): `extract(prev, cur, alpha)` — how the render layer reads (and interpolates) world state.
+
+## Optional
+
+- [The world platform (qubeworlds/world)](https://github.com/qubeworlds/world): The host apps (site, editor, play), the `@world/qubegame` client, and the reusable `overlays/` (navigator, controls). Shows how a host mounts the engine + overlay and renders both.
+- [Native desktop app](https://github.com/qubeworlds/quine/blob/main/apps/desktop/main.zig): The reference host — owns the window and the fixed-timestep accumulator; the web build is this same app compiled to `wasm32-emscripten`.
