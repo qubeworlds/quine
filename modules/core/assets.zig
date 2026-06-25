@@ -184,6 +184,55 @@ pub fn sphereIndexCount(rings: u32, segments: u32) usize {
     return rings * segments * 6;
 }
 
+/// Vertices/indices a cone of the given resolution needs (apex + base ring +
+/// base centre; side + cap triangles).
+pub fn coneVertexCount(segments: u32) usize {
+    return segments + 2; // apex, `segments` base-ring verts, base centre
+}
+pub fn coneIndexCount(segments: u32) usize {
+    return segments * 6; // `segments` side tris + `segments` cap tris
+}
+
+/// Generate a cone of base `radius` and `height` into caller-provided buffers
+/// (allocator-free). The axis is +Z with the apex at `+height` and the base in
+/// the z=0 plane, so a `rotationY` points the apex along the entity's forward —
+/// e.g. an Asteroids ship that turns to face its heading. Flat-ish base cap
+/// faces -Z. Colour comes from the Material uniform (passed `color` here).
+pub fn cone(radius: f32, height: f32, segments: u32, color: m.Vec4, verts: []Vertex, indices: []u32) MeshData {
+    const seg_f = @as(f32, @floatFromInt(segments));
+    // Apex (0,0,height): forward-pointing, normal along +Z.
+    verts[0] = .{ .position = m.Vec3.init(0, 0, height), .normal = m.Vec3.init(0, 0, 1), .color = color, .uv = .{ 0.5, 0 } };
+    // Base ring: outward+up slope normal so the cone shades like a cone.
+    var s: u32 = 0;
+    while (s < segments) : (s += 1) {
+        const theta = @as(f32, @floatFromInt(s)) / seg_f * 2.0 * std.math.pi;
+        const cx = @cos(theta);
+        const cz = @sin(theta);
+        const n = m.Vec3.init(cx * height, cz * height, radius).normalize();
+        verts[1 + s] = .{ .position = m.Vec3.init(cx * radius, cz * radius, 0), .normal = n, .color = color, .uv = .{ @as(f32, @floatFromInt(s)) / seg_f, 1 } };
+    }
+    // Base centre, cap normal -Z.
+    const center: u32 = segments + 1;
+    verts[center] = .{ .position = m.Vec3.init(0, 0, 0), .normal = m.Vec3.init(0, 0, -1), .color = color, .uv = .{ 0.5, 1 } };
+
+    var ii: usize = 0;
+    s = 0;
+    while (s < segments) : (s += 1) {
+        const a = 1 + s;
+        const b = 1 + (s + 1) % segments;
+        // Side triangle (apex, a, b) — wound CCW seen from outside.
+        indices[ii + 0] = 0;
+        indices[ii + 1] = a;
+        indices[ii + 2] = b;
+        // Base cap triangle (centre, b, a) — opposite winding, faces -Z.
+        indices[ii + 3] = center;
+        indices[ii + 4] = b;
+        indices[ii + 5] = a;
+        ii += 6;
+    }
+    return .{ .vertices = verts[0 .. segments + 2], .indices = indices[0..ii] };
+}
+
 /// Generate a UV sphere of `radius` into caller-provided buffers (allocator-
 /// free, so it runs in the headless core). `rings` latitude bands by `segments`
 /// longitude slices; the buffers must hold at least `sphereVertexCount` /

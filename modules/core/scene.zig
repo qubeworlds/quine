@@ -33,6 +33,7 @@ pub const Geometry = union(enum) {
     builtin: struct { id: []const u8 },
     gltf: struct { source: []const u8, height_meters: ?f32 = null },
     sphere: struct { radius: f32, rings: u32 = 16, segments: u32 = 24 },
+    cone: struct { radius: f32, height: f32, segments: u32 = 16 },
     fedora: struct {
         /// When set, the hat is sized from this joint's head bounds and seated on
         /// it (the worn case). When null, it's a standalone mesh built straight
@@ -539,6 +540,13 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("rings")) |x| g.sphere.rings = try asU32(x);
         if (o.get("segments")) |x| g.sphere.segments = try asU32(x);
         return g;
+    } else if (std.mem.eql(u8, kind, "cone")) {
+        var g = Geometry{ .cone = .{
+            .radius = try asF32(o.get("radius") orelse return error.InvalidScene),
+            .height = try asF32(o.get("height") orelse return error.InvalidScene),
+        } };
+        if (o.get("segments")) |x| g.cone.segments = try asU32(x);
+        return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
         var g = Geometry{ .fedora = .{} };
         if (o.get("fitToJoint")) |x| g.fedora.fit_to_joint = try asStr(x);
@@ -974,6 +982,24 @@ test "material parses PBR factors, defaulting the ones the scene omits" {
     try testing.expectEqual(@as(f32, 0.0), b.metallic);
     try testing.expectEqual(@as(f32, 0.5), b.roughness);
     try testing.expectEqual(@as(f32, 0.0), b.emissive[0]);
+}
+
+test "parses a cone geometry (radius + height + default segments)" {
+    const json =
+        \\{ "schemaVersion": 1, "name": "c", "entities": [
+        \\  { "name": "ship", "geometry": { "kind": "cone", "radius": 0.3, "height": 0.8 } }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+    const g = s.entities[0].geometry.?;
+    try testing.expectEqual(@as(f32, 0.3), g.cone.radius);
+    try testing.expectEqual(@as(f32, 0.8), g.cone.height);
+    try testing.expectEqual(@as(u32, 16), g.cone.segments); // default
+    // The mesh builder sizes match (apex + ring + centre; side + cap tris).
+    try testing.expectEqual(@as(usize, 18), @import("assets.zig").coneVertexCount(16));
+    try testing.expectEqual(@as(usize, 96), @import("assets.zig").coneIndexCount(16));
 }
 
 test "fixedHz / interpolate parse, and default to the historical 60 Hz no-interp" {

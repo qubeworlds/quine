@@ -1057,6 +1057,13 @@ pub const SceneRuntime = struct {
                 const mesh = core.uvSphere(sp.radius, sp.rings, sp.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
+            .cone => |cn| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 }; // colour from the Material uniform
+                const verts = try a.alloc(core.Vertex, core.coneVertexCount(cn.segments));
+                const indices = try a.alloc(u32, core.coneIndexCount(cn.segments));
+                const mesh = core.cone(cn.radius, cn.height, cn.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
             .fedora => |fed| {
                 // Standalone fedora (no head to fit): build the same snap-brim
                 // shape the worn hat uses (domed crown + drooping snap brim), just
