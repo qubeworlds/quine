@@ -235,6 +235,10 @@ pub const SceneRuntime = struct {
                 spec.tag = @intCast(i + 1); // unique, non-zero contact tag per body
                 bnd.tag = spec.tag;
                 bnd.is_dynamic = spec.motion == .dynamic;
+                // A dynamic body with an orientable collider should render its
+                // physics orientation — a quadrotor must visibly tilt and yaw.
+                // (A sphere's rotation is invisible, so keep the cheap path there.)
+                bnd.sync_rotation = bnd.is_dynamic and spec.shape != .sphere;
                 bnd.radius = switch (spec.shape) {
                     .sphere => |s| s.radius,
                     .box => 0,

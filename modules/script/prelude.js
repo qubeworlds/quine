@@ -40,8 +40,27 @@ var world = (function () {
           set velocity(v) {
             __quine_setBodyVel(name, v.x, v.y, v.z);
           },
+          // Orientation quaternion {x,y,z,w} from the physics body. Read it to
+          // apply thrust in the body frame (so a tilted quad's lift tilts too).
+          get rotation() {
+            return {
+              x: __quine_bodyRot(name, 0),
+              y: __quine_bodyRot(name, 1),
+              z: __quine_bodyRot(name, 2),
+              w: __quine_bodyRot(name, 3),
+            };
+          },
           get radius() {
             return __quine_radius(name);
+          },
+          // Accumulate a world-space force {x,y,z} at a world point {x,y,z} for the
+          // next step (off-centre → torque). A quad's 4 rotor thrusts go in here.
+          addForce: function (f, p) {
+            __quine_addForce(name, f.x, f.y, f.z, p.x, p.y, p.z);
+          },
+          // Accumulate a pure torque {x,y,z} — a quad's yaw drag-reaction couple.
+          addTorque: function (t) {
+            __quine_addTorque(name, t.x, t.y, t.z);
           },
         };
       },

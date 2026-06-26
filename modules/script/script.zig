@@ -123,7 +123,10 @@ pub const Js = struct {
         self.def("__quine_gravityY", jsGravityY, 0);
         self.def("__quine_bodyPos", jsBodyPos, 2);
         self.def("__quine_bodyVel", jsBodyVel, 2);
+        self.def("__quine_bodyRot", jsBodyRot, 2);
         self.def("__quine_setBodyVel", jsSetBodyVel, 4);
+        self.def("__quine_addForce", jsAddForce, 7);
+        self.def("__quine_addTorque", jsAddTorque, 4);
         self.def("__quine_transformPos", jsTransformPos, 2);
         self.def("__quine_setTransformPos", jsSetTransformPos, 4);
         self.def("__quine_transformRot", jsTransformRot, 2);
@@ -267,6 +270,47 @@ fn jsSetBodyVel(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]
     const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
     const body = b.body orelse return undef(ctx);
     js.scene.physics.setBodyVelocity(body, .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) });
+    return undef(ctx);
+}
+/// `__quine_bodyRot(name, comp)` — a body's orientation quaternion component
+/// (0=x,1=y,2=z,3=w). A skill reads it to apply thrust in the body frame so the
+/// craft's lift tilts with it (a quad rolls and the thrust vector rolls too).
+fn jsBodyRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 2) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    var comp: i32 = 0;
+    _ = c.JS_ToInt32(ctx, &comp, argv[1]);
+    const q = js.scene.physics.bodyRotation(body);
+    return c.JS_NewFloat64(ctx, q[@intCast(std.math.clamp(comp, 0, 3))]);
+}
+/// `__quine_addForce(name, fx,fy,fz, px,py,pz)` — accumulate a world-space force
+/// at a world point for the next step. Off-centre → torque, so a quad's 4 rotor
+/// thrusts at their arm points produce lift, roll and pitch in one call each.
+fn jsAddForce(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 7) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    js.scene.physics.addForceAtPoint(
+        body,
+        .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) },
+        .{ argF32(ctx, argv[4]), argF32(ctx, argv[5]), argF32(ctx, argv[6]) },
+    );
+    return undef(ctx);
+}
+/// `__quine_addTorque(name, tx,ty,tz)` — accumulate a pure torque (a couple) for
+/// the next step. A quad's yaw is the rotor drag-reaction imbalance about its axis.
+fn jsAddTorque(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    js.scene.physics.addTorque(body, .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) });
     return undef(ctx);
 }
 fn jsTransformPos(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -513,6 +557,47 @@ test "an interpreted skill drives the scene through pre/post-step hooks" {
     for (0..30) |_| try rt.update(1.0 / 60.0);
     const y1 = rt.physics.bodyPosition(rt.find("ball").?.body.?)[1];
     try std.testing.expect(y1 > y0); // the script lifted it
+}
+
+test "a skill lifts and yaws a body with addForce-at-point + addTorque (drone primitive)" {
+    const scn = core.scene.Scene{
+        .schema_version = 1,
+        .name = "thrust",
+        .entities = &.{
+            .{ .name = "ground", .transform = .{ .position = .{ 0, -1, 0 } }, .body = .{ .motion = .static, .collider = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } } } },
+            .{ .name = "craft", .transform = .{ .position = .{ 0, 2, 0 } }, .body = .{ .motion = .dynamic, .collider = .{ .box = .{ .half_extents = .{ 0.3, 0.05, 0.3 } } }, .mass = 1.0 } },
+        },
+    };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scn, &.{});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // Each tick: a strong upward force at one corner (off-centre → it rises AND
+    // tips) plus a yaw torque about +Y (the quad's drag-reaction couple).
+    try js.loadSkill(
+        \\var craft = world.get('craft');
+        \\onPreStep(function (dt) {
+        \\  var p = craft.body.position;
+        \\  craft.body.addForce({ x: 0, y: 30, z: 0 }, { x: p.x + 0.3, y: p.y, z: p.z + 0.3 });
+        \\  craft.body.addTorque({ x: 0, y: 2, z: 0 });
+        \\});
+    );
+
+    const body = rt.find("craft").?.body.?;
+    const y0 = rt.physics.bodyPosition(body)[1];
+    for (0..40) |_| try rt.update(1.0 / 60.0);
+    const y1 = rt.physics.bodyPosition(body)[1];
+    const wy = rt.physics.bodyAngularVelocity(body)[1];
+    try std.testing.expect(y1 > y0); // lifted by the off-centre force
+    try std.testing.expect(wy > 0.1); // and spun up about +Y by the torque
+
+    // body.rotation exposes the orientation quaternion (read for body-frame thrust)
+    try std.testing.expectApproxEqAbs(@as(f64, 1), try js.evalFloat(
+        "var q = world.get('craft').body.rotation; q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w",
+    ), 1e-3);
 }
 
 test "the interpreted keepie-uppie.js skill heads the ball back up repeatedly" {

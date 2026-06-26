@@ -371,6 +371,15 @@ pub const World = struct {
         self.bi().activate(id);
     }
 
+    /// Accumulate a pure torque (a couple) on a body for the next `step` (Jolt
+    /// resets it after). A quadrotor's yaw comes from the rotor drag-reaction
+    /// imbalance — a torque about the craft axis, not a force at a point — so the
+    /// skill applies it here. Wakes the body.
+    pub fn addTorque(self: *World, id: BodyId, torque: [3]f32) void {
+        self.bi().addTorque(id, torque);
+        self.bi().activate(id);
+    }
+
     /// Strongest closing speed (m/s) recorded between two tagged bodies during
     /// the last `step`, or 0 if they didn't touch — the general contact query the
     /// scripting API's `contactImpulse` is backed by.
