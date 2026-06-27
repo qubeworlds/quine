@@ -62,6 +62,11 @@ pub const Geometry = union(enum) {
     /// = module·teeth/2. `pressure_angle` in radians (20°≈0.349). `bore_radius`
     /// 0 = solid. Matches the gear vocabulary the solver meshes on.
     gear: struct { module: f32 = 0.2, teeth: u32 = 12, pressure_angle: f32 = 0.349066, thickness: f32 = 0.3, bore_radius: f32 = 0 },
+    /// Single-stroke vector text in the XY plane, centred, facing +Z. `value` is
+    /// the string (uppercase A–Z, 0–9, space, - . : /); `height` the cap height,
+    /// `depth` the Z extrusion, `thickness` the stroke width. Rotate via the
+    /// Transform to lay it on a face. Colour comes from the Material.
+    text: struct { value: []const u8 = "", height: f32 = 0.2, depth: f32 = 0.02, thickness: f32 = 0.03 },
     fedora: struct {
         /// When set, the hat is sized from this joint's head bounds and seated on
         /// it (the worn case). When null, it's a standalone mesh built straight
@@ -665,6 +670,14 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("pressureAngle")) |x| g.gear.pressure_angle = try asF32(x);
         if (o.get("thickness")) |x| g.gear.thickness = try asF32(x);
         if (o.get("boreRadius")) |x| g.gear.bore_radius = try asF32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "text")) {
+        var g = Geometry{ .text = .{} };
+        if (o.get("value")) |x| g.text.value = try asStr(x);
+        if (o.get("text")) |x| g.text.value = try asStr(x); // alias
+        if (o.get("height")) |x| g.text.height = try asF32(x);
+        if (o.get("depth")) |x| g.text.depth = try asF32(x);
+        if (o.get("thickness")) |x| g.text.thickness = try asF32(x);
         return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
         var g = Geometry{ .fedora = .{} };

@@ -1194,6 +1194,14 @@ pub const SceneRuntime = struct {
                 const mesh = core.gear(ge.module, ge.teeth, ge.pressure_angle, ge.thickness, ge.bore_radius, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
+            .text => |tx| {
+                if (core.textVertexCount(tx.value) == 0) return; // empty / all-blank string
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.textVertexCount(tx.value));
+                const indices = try a.alloc(u32, core.textIndexCount(tx.value));
+                const mesh = core.text(tx.value, tx.height, tx.depth, tx.thickness, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
             .fedora => |fed| {
                 // Standalone fedora (no head to fit): build the same snap-brim
                 // shape the worn hat uses (domed crown + drooping snap brim), just

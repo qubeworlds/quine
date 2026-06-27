@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const m = @import("math");
+const sf = @import("strokefont.zig");
 
 /// A single mesh vertex: position, normal, RGBA color, and a texture
 /// coordinate. `extern` for a stable, C-compatible layout the render layer can
@@ -1776,6 +1777,105 @@ inline fn appendQuad(indices: []u32, ii: *usize, a: u32, b: u32, c: u32, d: u32)
     ii.* += 6;
 }
 
+// --- text (single-stroke vector font) ---------------------------------------
+
+const text_cell_w: f32 = 0.62; // glyph cell width as a fraction of cap height
+const text_space: f32 = 0.22; // gap after each glyph (× cap height)
+
+/// Total stroke segments across a string (blank/unknown glyphs contribute none).
+fn textSegCount(value: []const u8) usize {
+    var n: usize = 0;
+    for (value) |c| n += sf.glyph(c).len;
+    return n;
+}
+pub fn textVertexCount(value: []const u8) usize {
+    return textSegCount(value) * 24; // each stroke is an oriented box (6 faces)
+}
+pub fn textIndexCount(value: []const u8) usize {
+    return textSegCount(value) * 36;
+}
+
+/// Extruded single-stroke text in the XY plane, centred on the origin, facing +Z.
+/// `height` is the cap height (glyphs are height·0.62 wide); `depth` is the Z
+/// extrusion; `thickness` the stroke width. The entity Transform re-orients it
+/// (e.g. rotate −90° about X to lay it flat on a top face). Each stroke is a thin
+/// oriented box, so the text lights and reads from any angle — not a flat decal.
+pub fn text(value: []const u8, height: f32, depth: f32, thickness: f32, color: m.Vec4, verts: []Vertex, indices: []u32) MeshData {
+    const cw = height * text_cell_w;
+    const sp = height * text_space;
+    var total: f32 = 0; // advance width, to centre the string on X
+    for (value, 0..) |c, i| {
+        total += if (c == ' ') cw * 0.8 else cw;
+        if (i + 1 < value.len) total += sp;
+    }
+    var cursor = -total / 2;
+    const ht = thickness * 0.5;
+    const hd = depth * 0.5;
+    var vi: usize = 0;
+    var ii: usize = 0;
+    for (value) |c| {
+        for (sf.glyph(c)) |s| {
+            strokeBox(.{ cursor + s[0] * cw, (s[1] - 0.5) * height }, .{ cursor + s[2] * cw, (s[3] - 0.5) * height }, ht, hd, color, verts, indices, &vi, &ii);
+        }
+        cursor += (if (c == ' ') cw * 0.8 else cw) + sp;
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
+/// One stroke p0→p1 (XY) as a thin box extruded ±`hd` in Z, half-width `ht`, ends
+/// extended by `ht` so consecutive strokes overlap into clean joins.
+fn strokeBox(p0: [2]f32, p1: [2]f32, ht: f32, hd: f32, color: m.Vec4, verts: []Vertex, indices: []u32, vi: *usize, ii: *usize) void {
+    var dx = p1[0] - p0[0];
+    var dy = p1[1] - p0[1];
+    var len = @sqrt(dx * dx + dy * dy);
+    if (len < 1e-6) {
+        dx = 1;
+        dy = 0;
+        len = 0; // degenerate: a square dot of side 2·ht
+    }
+    const inv = if (len > 0) 1.0 / len else 0;
+    const ax = m.Vec3.init(dx * inv, dy * inv, 0); // along the stroke
+    const ay = m.Vec3.init(-dy * inv, dx * inv, 0); // perpendicular, in XY
+    const center = m.Vec3.init((p0[0] + p1[0]) * 0.5, (p0[1] + p1[1]) * 0.5, 0);
+    orientedBox(center, ax, ay, m.Vec3.init(0, 0, 1), len * 0.5 + ht, ht, hd, color, verts, indices, vi, ii);
+}
+
+/// A box in an arbitrary right-handed frame (`ax`,`ay`,`az`) with half-extents
+/// (`hx`,`hy`,`hz`). Same hard-normal, 6-face layout as `box`, just rotated — so
+/// a diagonal stroke gets a real solid with correct lighting.
+fn orientedBox(center: m.Vec3, ax: m.Vec3, ay: m.Vec3, az: m.Vec3, hx: f32, hy: f32, hz: f32, color: m.Vec4, verts: []Vertex, indices: []u32, vi: *usize, ii: *usize) void {
+    const axes = [3]m.Vec3{ ax, ay, az };
+    const H = [3]f32{ hx, hy, hz };
+    const Face = struct { na: u2, ns: f32, ua: u2, us: f32, va: u2, vs: f32 };
+    const faces = [_]Face{
+        .{ .na = 0, .ns = 1, .ua = 2, .us = -1, .va = 1, .vs = 1 }, // +X'
+        .{ .na = 0, .ns = -1, .ua = 2, .us = 1, .va = 1, .vs = 1 }, // -X'
+        .{ .na = 1, .ns = 1, .ua = 0, .us = 1, .va = 2, .vs = -1 }, // +Y'
+        .{ .na = 1, .ns = -1, .ua = 0, .us = 1, .va = 2, .vs = 1 }, // -Y'
+        .{ .na = 2, .ns = 1, .ua = 0, .us = 1, .va = 1, .vs = 1 }, // +Z'
+        .{ .na = 2, .ns = -1, .ua = 0, .us = -1, .va = 1, .vs = 1 }, // -Z'
+    };
+    for (faces) |f| {
+        const nv = axes[f.na].scale(f.ns);
+        const uv = axes[f.ua].scale(f.us * H[f.ua]);
+        const vv = axes[f.va].scale(f.vs * H[f.va]);
+        const c = center.add(axes[f.na].scale(f.ns * H[f.na]));
+        const base: u32 = @intCast(vi.*);
+        verts[vi.* + 0] = .{ .position = c.sub(uv).sub(vv), .normal = nv, .color = color };
+        verts[vi.* + 1] = .{ .position = c.add(uv).sub(vv), .normal = nv, .color = color };
+        verts[vi.* + 2] = .{ .position = c.add(uv).add(vv), .normal = nv, .color = color };
+        verts[vi.* + 3] = .{ .position = c.sub(uv).add(vv), .normal = nv, .color = color };
+        indices[ii.* + 0] = base + 0;
+        indices[ii.* + 1] = base + 1;
+        indices[ii.* + 2] = base + 2;
+        indices[ii.* + 3] = base + 0;
+        indices[ii.* + 4] = base + 2;
+        indices[ii.* + 5] = base + 3;
+        vi.* += 4;
+        ii.* += 6;
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -2147,4 +2247,37 @@ test "gear: radii span root..tip, thickness exact, tips reach the addendum circl
     try std.testing.expectApproxEqAbs(ra, max_r, 1e-4); // tips hit the addendum circle
     try std.testing.expectApproxEqAbs(rf, min_r_outer, 1e-4); // roots hit the dedendum circle
     try std.testing.expectApproxEqAbs(thickness, max_y - min_y, 1e-5);
+}
+
+test "text: counts match, centred on X, spans the cap height, extrudes in Z, unit normals" {
+    const a = std.testing.allocator;
+    const value = "UP";
+    const vc = textVertexCount(value);
+    const ic = textIndexCount(value);
+    // U(5 strokes) + P(5 strokes) = 10 strokes, each an oriented box (24v / 36i).
+    try std.testing.expectEqual(@as(usize, 10 * 24), vc);
+    try std.testing.expectEqual(@as(usize, 10 * 36), ic);
+
+    const verts = try a.alloc(Vertex, vc);
+    defer a.free(verts);
+    const idx = try a.alloc(u32, ic);
+    defer a.free(idx);
+    const h: f32 = 0.4;
+    const depth: f32 = 0.05;
+    const mesh = text(value, h, depth, 0.04, white, verts, idx);
+    try std.testing.expectEqual(vc, mesh.vertices.len);
+    try std.testing.expectEqual(ic, mesh.indices.len);
+
+    const bb = computeAabb(mesh.vertices);
+    try std.testing.expect(@abs(bb.hi.y - h / 2) < 0.05 and @abs(bb.lo.y + h / 2) < 0.05); // ≈ cap height
+    try std.testing.expect(@abs(bb.hi.x + bb.lo.x) < 0.05); // centred about x=0
+    try std.testing.expectApproxEqAbs(depth / 2, bb.hi.z, 1e-4); // extruded in Z
+    try std.testing.expectApproxEqAbs(-depth / 2, bb.lo.z, 1e-4);
+    for (mesh.vertices) |v| try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-4);
+}
+
+test "text: empty / all-blank strings produce no geometry" {
+    try std.testing.expectEqual(@as(usize, 0), textVertexCount(""));
+    try std.testing.expectEqual(@as(usize, 0), textVertexCount("   ")); // spaces advance only
+    try std.testing.expectEqual(@as(usize, 0), textIndexCount(""));
 }
