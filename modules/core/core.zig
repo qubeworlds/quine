@@ -111,6 +111,7 @@ pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
 pub const Parent = components.Parent;
+pub const Coupling = components.Coupling;
 pub const Squash = components.Squash;
 pub const Gaze = components.Gaze;
 pub const Hop = components.Hop;
@@ -252,7 +253,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop, Light, Environment, Post, AudioSource, AudioListener, Parent }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop, Light, Environment, Post, AudioSource, AudioListener, Parent, Coupling }, max_entities);
 
 // =============================================================================
 // World
@@ -375,6 +376,7 @@ pub const World = struct {
     /// constant across the run and the result depends only on the tick count.
     pub fn tick(self: *World, dt: f64) void {
         self.time += dt;
+        systems.coupling(self); // derive driven spins before they integrate
         systems.spin(self, dt);
         systems.squash(self, dt);
         systems.gaze(self, dt);
@@ -471,6 +473,16 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
         const local = if (world.get(Transform, entities[i])) |t| t.* else Transform{};
         world.set(Parent, entities[i], .{ .entity = pe, .local = local });
     }
+    // Drivetrain couplings: resolve each `coupling.source` name to its entity.
+    // A coupled entity needs a `Spin` for the coupling system to write into, so
+    // give it one (zero) if the scene didn't author one.
+    for (scene_data.entities, 0..) |e, i| {
+        const co = e.coupling orelse continue;
+        const src = findEntity(scene_data, entities, co.source) orelse continue;
+        world.set(Coupling, entities[i], .{ .source = src, .ratio = co.ratio });
+        if (world.get(Spin, entities[i]) == null) world.set(Spin, entities[i], .{});
+    }
+
     // Resolve once at load so a render before the first tick (e.g. a static
     // thumbnail) already shows parts in their composed world positions.
     systems.parent(world);
@@ -752,6 +764,35 @@ test "scene graph: a child composes its parent's world transform each tick" {
     }
     // And the parent itself (a root) is untouched by the parent pass.
     try std.testing.expectApproxEqAbs(@as(f32, 2.0), w.get(Transform, par).?.position.x, 1e-6);
+}
+
+test "coupling: a gear train derives each stage's spin from the driver in one tick" {
+    var w = World.init();
+    // Driver A spins about Y; B meshes with A (ratio -2 → half teeth, reversed);
+    // C meshes with B (ratio -0.5 → double teeth, reversed again).
+    const a = w.spawn();
+    w.set(Transform, a, .{});
+    w.set(Spin, a, .{ .velocity = m.Vec3.init(0, 1.0, 0) });
+    const b = w.spawn();
+    w.set(Transform, b, .{});
+    w.set(Spin, b, .{}); // written by the coupling system
+    w.set(Coupling, b, .{ .source = a, .ratio = -2.0 });
+    const c = w.spawn();
+    w.set(Transform, c, .{});
+    w.set(Spin, c, .{});
+    w.set(Coupling, c, .{ .source = b, .ratio = -0.5 });
+
+    w.tick(1.0 / 60.0);
+
+    // Velocities derive through the whole chain in a single tick, regardless of
+    // spawn/visit order: B = -2·A, C = -0.5·B = +1·A.
+    try std.testing.expectApproxEqAbs(@as(f32, -2.0), w.get(Spin, b).?.velocity.y, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), w.get(Spin, c).?.velocity.y, 1e-6);
+    // And the integrated rotations match those rates after one tick.
+    const dt: f32 = 1.0 / 60.0;
+    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, a).?.rotation.y, 1e-6);
+    try std.testing.expectApproxEqAbs(-2.0 * dt, w.get(Transform, b).?.rotation.y, 1e-6);
+    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, c).?.rotation.y, 1e-6);
 }
 
 test "init spawns a single drawable that the spin system rotates" {

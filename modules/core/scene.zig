@@ -215,6 +215,9 @@ pub const Parent = struct {
 };
 
 pub const Spin = struct { velocity: Vec3 = .{ 0, 0, 0 } };
+/// A drivetrain coupling: this entity's spin = `ratio` × `source`'s spin. Maps
+/// to the `Coupling` component (e.g. a meshing gear: ratio = -z_source/z_self).
+pub const Coupling = struct { source: []const u8, ratio: f32 = 1 };
 pub const Squash = struct { rest_scale: ?Vec3 = null, value: f32 = 0, recovery: f32 = 7 };
 /// Idle hop: bobs the entity's Y from its rest position. `phase` (radians) lets a
 /// field of characters bounce out of sync. Maps to the `Hop` component.
@@ -330,6 +333,7 @@ pub const Entity = struct {
     body: ?Body = null,
     parent: ?Parent = null,
     spin: ?Spin = null,
+    coupling: ?Coupling = null,
     squash: ?Squash = null,
     hop: ?Hop = null,
     buoyancy: ?Buoyancy = null,
@@ -513,6 +517,12 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("spin")) |x| {
         if (x != .object) return error.InvalidScene;
         e.spin = .{ .velocity = try asVec3(x.object.get("velocity") orelse return error.InvalidScene) };
+    }
+    if (o.get("coupling")) |x| {
+        if (x != .object) return error.InvalidScene;
+        var c = Coupling{ .source = try asStr(x.object.get("source") orelse return error.InvalidScene) };
+        if (x.object.get("ratio")) |r| c.ratio = try asF32(r);
+        e.coupling = c;
     }
     if (o.get("squash")) |x| e.squash = try parseSquash(x);
     if (o.get("hop")) |x| e.hop = try parseHop(x);

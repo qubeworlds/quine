@@ -20,6 +20,28 @@ const Squash = components.Squash;
 const Gaze = components.Gaze;
 const Hop = components.Hop;
 const Parent = components.Parent;
+const Coupling = components.Coupling;
+
+/// Drivetrain resolve: set each coupled entity's `Spin.velocity` to `ratio`
+/// times its source's spin. Runs before `spin` so the integrated rotation uses
+/// the derived velocity. Order-independent — each entity resolves its source
+/// chain to a root driver, so a multi-stage train (gear → gear → gear) settles
+/// in a single tick regardless of visit order.
+pub fn coupling(world: anytype) void {
+    var it = world.query(&.{ Coupling, Spin });
+    while (it.next()) |e| {
+        world.get(Spin, e).?.velocity = coupledVelocity(world, e, 0);
+    }
+}
+
+fn coupledVelocity(world: anytype, e: anytype, depth: u32) m.Vec3 {
+    if (depth > 64) return .{};
+    if (world.get(Coupling, e)) |c| {
+        const sv = if (world.isAlive(c.source)) coupledVelocity(world, c.source, depth + 1) else m.Vec3{};
+        return sv.scale(c.ratio);
+    }
+    return if (world.get(Spin, e)) |s| s.velocity else m.Vec3{};
+}
 
 /// Advance the rotation of every entity that carries a `Spin`, by its own
 /// angular velocity. Entities without a `Spin` (e.g. the camera) are left

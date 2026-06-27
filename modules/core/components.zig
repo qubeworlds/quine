@@ -106,6 +106,21 @@ pub const Parent = struct {
     local: Transform = .{},
 };
 
+/// A linear angular-velocity coupling: this entity's `Spin.velocity` is set each
+/// tick to `ratio` times its `source`'s spin — the declarative way to build a
+/// drivetrain. A meshing gear pair is `ratio = -z_source / z_self` (negative =
+/// the meshing reversal); a belt/chain is positive. Couplings chain (a train
+/// resolves source-first, any depth, in one tick), and the engine stays gear-
+/// agnostic: the host computes the ratio (e.g. from the solver's `canMesh`).
+/// The coupled entity also carries a `Spin` (the system writes its velocity);
+/// only the root driver's spin is authored.
+pub const Coupling = struct {
+    /// The entity whose spin drives this one.
+    source: Entity,
+    /// This entity's spin as a multiple of the source's (sign = direction).
+    ratio: f32 = 1,
+};
+
 /// A transient squash-and-stretch applied to an entity's `Transform.scale` by
 /// the `squash` system: `value` jumps up on an impact and springs back to 0,
 /// compressing the entity vertically — and bulging it horizontally — about its
