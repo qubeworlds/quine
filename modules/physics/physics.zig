@@ -223,6 +223,15 @@ pub const World = struct {
             .box => |b| blk: {
                 const s = try jolt.BoxShapeSettings.create(b.half_extents);
                 defer s.asShapeSettings().release();
+                // Jolt's box has a rounded "convex radius" (default 0.05 m) carved
+                // OUT of the half-extents; if any half-extent is ≤ that radius the
+                // inner box goes degenerate (negative), producing a NaN AABB that
+                // corrupts the broadphase quadtree → a crash in FrameSync on the
+                // next step. Clamp the radius to just under the smallest half-extent
+                // so thin/small box colliders (a beam, an axle stub) stay valid.
+                const min_he = @min(b.half_extents[0], @min(b.half_extents[1], b.half_extents[2]));
+                const radius = @min(@as(f32, 0.05), @max(min_he * 0.5, 0.0));
+                s.setConvexRadius(radius);
                 break :blk try s.asShapeSettings().createShape();
             },
             .sphere => |sp| blk: {
@@ -468,6 +477,31 @@ test "jolt soft body: a cloth pinned along an edge drapes under gravity, pins he
     // fell well below — the sheet draped under real Jolt soft-body physics.
     try std.testing.expectApproxEqAbs(@as(f32, 1), buf[0 * 3 + 1], 0.06);
     try std.testing.expect(buf[far * 3 + 1] < far_y0 - 0.1);
+}
+
+test "jolt: a thin box collider (half-extent < convex radius) is valid, not a broadphase corruptor" {
+    // Regression: a box half-extent ≤ Jolt's default 0.05 convex radius used to
+    // build a degenerate shape with a NaN AABB, corrupting the broadphase quadtree
+    // and crashing in FrameSync on the next step. createBody now clamps the radius.
+    var w: World = undefined;
+    try w.init(std.heap.c_allocator);
+    defer w.deinit();
+
+    // A static thin "beam" box (0.03 m in two axes) plus a soft body resting on a
+    // ground — the exact shape that crashed the cloth demo's reveal objects.
+    _ = try w.addGround(50, 1);
+    _ = try w.createBody(.{ .motion = .static, .shape = .{ .box = .{ .half_extents = .{ 0.09, 0.03, 0.03 } } }, .position = .{ 0.3, 0.03, 0.0 }, .tag = 0 });
+    const nx: u32 = 10;
+    const nz: u32 = 10;
+    var pinned = [_]u8{0} ** (nx * nz);
+    for (0..nx) |i| pinned[i] = 1;
+    const id = w.createCloth(nx, nz, 0.05, .{ -0.2, 0.15, -0.2 }, &pinned, 8);
+    try std.testing.expect(id != 0xFFFF_FFFF);
+    w.optimize();
+    for (0..180) |_| try w.step(1.0 / 60.0); // must not crash in FrameSync
+    var buf = [_]f32{0} ** (nx * nz * 3);
+    _ = w.readCloth(id, &buf);
+    try std.testing.expect(buf[1] == buf[1]); // pinned vertex y is finite (not NaN)
 }
 
 test "jolt: a sphere falls under gravity and rests on the ground" {
