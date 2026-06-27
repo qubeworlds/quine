@@ -76,7 +76,9 @@ float shadowDepth(vec2 uv) {
     return enc.x + enc.y * (1.0 / 255.0);
 }
 
-// 0 = fully shadowed, 1 = lit. 4-tap PCF around the projected point.
+// 0 = fully shadowed, 1 = lit. 16-tap (4x4) PCF for a soft penumbra instead of
+// the hard, aliased edge a tight kernel gives — the grid stays dense (1-texel
+// spacing) so a ±1.5-texel filter footprint has no gaps or banding.
 float sunShadow(vec3 wp) {
     if (shadow_params.x < 0.5) return 1.0;
     vec4 clip = sun_shadow_mvp * vec4(wp, 1.0);
@@ -86,11 +88,13 @@ float sunShadow(vec3 wp) {
     float d = ndc.z - shadow_params.z; // receiver depth, biased
     float tx = shadow_params.y;
     float lit = 0.0;
-    lit += d <= shadowDepth(uv + vec2(-0.5, -0.5) * tx) ? 1.0 : 0.0;
-    lit += d <= shadowDepth(uv + vec2(0.5, -0.5) * tx) ? 1.0 : 0.0;
-    lit += d <= shadowDepth(uv + vec2(-0.5, 0.5) * tx) ? 1.0 : 0.0;
-    lit += d <= shadowDepth(uv + vec2(0.5, 0.5) * tx) ? 1.0 : 0.0;
-    return lit * 0.25;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            vec2 o = (vec2(float(i), float(j)) - 1.5) * tx; // -1.5..+1.5 texels
+            lit += d <= shadowDepth(uv + o) ? 1.0 : 0.0;
+        }
+    }
+    return lit * (1.0 / 16.0);
 }
 
 in vec3 world_normal;
