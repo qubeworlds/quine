@@ -626,30 +626,84 @@ test "a skill applies real forces: thrust beats gravity, an off-centre force til
     try std.testing.expect(@abs(tilt.z) > 1e-3);
 }
 
-// A self-stabilising flight controller, written exactly as the editor's drone
-// skill drives the body: altitude-hold (thrust vs gravity, clamped ≥0) + attitude
-// PD (torque toward a target tilt) + horizontal position-hold. Tuned HERE,
-// deterministically, then the identical JS ships in the editor. Inputs:
-//   4 pitchTarget  5 rollTarget  6 yawRateTarget  7 targetHeight
-const FLIGHT_CTRL =
-    \\var M = 0.3, G = 9.81, W = M * G;
-    \\var KPH = 7.0, KDH = 4.5, THRMAX = 14.0; // altitude hold
-    \\var KPA = 0.9, KDA = 0.30;               // attitude hold (torque)
-    \\var KYAW = 0.18;                          // yaw-rate hold
-    \\var KPP = 2.2, KDP = 2.4;                 // horizontal position hold
+// The drone as a REAL quadcopter — not a faked controller. Each rotor applies its
+// thrust as a force ALONG THE BODY-UP AXIS at the rotor's position; lift, roll,
+// pitch and yaw all EMERGE from the physics (off-centre thrust → torque, spin-
+// direction imbalance → yaw). A rotor can only push (thrust ≥ 0, along body-up),
+// so an upside-down craft is pushed DOWN, not up. Gravity is Jolt's; the only
+// help is light aerodynamic drag (real frame/prop drag) so it isn't infinitely
+// twitchy. Tuned HERE, deterministically; the identical JS ships in the editor.
+// Inputs: 0..3 = each rotor's thrust (N); 4 = net yaw reaction torque (N·m).
+const FLIGHT_CTRL = QUAD_DECL ++ QUAD_BODY;
+// Split so the editor can embed the identical controller body. Inputs (the solver
+// wrench, per frame): 4 = collective thrust (N), 5 = roll, 6 = pitch, 7 = yaw.
+const QUAD_DECL =
+    \\var A = 0.778, W = 0.3 * 9.81;
+    \\var OFF = [[A,0,A],[-A,0,A],[-A,0,-A],[A,0,-A]]; // FR FL RL RR rotor positions
+    \\var SX  = [1,-1,-1,1];   // roll split: +X rotors vs -X (visual prop spin)
+    \\var SZ  = [1,1,-1,-1];   // pitch split: +Z (front) vs -Z
+    \\var SP  = [-1,1,-1,1];   // yaw split: by spin direction
+    \\var DIR = [-1,1,-1,1];   // visual hub spin direction
+    \\var KLEAN=3.0, LEANMAX=0.38;  // commanded lean from the wrench imbalance (rad)
+    \\var KPOSP=0.05, KPOSD=0.10;   // station-keeping: gentle re-centre when balanced
+    \\var KP=1.0, KD=0.45;          // attitude PD (world-frame torque)
+    \\var KYR=60.0, KYAW=0.18;      // yaw-rate target (from wrench yaw) and its gain
+    \\var KDH=0.9, MAXT=20.0, DRAGL=1.1; // vertical damping; thrust clamp; aero drag
+    \\var ANG=[0,0,0,0];
+    \\function cl(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
+    \\function rx(a){var c=Math.cos(a),s=Math.sin(a);return [[1,0,0],[0,c,-s],[0,s,c]];}
+    \\function ry(a){var c=Math.cos(a),s=Math.sin(a);return [[c,0,s],[0,1,0],[-s,0,c]];}
+    \\function rz(a){var c=Math.cos(a),s=Math.sin(a);return [[c,-s,0],[s,c,0],[0,0,1]];}
+    \\function mul(P,Q){var R=[[0,0,0],[0,0,0],[0,0,0]];for(var i=0;i<3;i++)for(var j=0;j<3;j++){var s=0;for(var k=0;k<3;k++)s+=P[i][k]*Q[k][j];R[i][j]=s;}return R;}
+    \\function mv(R,v){return [R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];}
+    \\function zyx(R){var y=Math.asin(Math.max(-1,Math.min(1,-R[2][0])));return {x:Math.atan2(R[2][1],R[2][2]),y:y,z:Math.atan2(R[1][0],R[0][0])};}
+;
+// The controller body. Lift is the collective rotor thrust along BODY-UP (so an
+// inverted craft is pushed DOWN — a rotor can't pull), tilt-compensated to hold
+// altitude while upright. The flight controller stabilises attitude with a PD
+// torque in the BODY frame (the net of the rotors' differential thrust) toward a
+// lean commanded by the wrench imbalance, fading out when it can't fly so a
+// grounded craft just settles flat. HUBS (if present) spin at each rotor's actual
+// (differential) thrust, so you see the controller working the props.
+const QUAD_BODY =
     \\onPreStep(function (dt) {
-    \\  var b = world.get('quad');
+    \\  var b = world.get(NAME);
     \\  var p = b.body.position, v = b.body.velocity, w = b.body.angularVelocity;
     \\  var e = b.transform.rotation;
-    \\  var thrust = W + KPH * (input(7) - p.y) - KDH * v.y;
-    \\  if (thrust < 0) thrust = 0; else if (thrust > THRMAX) thrust = THRMAX;
-    \\  b.body.addForce({ x: 0, y: thrust, z: 0 });
-    \\  b.body.addTorque({ x: KPA * (input(4) - e.x) - KDA * w.x,
-    \\                     y: KYAW * (input(6) - w.y),
-    \\                     z: KPA * (input(5) - e.z) - KDA * w.z });
-    \\  b.body.addForce({ x: -KPP * p.x - KDP * v.x, y: 0, z: -KPP * p.z - KDP * v.z });
+    \\  var Rb = mul(mul(rz(e.z), ry(e.y)), rx(e.x));
+    \\  var up = mv(Rb, [0,1,0]); // body-up in world; the rotors push ONLY along this
+    \\  var C = input(4), wr = input(5), wp = input(6), wy = input(7);
+    \\  var fly = cl((C / W - 0.5) / 0.5, 0, 1); // can it fly? (collective vs weight)
+    \\  // target lean from the imbalance, plus a station-keeping counter-lean. Roll
+    \\  // and pitch take opposite position signs because body-up tilts opposite ways
+    \\  // in X vs Z (up.x = -sin(roll), up.z = +sin(pitch)).
+    \\  var tRoll  = cl(KLEAN*wr + (KPOSP*p.x + KPOSD*v.x), -LEANMAX, LEANMAX);
+    \\  var tPitch = cl(KLEAN*wp - (KPOSP*p.z + KPOSD*v.z), -LEANMAX, LEANMAX);
+    \\  // collective body-up thrust, tilt-compensated so vertical lift ≈ C upright;
+    \\  // inverted (up.y<0) it points down and the craft falls. Plus aero drag.
+    \\  var upy = up[1];
+    \\  var thrust = cl((C - KDH*v.y) / (upy > 0.35 ? upy : 0.35), 0, MAXT);
+    \\  b.body.addForce({x:up[0]*thrust, y:up[1]*thrust, z:up[2]*thrust});
+    \\  b.body.addForce({x:-DRAGL*v.x, y:-DRAGL*v.y, z:-DRAGL*v.z});
+    \\  // attitude PD toward the target lean (world frame; stable near level), faded
+    \\  // by `fly` so a grounded craft has no control torque and gravity flattens it.
+    \\  var rollD  = KP*(tRoll  - e.z);
+    \\  var pitchD = KP*(tPitch - e.x);
+    \\  var yawD   = KYAW*(KYR*wy - w.y);
+    \\  b.body.addTorque({x:fly*pitchD - KD*w.x, y:fly*yawD - KD*w.y, z:fly*rollD - KD*w.z});
+    \\  // visual props: each hub rides the body pose and spins at its actual thrust
+    \\  // (collective + the controller's differential split).
+    \\  for (var i = 0; i < 4; i++) {
+    \\    var th = thrust*0.25 + fly*(rollD*SX[i] + pitchD*SZ[i] + yawD*SP[i])*0.4; if (th < 0) th = 0;
+    \\    var o = mv(Rb, OFF[i]);
+    \\    var h = world.get(HUBS[i]);
+    \\    if (h) { ANG[i]=(ANG[i]+DIR[i]*9.0*Math.sqrt(th)*dt)%6.2831853;
+    \\             h.transform.position={x:p.x+o[0], y:p.y+o[1], z:p.z+o[2]}; h.transform.rotation=zyx(mul(Rb,ry(ANG[i]))); }
+    \\  }
     \\});
 ;
+// The engine test drives a bare body named 'quad' with no hubs.
+const FLIGHT_TEST_PRELUDE = "var NAME='quad'; var HUBS=[];\n";
 
 fn droneScene() core.scene.Scene {
     return .{ .schema_version = 1, .name = "quad", .entities = &.{
@@ -664,47 +718,61 @@ fn runFlight(rt: *SceneRuntime, js: *Js, axes: [8]f32, steps: usize) void {
     _ = js;
 }
 
-test "flight controller: hovers, climbs, lands on the table, and banks without flipping" {
+test "real quad + flight controller: body-up thrust, falls flat with rotors off, hovers, banks on imbalance, re-levels" {
     var rt: SceneRuntime = undefined;
     try rt.init(std.heap.c_allocator, droneScene(), &.{});
     defer rt.deinit();
     var js: Js = undefined;
     try js.init(&rt);
     defer js.deinit();
-    try js.loadSkill(FLIGHT_CTRL);
+    try js.loadSkill(FLIGHT_TEST_PRELUDE ++ FLIGHT_CTRL);
 
     const q = rt.find("quad").?.body.?;
     const qe = rt.find("quad").?.entity;
+    const W: f32 = 0.3 * 9.81;
+    const eul = struct {
+        fn z(r: *SceneRuntime, ent: core.Entity) f32 {
+            return r.world.get(core.Transform, ent).?.rotation.toEulerZYX().z;
+        }
+        fn x(r: *SceneRuntime, ent: core.Entity) f32 {
+            return r.world.get(core.Transform, ent).?.rotation.toEulerZYX().x;
+        }
+    };
 
-    // 1. Hover at h=1.0: settles near 1.0, level, framed.
-    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 1.0 }, 360);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), rt.physics.bodyPosition(q)[1], 0.15);
-    {
-        const e = rt.world.get(core.Transform, qe).?.rotation.toEulerZYX();
-        try std.testing.expect(@abs(e.x) < 0.05 and @abs(e.z) < 0.05); // level
-        const p = rt.physics.bodyPosition(q);
-        try std.testing.expect(@abs(p[0]) < 0.3 and @abs(p[2]) < 0.3); // held in frame
-    }
+    // 1. Rotors OFF: gravity pulls it down and it lands FLAT on the table (no
+    //    control torque to hold a tilt — the controller fades out when it can't fly).
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 0 }, 360);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.09), rt.physics.bodyPosition(q)[1], 0.07);
+    try std.testing.expect(@abs(eul.z(&rt, qe)) < 0.1 and @abs(eul.x(&rt, qe)) < 0.1);
 
-    // 2. Climb to h=1.9.
-    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 1.9 }, 360);
-    try std.testing.expect(rt.physics.bodyPosition(q)[1] > 1.6);
+    // 2. Lift off, then balanced collective (= weight): hovers in the air, level.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, W * 1.5, 0, 0, 0 }, 200);
+    try std.testing.expect(rt.physics.bodyPosition(q)[1] > 1.2);
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, W, 0, 0, 0 }, 300);
+    try std.testing.expect(rt.physics.bodyPosition(q)[1] > 0.9); // still hovering
+    try std.testing.expect(@abs(eul.z(&rt, qe)) < 0.15); // level
 
-    // 3. Land: target below the table → descends and rests on it (top at y=0,
-    //    collider half-height 0.09), settled (no through-floor, near-zero vy).
-    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, -0.5 }, 600);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.09), rt.physics.bodyPosition(q)[1], 0.06);
-    try std.testing.expect(@abs(rt.physics.bodyVelocity(q)[1]) < 0.2);
+    // 3. Roll imbalance → a clearly visible +X-up bank (correct direction), and
+    //    because lift is BODY-UP the lean really pushes it −X (it flies that way).
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, W, 0.12, 0, 0 }, 90);
+    try std.testing.expect(eul.z(&rt, qe) > 0.15); // banked +X-up, visibly
+    try std.testing.expect(rt.physics.bodyVelocity(q)[0] < -0.05); // body-up lift → drifts −X
+    try std.testing.expect(@abs(rt.physics.bodyPosition(q)[0]) < 2.0); // still framed
 
-    // 4. Bank: command a roll target while hovering → it really tilts (toward the
-    //    target sign) and stays in frame without flipping over.
-    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0.4, 0, 1.0 }, 300);
-    {
-        const e = rt.world.get(core.Transform, qe).?.rotation.toEulerZYX();
-        try std.testing.expect(e.z > 0.12 and e.z < 0.9); // banked, not flipped
-        const p = rt.physics.bodyPosition(q);
-        try std.testing.expect(@abs(p[0]) < 1.5 and @abs(p[2]) < 1.5); // still framed
-    }
+    // 4. Sustained: keeps a steady (smaller) lean, drift bounded by drag +
+    //    station-keeping — it doesn't fly off or flip.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, W, 0.12, 0, 0 }, 210);
+    try std.testing.expect(eul.z(&rt, qe) > 0.05 and eul.z(&rt, qe) < 0.5);
+    try std.testing.expect(@abs(rt.physics.bodyPosition(q)[0]) < 4.0); // bounded, framed
+
+    // 5. Balance restored → re-levels and drifts back toward centre.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, W, 0, 0, 0 }, 300);
+    try std.testing.expect(@abs(eul.z(&rt, qe)) < 0.15); // re-levelled
+
+    // 6. Cut the rotors → falls and settles FLAT again (not stuck on its side).
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 0 }, 600);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.09), rt.physics.bodyPosition(q)[1], 0.1);
+    try std.testing.expect(@abs(eul.z(&rt, qe)) < 0.15); // flat
 }
 
 test "a skill reads an input axis, queues audio intents, and sets emissive" {
