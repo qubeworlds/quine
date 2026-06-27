@@ -43,6 +43,28 @@ const BuoyancyRig = struct {
     max_depth: f32,
 };
 
+/// Up to this many Jolt soft-body cloths per scene.
+const max_cloth = 4;
+
+/// A Jolt soft-body cloth bound to its dynamic render mesh. The soft body lives
+/// in Jolt (`body`, an `nx × nz` vertex grid); each tick the runtime reads its
+/// world-space vertices back and rewrites `verts` in place (then bumps the mesh
+/// so render re-streams it). `handle` (≥0) is a grid vertex the host lifts via
+/// input axes 0,1,2 (an offset off `handle_rest`) to peel/raise the sheet.
+const ClothRig = struct {
+    body: u32,
+    entity: core.Entity,
+    nx: u32,
+    nz: u32,
+    verts: []core.Vertex,
+    indices: []u32,
+    /// Scratch for the world-space vertex read-back (3 floats per vertex).
+    pos: []f32,
+    color: m.Vec4,
+    handle: i32,
+    handle_rest: [3]f32,
+};
+
 test {
     _ = @import("debris.zig");
 }
@@ -191,6 +213,10 @@ pub const SceneRuntime = struct {
     /// Floating bodies: a hull-point grid sampled against the surface each tick.
     buoyancy_rigs: [max_buoyancy]BuoyancyRig = undefined,
     buoyancy_rig_len: usize = 0,
+    /// Jolt soft-body cloths (the paper/fabric sheets): each owns a dynamic mesh
+    /// whose vertices are rewritten from the soft body's read-back each tick.
+    cloth_rigs: [max_cloth]ClothRig = undefined,
+    cloth_rig_len: usize = 0,
     arena: std.heap.ArenaAllocator = undefined,
     /// Cache of static meshes loaded from an asset (e.g. an `.obj`), keyed by
     /// source name → handle. A field of 2048 instances all referencing the same
@@ -504,6 +530,99 @@ pub const SceneRuntime = struct {
                 self.buoyancy_rig_len += 1;
                 self.bindings[i].sync_rotation = true; // so it visibly pitches/rolls
             }
+        }
+
+        // Jolt soft-body cloth (data opt-in): for each `kind:"cloth"` entity, build
+        // an nx×nz soft body in Jolt at the entity's position, register a dynamic
+        // render mesh, and remember the rig so update() can read the deformed
+        // vertices back each tick. The sheet is a REAL Jolt soft body (XPBD edges +
+        // faces) — not a faked wobble — so it drapes, folds, and self-collides like
+        // paper/fabric, and a pinned edge or a host-lifted handle vertex stays put.
+        for (scene_data.entities, 0..) |e, i| {
+            const g = e.geometry orelse continue;
+            if (g != .cloth) continue;
+            if (self.cloth_rig_len >= max_cloth) break;
+            const cl = g.cloth;
+            if (cl.nx < 2 or cl.nz < 2) continue;
+            const ent = self.bindings[i].entity;
+
+            // World origin: the entity's position, with the grid CENTERED on it (so
+            // authoring places the sheet by its middle, not a corner).
+            const tp = if (self.world.get(core.Transform, ent)) |t| t.position else m.Vec3.init(0, 0, 0);
+            const ox = tp.x - @as(f32, @floatFromInt(cl.nx - 1)) * cl.spacing * 0.5;
+            const oz = tp.z - @as(f32, @floatFromInt(cl.nz - 1)) * cl.spacing * 0.5;
+
+            // Pinned mask (inverse-mass 0 vertices) from the pin mode + the handle.
+            const vcount = core.cloth.gridVertexCount(cl.nx, cl.nz);
+            const pinned = try a.alloc(u8, vcount);
+            @memset(pinned, 0);
+            const idx = struct {
+                fn at(ii: u32, jj: u32, nx: u32) usize {
+                    return @as(usize, jj) * nx + ii;
+                }
+            }.at;
+            var jj: u32 = 0;
+            while (jj < cl.nz) : (jj += 1) {
+                var ii: u32 = 0;
+                while (ii < cl.nx) : (ii += 1) {
+                    const on = switch (cl.pin) {
+                        .none => false,
+                        .back_edge => jj == 0,
+                        .front_edge => jj == cl.nz - 1,
+                        .left_edge => ii == 0,
+                        .right_edge => ii == cl.nx - 1,
+                        .corners => (ii == 0 or ii == cl.nx - 1) and (jj == 0 or jj == cl.nz - 1),
+                    };
+                    if (on) pinned[idx(ii, jj, cl.nx)] = 1;
+                }
+            }
+            // The host-driven handle vertex is pinned too (kinematic; the host moves it).
+            var handle: i32 = -1;
+            var handle_rest: [3]f32 = .{ 0, 0, 0 };
+            if (cl.handle_i >= 0 and cl.handle_j >= 0 and
+                cl.handle_i < @as(i32, @intCast(cl.nx)) and cl.handle_j < @as(i32, @intCast(cl.nz)))
+            {
+                const hi: u32 = @intCast(cl.handle_i);
+                const hj: u32 = @intCast(cl.handle_j);
+                pinned[idx(hi, hj, cl.nx)] = 1;
+                handle = @intCast(idx(hi, hj, cl.nx));
+                handle_rest = .{ ox + @as(f32, @floatFromInt(hi)) * cl.spacing, tp.y, oz + @as(f32, @floatFromInt(hj)) * cl.spacing };
+            }
+
+            const body = self.physics.createCloth(cl.nx, cl.nz, cl.spacing, .{ ox, tp.y, oz }, pinned, cl.iterations);
+            if (body == 0xFFFFFFFF) continue;
+
+            const verts = try a.alloc(core.Vertex, vcount);
+            const indices = try a.alloc(u32, core.cloth.gridIndexCount(cl.nx, cl.nz));
+            const pos = try a.alloc(f32, vcount * 3);
+            // Seed the mesh from the soft body's initial (flat) world positions.
+            _ = self.physics.readCloth(body, pos);
+            const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+            const mesh = core.cloth.gridMesh(pos, cl.nx, cl.nz, verts, indices, color);
+            const handle_mesh = self.world.meshes.add(mesh);
+            self.world.set(core.Transform, ent, .{}); // verts are already world-space
+            self.world.set(core.MeshRef, ent, .{ .mesh = handle_mesh });
+            // Re-apply a scene base-colour texture now that the cloth has a MeshRef
+            // (the per-entity texture pass ran before this block existed the mesh).
+            if (e.material) |mat| if (mat.texture) |tname| {
+                if (self.textureSlot(a, assets, tname)) |slot| {
+                    if (self.world.get(core.MeshRef, ent)) |mr| mr.texture = slot;
+                }
+            };
+
+            self.cloth_rigs[self.cloth_rig_len] = .{
+                .body = body,
+                .entity = ent,
+                .nx = cl.nx,
+                .nz = cl.nz,
+                .verts = verts,
+                .indices = indices,
+                .pos = pos,
+                .color = color,
+                .handle = handle,
+                .handle_rest = handle_rest,
+            };
+            self.cloth_rig_len += 1;
         }
 
         self.physics.optimize();
@@ -1340,6 +1459,20 @@ pub const SceneRuntime = struct {
             for (self.buoyancy_rigs[0..self.buoyancy_rig_len]) |*rig| self.applyBuoyancy(&oc, rig, dt);
         }
 
+        // 2.7 Cloth handle: drive each cloth's host-controlled vertex BEFORE the
+        //     step (Jolt holds an inverse-mass-0 vertex wherever it's placed). The
+        //     host lifts/peels the sheet by writing input axes 0,1,2 — an offset
+        //     added to the handle's rest world position.
+        for (self.cloth_rigs[0..self.cloth_rig_len]) |*rig| {
+            if (rig.handle < 0) continue;
+            const target = [3]f32{
+                rig.handle_rest[0] + self.axis(0),
+                rig.handle_rest[1] + self.axis(1),
+                rig.handle_rest[2] + self.axis(2),
+            };
+            self.physics.setClothVertex(rig.body, @intCast(rig.handle), target);
+        }
+
         // 3. Advance physics.
         try self.physics.step(dt);
 
@@ -1372,6 +1505,15 @@ pub const SceneRuntime = struct {
             core.ocean.buildVerts(self.water_verts, oc.waves, oc.level, oc.extent, @max(oc.resolution, 1), vec4(oc.color), self.time);
             self.world.meshes.bump(h);
         };
+
+        // 6.5 Cloth: read each soft body's deformed world vertices back from Jolt
+        //      and rewrite its dynamic mesh in place (recomputing normals), then
+        //      bump the revision so render re-streams it next frame.
+        for (self.cloth_rigs[0..self.cloth_rig_len]) |*rig| {
+            _ = self.physics.readCloth(rig.body, rig.pos);
+            _ = core.cloth.gridMesh(rig.pos, rig.nx, rig.nz, rig.verts, rig.indices, rig.color);
+            if (self.world.get(core.MeshRef, rig.entity)) |mr| self.world.meshes.bump(mr.mesh);
+        }
 
         // 5. Bone-driven gaze: aim a rigged actor's `LeftEye`/`RightEye` bones
         //    along its (eased, by the gaze system) Gaze direction, so the
@@ -1980,6 +2122,70 @@ test "SceneRuntime loads physics bodies from scene data; the ball falls and rest
     try std.testing.expectEqual(core.sphereVertexCount(8, 12), mesh.vertices.len);
     // ground has no geometry -> no mesh.
     try std.testing.expect(rt.world.get(core.MeshRef, rt.find("ground").?.entity) == null);
+}
+
+test "SceneRuntime drapes a Jolt soft-body cloth: pinned edge holds, sheet falls, handle lifts" {
+    const nx: u32 = 10;
+    const nz: u32 = 10;
+    const sc = core.scene.Scene{
+        .schema_version = 1,
+        .name = "cloth",
+        .gravity = .{ 0, -9.81, 0 },
+        .entities = &.{
+            .{
+                .name = "sheet",
+                .transform = .{ .position = .{ 0, 1, 0 } },
+                .geometry = .{ .cloth = .{
+                    .nx = nx,
+                    .nz = nz,
+                    .spacing = 0.1,
+                    .iterations = 8,
+                    .pin = .back_edge, // hold the j=0 row
+                    .handle_i = @intCast(nx - 1),
+                    .handle_j = 0, // a corner of the pinned edge, host-lifted
+                } },
+                .material = .{ .color = .{ 0.9, 0.85, 0.7, 1 } },
+            },
+        },
+    };
+
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{});
+    defer rt.deinit();
+
+    // The cloth rig + its dynamic render mesh were built.
+    try std.testing.expectEqual(@as(usize, 1), rt.cloth_rig_len);
+    const sheet_ent = rt.find("sheet").?.entity;
+    const mref = rt.world.get(core.MeshRef, sheet_ent) orelse return error.NoMesh;
+    const mesh = rt.world.meshes.get(mref.mesh);
+    try std.testing.expectEqual(core.cloth.gridVertexCount(nx, nz), mesh.vertices.len);
+
+    // A free far-edge vertex (front edge, j = nz-1) and a pinned vertex (back edge).
+    const free_i: usize = 0;
+    const free_k = (@as(usize, nz - 1) * nx + free_i);
+    const pin_k = (@as(usize, 0) * nx + free_i);
+    const free_y0 = rt.cloth_rigs[0].pos[free_k * 3 + 1];
+    const pin_y0 = rt.cloth_rigs[0].pos[pin_k * 3 + 1];
+
+    // Drape under gravity (no host lift).
+    for (0..240) |_| try rt.update(1.0 / 60.0);
+
+    const free_y1 = rt.cloth_rigs[0].pos[free_k * 3 + 1];
+    const pin_y1 = rt.cloth_rigs[0].pos[pin_k * 3 + 1];
+    try std.testing.expect(free_y1 < free_y0 - 0.05); // free edge fell
+    try std.testing.expectApproxEqAbs(pin_y0, pin_y1, 0.02); // pinned edge held
+
+    // The dynamic mesh got the deformed vertices (its handle/back corner matches
+    // the read-back, and a fallen vertex is below where it started).
+    const mesh2 = rt.world.meshes.get(mref.mesh);
+    try std.testing.expect(mesh2.vertices[free_k].position.y < free_y0 - 0.05);
+
+    // Host lifts the handle vertex via axis 1 (world +Y): it follows.
+    const handle_k: usize = @intCast(rt.cloth_rigs[0].handle);
+    rt.setAxis(1, 0.5);
+    for (0..120) |_| try rt.update(1.0 / 60.0);
+    const handle_y = rt.cloth_rigs[0].pos[handle_k * 3 + 1];
+    try std.testing.expect(handle_y > pin_y0 + 0.3); // lifted ~0.5 above rest
 }
 
 test "SceneRuntime resolves and loads a glTF model from an asset" {

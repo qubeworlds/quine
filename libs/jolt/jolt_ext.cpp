@@ -107,16 +107,21 @@ uint32_t quine_softbody_read(void *in_sys, uint32_t in_id, float *out_xyz, uint3
 void quine_softbody_set_vertex(void *in_sys, uint32_t in_id, uint32_t vidx, float wx, float wy, float wz) {
     if (in_sys == nullptr) return;
     PhysicsSystem *sys = reinterpret_cast<PhysicsSystem *>(in_sys);
-    BodyLockWrite lock(sys->GetBodyLockInterface(), BodyID(in_id));
-    if (!lock.Succeeded()) return;
-    Body &body = lock.GetBody();
-    SoftBodyMotionProperties *mp = static_cast<SoftBodyMotionProperties *>(body.GetMotionProperties());
-    if (vidx >= (uint32_t)mp->GetVertices().size()) return;
-    RMat44 inv = body.GetCenterOfMassTransform().Inversed();
-    Vec3 local = Vec3(inv * RVec3(wx, wy, wz));
-    SoftBodyVertex &v = mp->GetVertex(vidx);
-    v.mPosition = local;
-    v.mVelocity = Vec3::sZero();
+    // Scope the body lock: ActivateBody() below takes the SAME per-body lock, and
+    // Jolt's deadlock guard traps if a same-priority lock is still held. So write
+    // the vertex under the lock, release it, THEN activate.
+    {
+        BodyLockWrite lock(sys->GetBodyLockInterface(), BodyID(in_id));
+        if (!lock.Succeeded()) return;
+        Body &body = lock.GetBody();
+        SoftBodyMotionProperties *mp = static_cast<SoftBodyMotionProperties *>(body.GetMotionProperties());
+        if (vidx >= (uint32_t)mp->GetVertices().size()) return;
+        RMat44 inv = body.GetCenterOfMassTransform().Inversed();
+        Vec3 local = Vec3(inv * RVec3(wx, wy, wz));
+        SoftBodyVertex &v = mp->GetVertex(vidx);
+        v.mPosition = local;
+        v.mVelocity = Vec3::sZero();
+    }
     sys->GetBodyInterface().ActivateBody(BodyID(in_id));
 }
 

@@ -67,6 +67,20 @@ pub const Geometry = union(enum) {
     /// `depth` the Z extrusion, `thickness` the stroke width. Rotate via the
     /// Transform to lay it on a face. Colour comes from the Material.
     text: struct { value: []const u8 = "", height: f32 = 0.2, depth: f32 = 0.02, thickness: f32 = 0.03 },
+    /// A simulated sheet (paper / fabric) — a REAL Jolt soft body. An `nx × nz`
+    /// grid, `spacing` apart in the XZ plane from the entity's Transform position;
+    /// `iterations` is the soft-body solver count (more = stiffer paper). `pin`
+    /// holds an edge/corners to the world; `handleI/handleJ` (≥0) is a grid vertex
+    /// the host lifts via input axes 0,1,2 (its world x,y,z) to peel the sheet.
+    cloth: struct {
+        nx: u32 = 16,
+        nz: u32 = 16,
+        spacing: f32 = 0.05,
+        iterations: u32 = 6,
+        pin: enum { none, back_edge, front_edge, left_edge, right_edge, corners } = .none,
+        handle_i: i32 = -1,
+        handle_j: i32 = -1,
+    },
     fedora: struct {
         /// When set, the hat is sized from this joint's head bounds and seated on
         /// it (the worn case). When null, it's a standalone mesh built straight
@@ -678,6 +692,19 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("height")) |x| g.text.height = try asF32(x);
         if (o.get("depth")) |x| g.text.depth = try asF32(x);
         if (o.get("thickness")) |x| g.text.thickness = try asF32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "cloth")) {
+        var g = Geometry{ .cloth = .{} };
+        if (o.get("nx")) |x| g.cloth.nx = try asU32(x);
+        if (o.get("nz")) |x| g.cloth.nz = try asU32(x);
+        if (o.get("spacing")) |x| g.cloth.spacing = try asF32(x);
+        if (o.get("iterations")) |x| g.cloth.iterations = try asU32(x);
+        if (o.get("handleI")) |x| g.cloth.handle_i = @intFromFloat(try asF32(x));
+        if (o.get("handleJ")) |x| g.cloth.handle_j = @intFromFloat(try asF32(x));
+        if (o.get("pin")) |x| {
+            const s = try asStr(x);
+            g.cloth.pin = if (std.mem.eql(u8, s, "backEdge")) .back_edge else if (std.mem.eql(u8, s, "frontEdge")) .front_edge else if (std.mem.eql(u8, s, "leftEdge")) .left_edge else if (std.mem.eql(u8, s, "rightEdge")) .right_edge else if (std.mem.eql(u8, s, "corners")) .corners else .none;
+        }
         return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
         var g = Geometry{ .fedora = .{} };

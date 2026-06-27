@@ -210,8 +210,10 @@ test {
 /// and the visual water grid. See `ocean.zig`.
 pub const ocean = @import("ocean.zig");
 
-/// Cloth / sheet simulation (Verlet + distance constraints). See `cloth.zig`.
+/// Cloth / sheet: a headless reference solver (`Cloth`) plus the grid-mesh writer
+/// (`cloth.gridMesh`) the engine uses to render a Jolt soft-body sheet's vertices.
 pub const Cloth = @import("cloth.zig").Cloth;
+pub const cloth = @import("cloth.zig");
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.

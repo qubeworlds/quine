@@ -207,6 +207,65 @@ fn buildConstraints(a: std.mem.Allocator, nx: u32, nz: u32, sp: f32) ![]Constrai
     return out[0..w];
 }
 
+// --- render mesh from arbitrary vertex positions ----------------------------
+// The engine's cloth demo simulates with REAL Jolt soft bodies (modules/physics
+// + libs/jolt/jolt_ext.cpp); this turns the per-tick world-space vertex positions
+// Jolt reports (3 floats each, row-major nx×nz) into the same deforming grid mesh.
+// (The `Cloth` solver above stays as a headless, Jolt-free reference for `core`.)
+
+pub fn gridVertexCount(nx: u32, nz: u32) usize {
+    return @as(usize, nx) * nz;
+}
+pub fn gridIndexCount(nx: u32, nz: u32) usize {
+    return @as(usize, nx - 1) * (nz - 1) * 6;
+}
+
+inline fn posAt(p: []const f32, i: u32, j: u32, nx: u32) Vec3 {
+    const k = (@as(usize, j) * nx + i) * 3;
+    return Vec3.init(p[k], p[k + 1], p[k + 2]);
+}
+
+/// Build the grid mesh from flat world-space positions: smooth per-vertex normals
+/// (central-difference grid tangents) + UVs, two triangles per quad, `dynamic` so
+/// render streams it in place each tick.
+pub fn gridMesh(pos: []const f32, nx: u32, nz: u32, verts: []Vertex, indices: []u32, color: m.Vec4) assets.MeshData {
+    var j: u32 = 0;
+    while (j < nz) : (j += 1) {
+        var i: u32 = 0;
+        while (i < nx) : (i += 1) {
+            const k = @as(usize, j) * nx + i;
+            const dx = posAt(pos, if (i + 1 < nx) i + 1 else i, j, nx).sub(posAt(pos, if (i > 0) i - 1 else i, j, nx));
+            const dz = posAt(pos, i, if (j + 1 < nz) j + 1 else j, nx).sub(posAt(pos, i, if (j > 0) j - 1 else j, nx));
+            var nrm = dz.cross(dx);
+            const nl = nrm.length();
+            nrm = if (nl > 1e-8) nrm.scale(1.0 / nl) else Vec3.init(0, 1, 0);
+            verts[k] = .{ .position = posAt(pos, i, j, nx), .normal = nrm, .color = color, .uv = .{
+                @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(nx - 1)),
+                @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(nz - 1)),
+            } };
+        }
+    }
+    var ii: usize = 0;
+    j = 0;
+    while (j + 1 < nz) : (j += 1) {
+        var i: u32 = 0;
+        while (i + 1 < nx) : (i += 1) {
+            const a: u32 = @intCast(@as(usize, j) * nx + i);
+            const b: u32 = @intCast(@as(usize, j) * nx + i + 1);
+            const c: u32 = @intCast(@as(usize, j + 1) * nx + i);
+            const e: u32 = @intCast(@as(usize, j + 1) * nx + i + 1);
+            indices[ii + 0] = a;
+            indices[ii + 1] = c;
+            indices[ii + 2] = b;
+            indices[ii + 3] = b;
+            indices[ii + 4] = c;
+            indices[ii + 5] = e;
+            ii += 6;
+        }
+    }
+    return .{ .vertices = verts, .indices = indices[0..ii], .dynamic = true };
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
