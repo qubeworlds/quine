@@ -52,6 +52,10 @@ pub const Geometry = union(enum) {
     capsule: struct { radius: f32 = 0.3, height: f32 = 0.6, segments: u32 = 24, rings: u32 = 8 },
     /// Hollow tube/pipe about +Y: `inner_radius`..`outer_radius`, `height` tall.
     tube: struct { inner_radius: f32 = 0.3, outer_radius: f32 = 0.5, height: f32 = 1, segments: u32 = 24 },
+    /// A helical spring about +Y: a `wire`-radius coil of `radius` making `coils`
+    /// turns over `height`, centred at the origin. `segments` = cross-section
+    /// resolution, `coil_segments` = path samples per turn. Scale Y to compress it.
+    spring: struct { radius: f32 = 0.3, wire: f32 = 0.05, coils: f32 = 5, height: f32 = 1, segments: u32 = 12, coil_segments: u32 = 24 },
     /// Right-triangular ramp: half-extents `half`; rises along -Z, extruded in X.
     wedge: struct { half: Vec3 = .{ 0.5, 0.5, 0.5 } },
     /// N-gon prism about +Y (flat-shaded sides): `radius`, `height`, `sides`.
@@ -662,6 +666,15 @@ fn parseGeometry(v: Value) !Geometry {
         if (o.get("outerRadius")) |x| g.tube.outer_radius = try asF32(x);
         if (o.get("height")) |x| g.tube.height = try asF32(x);
         if (o.get("segments")) |x| g.tube.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "spring")) {
+        var g = Geometry{ .spring = .{} };
+        if (o.get("radius")) |x| g.spring.radius = try asF32(x);
+        if (o.get("wire")) |x| g.spring.wire = try asF32(x);
+        if (o.get("coils")) |x| g.spring.coils = try asF32(x);
+        if (o.get("height")) |x| g.spring.height = try asF32(x);
+        if (o.get("segments")) |x| g.spring.segments = try asU32(x);
+        if (o.get("coilSegments")) |x| g.spring.coil_segments = try asU32(x);
         return g;
     } else if (std.mem.eql(u8, kind, "wedge")) {
         var g = Geometry{ .wedge = .{} };

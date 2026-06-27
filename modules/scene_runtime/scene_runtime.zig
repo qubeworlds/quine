@@ -1292,6 +1292,13 @@ pub const SceneRuntime = struct {
                 const mesh = core.tube(tb.inner_radius, tb.outer_radius, tb.height, tb.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
+            .spring => |sp| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.springVertexCount(sp.coils, sp.coil_segments, sp.segments));
+                const indices = try a.alloc(u32, core.springIndexCount(sp.coils, sp.coil_segments, sp.segments));
+                const mesh = core.spring(sp.radius, sp.wire, sp.coils, sp.height, sp.segments, sp.coil_segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
             .wedge => |wg| {
                 const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
                 const verts = try a.alloc(core.Vertex, core.wedgeVertexCount());

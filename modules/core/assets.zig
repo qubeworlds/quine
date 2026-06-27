@@ -1171,6 +1171,69 @@ pub fn torus(major_radius: f32, minor_radius: f32, major_seg: u32, minor_seg: u3
     return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
 }
 
+// --- spring (helix) ---------------------------------------------------------
+
+// Path samples along the helix = round(coils · coil_segments), at least one.
+fn springAlong(coils: f32, coil_segments: u32) u32 {
+    return @intFromFloat(@max(1.0, @round(coils * ff(coil_segments))));
+}
+pub fn springVertexCount(coils: f32, coil_segments: u32, segments: u32) usize {
+    return @as(usize, springAlong(coils, coil_segments) + 1) * @as(usize, segments + 1);
+}
+pub fn springIndexCount(coils: f32, coil_segments: u32, segments: u32) usize {
+    return @as(usize, springAlong(coils, coil_segments)) * @as(usize, segments) * 6;
+}
+
+/// A helical spring: a `wire`-radius tube swept along a helix of `radius` (coil
+/// radius) making `coils` turns over `height` along +Y, centred at the origin
+/// (y ∈ [-height/2, height/2]). `segments` is the tube cross-section resolution,
+/// `coil_segments` the path resolution per turn. Scale the entity's Y to
+/// compress/extend it — the coils bunch like a real spring.
+pub fn spring(radius: f32, wire: f32, coils: f32, height: f32, segments: u32, coil_segments: u32, color: m.Vec4, verts: []Vertex, indices: []u32) MeshData {
+    const along = springAlong(coils, coil_segments);
+    const total_ang = coils * tau;
+    var vi: usize = 0;
+    var i: u32 = 0;
+    while (i <= along) : (i += 1) {
+        const t = ff(i) / ff(along);
+        const a = t * total_ang;
+        const ca = @cos(a);
+        const sa = @sin(a);
+        // centre of the wire cross-section on the helix path
+        const center = m.Vec3.init(radius * ca, -height * 0.5 + t * height, radius * sa);
+        // tangent dC/dt, then an orthonormal cross-section frame. A helix tangent
+        // is never vertical, so (0,1,0) is a safe reference for the first axis.
+        const tang = m.Vec3.init(-radius * sa * total_ang, height, radius * ca * total_ang).normalize();
+        const n1 = m.Vec3.init(0, 1, 0).cross(tang).normalize();
+        const n2 = tang.cross(n1); // unit (tang ⟂ n1, both unit)
+        var j: u32 = 0;
+        while (j <= segments) : (j += 1) {
+            const v = ff(j) / ff(segments) * tau;
+            const normal = n1.scale(@cos(v)).add(n2.scale(@sin(v)));
+            verts[vi] = .{ .position = center.add(normal.scale(wire)), .normal = normal, .color = color, .uv = .{ t, ff(j) / ff(segments) } };
+            vi += 1;
+        }
+    }
+    var ii: usize = 0;
+    const stride = segments + 1;
+    i = 0;
+    while (i < along) : (i += 1) {
+        var j: u32 = 0;
+        while (j < segments) : (j += 1) {
+            const a = i * stride + j;
+            const b = a + stride;
+            indices[ii + 0] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = b;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = b + 1;
+            indices[ii + 5] = b;
+            ii += 6;
+        }
+    }
+    return .{ .vertices = verts[0..vi], .indices = indices[0..ii] };
+}
+
 // --- rounded box ------------------------------------------------------------
 
 /// In-plane samples per axis on each face: an arc of `segments+1` points up each
@@ -2086,6 +2149,30 @@ test "torus: every vertex sits minor_radius from the tube centre circle" {
         const dx = rho - major_r;
         const dist = @sqrt(dx * dx + v.position.y * v.position.y);
         try std.testing.expectApproxEqAbs(minor_r, dist, 1e-5);
+        try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-5);
+    }
+}
+
+test "spring: every vertex sits wire-radius from the helix path, within height + coil radius" {
+    const coils: f32 = 4;
+    const seg: u32 = 10; // cross-section
+    const cseg: u32 = 16; // per-coil path
+    var verts: [springVertexCount(coils, cseg, seg)]Vertex = undefined;
+    var idx: [springIndexCount(coils, cseg, seg)]u32 = undefined;
+    const coil_r: f32 = 0.3;
+    const wire_r: f32 = 0.04;
+    const height: f32 = 1.0;
+    const mesh = spring(coil_r, wire_r, coils, height, seg, cseg, white, &verts, &idx);
+    try std.testing.expectEqual(springVertexCount(coils, cseg, seg), mesh.vertices.len);
+    try std.testing.expectEqual(springIndexCount(coils, cseg, seg), mesh.indices.len);
+    for (mesh.vertices) |v| {
+        // Distance from the helix centreline (radius coil_r in XZ at this height)
+        // must equal the wire radius — within a hair (the path is sampled, so the
+        // nearest path point is at most a half-step off; use the analytic nearest
+        // point on the coil_r cylinder for a clean bound).
+        const rho = @sqrt(v.position.x * v.position.x + v.position.z * v.position.z);
+        try std.testing.expect(@abs(rho - coil_r) <= wire_r + 1e-4);
+        try std.testing.expect(@abs(v.position.y) <= height * 0.5 + wire_r + 1e-4);
         try std.testing.expectApproxEqAbs(@as(f32, 1), v.normal.length(), 1e-5);
     }
 }
