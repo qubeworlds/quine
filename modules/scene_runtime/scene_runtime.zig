@@ -1064,6 +1064,97 @@ pub const SceneRuntime = struct {
                 const mesh = core.cone(cn.radius, cn.height, cn.segments, color, verts, indices);
                 self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
             },
+            .plane => |p| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.planeVertexCount());
+                const indices = try a.alloc(u32, core.planeIndexCount());
+                const mesh = core.plane(p.size_x, p.size_z, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .grid => |gr| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.gridVertexCount(gr.nx, gr.nz));
+                const indices = try a.alloc(u32, core.gridIndexCount(gr.nx, gr.nz));
+                const mesh = core.grid(gr.size_x, gr.size_z, gr.nx, gr.nz, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .box => |bx| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.boxVertexCount());
+                const indices = try a.alloc(u32, core.boxIndexCount());
+                const mesh = core.box(m.Vec3.init(bx.half[0], bx.half[1], bx.half[2]), color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .cylinder => |cy| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.cylinderVertexCount(cy.segments));
+                const indices = try a.alloc(u32, core.cylinderIndexCount(cy.segments));
+                const mesh = core.cylinder(cy.bottom_radius, cy.top_radius, cy.height, cy.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .torus => |to| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.torusVertexCount(to.major_segments, to.minor_segments));
+                const indices = try a.alloc(u32, core.torusIndexCount(to.major_segments, to.minor_segments));
+                const mesh = core.torus(to.major_radius, to.minor_radius, to.major_segments, to.minor_segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .rounded_box => |rb| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.roundedBoxVertexCount(rb.segments));
+                const indices = try a.alloc(u32, core.roundedBoxIndexCount(rb.segments));
+                const mesh = core.roundedBox(m.Vec3.init(rb.half[0], rb.half[1], rb.half[2]), rb.radius, rb.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .ico_sphere => |is| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.icoSphereVertexCount(is.subdivisions));
+                const indices = try a.alloc(u32, core.icoSphereIndexCount(is.subdivisions));
+                const mesh = core.icoSphere(is.radius, is.subdivisions, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .capsule => |cp| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.capsuleVertexCount(cp.rings, cp.segments));
+                const indices = try a.alloc(u32, core.capsuleIndexCount(cp.rings, cp.segments));
+                const mesh = core.capsule(cp.radius, cp.height, cp.segments, cp.rings, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .tube => |tb| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.tubeVertexCount(tb.segments));
+                const indices = try a.alloc(u32, core.tubeIndexCount(tb.segments));
+                const mesh = core.tube(tb.inner_radius, tb.outer_radius, tb.height, tb.segments, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .wedge => |wg| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.wedgeVertexCount());
+                const indices = try a.alloc(u32, core.wedgeIndexCount());
+                const mesh = core.wedge(m.Vec3.init(wg.half[0], wg.half[1], wg.half[2]), color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .prism => |pr| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.prismVertexCount(pr.sides));
+                const indices = try a.alloc(u32, core.prismIndexCount(pr.sides));
+                const mesh = core.prism(pr.radius, pr.height, pr.sides, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .pyramid => |py| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.pyramidVertexCount());
+                const indices = try a.alloc(u32, core.pyramidIndexCount());
+                const mesh = core.pyramid(m.Vec3.init(py.half[0], py.half[1], py.half[2]), color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
+            .gear => |ge| {
+                const color = m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
+                const verts = try a.alloc(core.Vertex, core.gearVertexCount(ge.teeth));
+                const indices = try a.alloc(u32, core.gearIndexCount(ge.teeth));
+                const mesh = core.gear(ge.module, ge.teeth, ge.pressure_angle, ge.thickness, ge.bore_radius, color, verts, indices);
+                self.world.set(core.MeshRef, ent, .{ .mesh = self.world.meshes.add(mesh) });
+            },
             .fedora => |fed| {
                 // Standalone fedora (no head to fit): build the same snap-brim
                 // shape the worn hat uses (domed crown + drooping snap brim), just

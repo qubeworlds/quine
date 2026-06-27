@@ -34,6 +34,34 @@ pub const Geometry = union(enum) {
     gltf: struct { source: []const u8, height_meters: ?f32 = null },
     sphere: struct { radius: f32, rings: u32 = 16, segments: u32 = 24 },
     cone: struct { radius: f32, height: f32, segments: u32 = 16 },
+    // --- Blender-level primitives (see core/assets.zig for orientation). ---
+    plane: struct { size_x: f32 = 1, size_z: f32 = 1 },
+    grid: struct { size_x: f32 = 1, size_z: f32 = 1, nx: u32 = 8, nz: u32 = 8 },
+    box: struct { half: Vec3 = .{ 0.5, 0.5, 0.5 } },
+    /// Tapered cylinder about +Y: cylinder (equal radii), cone (`top_radius`=0)
+    /// or truncated cone. Centred, height along +Y.
+    cylinder: struct { bottom_radius: f32 = 0.5, top_radius: f32 = 0.5, height: f32 = 1, segments: u32 = 24 },
+    torus: struct { major_radius: f32 = 0.5, minor_radius: f32 = 0.2, major_segments: u32 = 24, minor_segments: u32 = 16 },
+    /// A rounded box: half-extents `half`, corner `radius`, `segments` of arc
+    /// per quarter-corner. radius≈0 degrades to a sharp box.
+    rounded_box: struct { half: Vec3 = .{ 0.5, 0.5, 0.5 }, radius: f32 = 0.1, segments: u32 = 4 },
+    /// Icosphere: a geodesic sphere with near-uniform triangles (no pole pinch).
+    ico_sphere: struct { radius: f32 = 0.5, subdivisions: u32 = 2 },
+    /// Capsule about +Y: a `height`-long cylinder of `radius` capped by two
+    /// hemispheres (total height = height + 2·radius).
+    capsule: struct { radius: f32 = 0.3, height: f32 = 0.6, segments: u32 = 24, rings: u32 = 8 },
+    /// Hollow tube/pipe about +Y: `inner_radius`..`outer_radius`, `height` tall.
+    tube: struct { inner_radius: f32 = 0.3, outer_radius: f32 = 0.5, height: f32 = 1, segments: u32 = 24 },
+    /// Right-triangular ramp: half-extents `half`; rises along -Z, extruded in X.
+    wedge: struct { half: Vec3 = .{ 0.5, 0.5, 0.5 } },
+    /// N-gon prism about +Y (flat-shaded sides): `radius`, `height`, `sides`.
+    prism: struct { radius: f32 = 0.5, height: f32 = 1, sides: u32 = 6 },
+    /// Rectangular pyramid: half-extents `half`, apex at +Y.
+    pyramid: struct { half: Vec3 = .{ 0.5, 0.5, 0.5 } },
+    /// Involute spur gear about +Y. `module`·`teeth` set the size; pitch radius
+    /// = module·teeth/2. `pressure_angle` in radians (20°≈0.349). `bore_radius`
+    /// 0 = solid. Matches the gear vocabulary the solver meshes on.
+    gear: struct { module: f32 = 0.2, teeth: u32 = 12, pressure_angle: f32 = 0.349066, thickness: f32 = 0.3, bore_radius: f32 = 0 },
     fedora: struct {
         /// When set, the hat is sized from this joint's head bounds and seated on
         /// it (the worn case). When null, it's a standalone mesh built straight
@@ -546,6 +574,87 @@ fn parseGeometry(v: Value) !Geometry {
             .height = try asF32(o.get("height") orelse return error.InvalidScene),
         } };
         if (o.get("segments")) |x| g.cone.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "plane")) {
+        var g = Geometry{ .plane = .{} };
+        if (o.get("sizeX")) |x| g.plane.size_x = try asF32(x);
+        if (o.get("sizeZ")) |x| g.plane.size_z = try asF32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "grid")) {
+        var g = Geometry{ .grid = .{} };
+        if (o.get("sizeX")) |x| g.grid.size_x = try asF32(x);
+        if (o.get("sizeZ")) |x| g.grid.size_z = try asF32(x);
+        if (o.get("nx")) |x| g.grid.nx = try asU32(x);
+        if (o.get("nz")) |x| g.grid.nz = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "box")) {
+        var g = Geometry{ .box = .{} };
+        if (o.get("half")) |x| g.box.half = try asVec3(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "cylinder")) {
+        var g = Geometry{ .cylinder = .{} };
+        if (o.get("bottomRadius")) |x| g.cylinder.bottom_radius = try asF32(x);
+        if (o.get("topRadius")) |x| g.cylinder.top_radius = try asF32(x);
+        if (o.get("radius")) |x| { // convenience: a plain cylinder, equal radii
+            g.cylinder.bottom_radius = try asF32(x);
+            g.cylinder.top_radius = try asF32(x);
+        }
+        if (o.get("height")) |x| g.cylinder.height = try asF32(x);
+        if (o.get("segments")) |x| g.cylinder.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "torus")) {
+        var g = Geometry{ .torus = .{} };
+        if (o.get("majorRadius")) |x| g.torus.major_radius = try asF32(x);
+        if (o.get("minorRadius")) |x| g.torus.minor_radius = try asF32(x);
+        if (o.get("majorSegments")) |x| g.torus.major_segments = try asU32(x);
+        if (o.get("minorSegments")) |x| g.torus.minor_segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "roundedBox")) {
+        var g = Geometry{ .rounded_box = .{} };
+        if (o.get("half")) |x| g.rounded_box.half = try asVec3(x);
+        if (o.get("radius")) |x| g.rounded_box.radius = try asF32(x);
+        if (o.get("segments")) |x| g.rounded_box.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "icoSphere")) {
+        var g = Geometry{ .ico_sphere = .{} };
+        if (o.get("radius")) |x| g.ico_sphere.radius = try asF32(x);
+        if (o.get("subdivisions")) |x| g.ico_sphere.subdivisions = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "capsule")) {
+        var g = Geometry{ .capsule = .{} };
+        if (o.get("radius")) |x| g.capsule.radius = try asF32(x);
+        if (o.get("height")) |x| g.capsule.height = try asF32(x);
+        if (o.get("segments")) |x| g.capsule.segments = try asU32(x);
+        if (o.get("rings")) |x| g.capsule.rings = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "tube")) {
+        var g = Geometry{ .tube = .{} };
+        if (o.get("innerRadius")) |x| g.tube.inner_radius = try asF32(x);
+        if (o.get("outerRadius")) |x| g.tube.outer_radius = try asF32(x);
+        if (o.get("height")) |x| g.tube.height = try asF32(x);
+        if (o.get("segments")) |x| g.tube.segments = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "wedge")) {
+        var g = Geometry{ .wedge = .{} };
+        if (o.get("half")) |x| g.wedge.half = try asVec3(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "prism")) {
+        var g = Geometry{ .prism = .{} };
+        if (o.get("radius")) |x| g.prism.radius = try asF32(x);
+        if (o.get("height")) |x| g.prism.height = try asF32(x);
+        if (o.get("sides")) |x| g.prism.sides = try asU32(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "pyramid")) {
+        var g = Geometry{ .pyramid = .{} };
+        if (o.get("half")) |x| g.pyramid.half = try asVec3(x);
+        return g;
+    } else if (std.mem.eql(u8, kind, "gear")) {
+        var g = Geometry{ .gear = .{} };
+        if (o.get("module")) |x| g.gear.module = try asF32(x);
+        if (o.get("teeth")) |x| g.gear.teeth = try asU32(x);
+        if (o.get("pressureAngle")) |x| g.gear.pressure_angle = try asF32(x);
+        if (o.get("thickness")) |x| g.gear.thickness = try asF32(x);
+        if (o.get("boreRadius")) |x| g.gear.bore_radius = try asF32(x);
         return g;
     } else if (std.mem.eql(u8, kind, "fedora")) {
         var g = Geometry{ .fedora = .{} };
