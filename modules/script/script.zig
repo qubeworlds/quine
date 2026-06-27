@@ -124,6 +124,10 @@ pub const Js = struct {
         self.def("__quine_bodyPos", jsBodyPos, 2);
         self.def("__quine_bodyVel", jsBodyVel, 2);
         self.def("__quine_setBodyVel", jsSetBodyVel, 4);
+        self.def("__quine_bodyAngVel", jsBodyAngVel, 2);
+        self.def("__quine_addForce", jsAddForce, 4);
+        self.def("__quine_addForceAtPoint", jsAddForceAtPoint, 7);
+        self.def("__quine_addTorque", jsAddTorque, 4);
         self.def("__quine_transformPos", jsTransformPos, 2);
         self.def("__quine_setTransformPos", jsSetTransformPos, 4);
         self.def("__quine_transformRot", jsTransformRot, 2);
@@ -267,6 +271,52 @@ fn jsSetBodyVel(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]
     const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
     const body = b.body orelse return undef(ctx);
     js.scene.physics.setBodyVelocity(body, .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) });
+    return undef(ctx);
+}
+fn jsBodyAngVel(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 2) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    return c.JS_NewFloat64(ctx, js.scene.physics.bodyAngularVelocity(body)[argAxis(ctx, argv[1])]);
+}
+/// `__quine_addForce(name, fx, fy, fz)` — accumulate a world-space force through
+/// the body's centre of mass for the next physics step (no torque).
+fn jsAddForce(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    js.scene.physics.addForce(body, .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) });
+    return undef(ctx);
+}
+/// `__quine_addForceAtPoint(name, fx, fy, fz, px, py, pz)` — accumulate a force at
+/// a world-space point; an off-centre point generates torque (the quad's rotor
+/// thrusts tilt the body). Applied for the next step (Jolt resets it after).
+fn jsAddForceAtPoint(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 7) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    js.scene.physics.addForceAtPoint(
+        body,
+        .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) },
+        .{ argF32(ctx, argv[4]), argF32(ctx, argv[5]), argF32(ctx, argv[6]) },
+    );
+    return undef(ctx);
+}
+/// `__quine_addTorque(name, tx, ty, tz)` — accumulate a world-space torque for the
+/// next step (Jolt resets it after). A flight controller's attitude/yaw assist.
+fn jsAddTorque(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
+    _ = this_val;
+    if (argc < 4) return undef(ctx);
+    const js = ctxJs(ctx);
+    const b = argBinding(js, ctx, argv[0]) orelse return undef(ctx);
+    const body = b.body orelse return undef(ctx);
+    js.scene.physics.addTorque(body, .{ argF32(ctx, argv[1]), argF32(ctx, argv[2]), argF32(ctx, argv[3]) });
     return undef(ctx);
 }
 fn jsTransformPos(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -545,6 +595,116 @@ test "the interpreted keepie-uppie.js skill heads the ball back up repeatedly" {
     // The interpreted skill drives the actor to head the ball back up many times
     // — the same keepie-uppie the native stand-in produces, now from a JS script.
     try std.testing.expect(bounces >= 3);
+}
+
+test "a skill applies real forces: thrust beats gravity, an off-centre force tilts the box, attitude syncs to Transform" {
+    const scn = core.scene.Scene{ .schema_version = 1, .name = "force", .entities = &.{
+        .{ .name = "ground", .transform = .{ .position = .{ 0, -1, 0 } }, .body = .{ .motion = .static, .collider = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } } } },
+        .{ .name = "quad", .transform = .{ .position = .{ 0, 2, 0 } }, .body = .{ .motion = .dynamic, .collider = .{ .box = .{ .half_extents = .{ 0.5, 0.1, 0.5 } } }, .mass = 1.0 } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, scn, &.{});
+    defer rt.deinit();
+
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    // 20 N up (> 9.81 N weight) at a point +0.4 m in x → the box rises against
+    // gravity AND the off-centre force spins it about +Z (r×F = (0.4,0,0)×(0,20,0)).
+    try js.loadSkill("onPreStep(function(dt){ world.get('quad').body.addForceAtPoint({x:0,y:20,z:0},{x:0.4,y:0,z:0}); });");
+
+    const q = rt.find("quad").?.body.?;
+    const y0 = rt.physics.bodyPosition(q)[1];
+    for (0..30) |_| try rt.update(1.0 / 60.0);
+
+    try std.testing.expect(rt.physics.bodyPosition(q)[1] > y0); // thrust beat gravity
+    try std.testing.expect(@abs(rt.physics.bodyAngularVelocity(q)[2]) > 0.01); // off-centre force tilted it about Z
+    // And the dynamic box's attitude is synced into the ECS Transform (sync_rotation),
+    // so render + the hub-placing skill can read the bank.
+    const quad_ent = rt.find("quad").?.entity;
+    const tilt = rt.world.get(core.Transform, quad_ent).?.rotation.toEulerZYX();
+    try std.testing.expect(@abs(tilt.z) > 1e-3);
+}
+
+// A self-stabilising flight controller, written exactly as the editor's drone
+// skill drives the body: altitude-hold (thrust vs gravity, clamped ≥0) + attitude
+// PD (torque toward a target tilt) + horizontal position-hold. Tuned HERE,
+// deterministically, then the identical JS ships in the editor. Inputs:
+//   4 pitchTarget  5 rollTarget  6 yawRateTarget  7 targetHeight
+const FLIGHT_CTRL =
+    \\var M = 0.3, G = 9.81, W = M * G;
+    \\var KPH = 7.0, KDH = 4.5, THRMAX = 14.0; // altitude hold
+    \\var KPA = 0.9, KDA = 0.30;               // attitude hold (torque)
+    \\var KYAW = 0.18;                          // yaw-rate hold
+    \\var KPP = 2.2, KDP = 2.4;                 // horizontal position hold
+    \\onPreStep(function (dt) {
+    \\  var b = world.get('quad');
+    \\  var p = b.body.position, v = b.body.velocity, w = b.body.angularVelocity;
+    \\  var e = b.transform.rotation;
+    \\  var thrust = W + KPH * (input(7) - p.y) - KDH * v.y;
+    \\  if (thrust < 0) thrust = 0; else if (thrust > THRMAX) thrust = THRMAX;
+    \\  b.body.addForce({ x: 0, y: thrust, z: 0 });
+    \\  b.body.addTorque({ x: KPA * (input(4) - e.x) - KDA * w.x,
+    \\                     y: KYAW * (input(6) - w.y),
+    \\                     z: KPA * (input(5) - e.z) - KDA * w.z });
+    \\  b.body.addForce({ x: -KPP * p.x - KDP * v.x, y: 0, z: -KPP * p.z - KDP * v.z });
+    \\});
+;
+
+fn droneScene() core.scene.Scene {
+    return .{ .schema_version = 1, .name = "quad", .entities = &.{
+        .{ .name = "floor", .transform = .{ .position = .{ 0, -1, 0 } }, .body = .{ .motion = .static, .collider = .{ .box = .{ .half_extents = .{ 50, 1, 50 } } } } },
+        .{ .name = "quad", .transform = .{ .position = .{ 0, 1, 0 } }, .body = .{ .motion = .dynamic, .collider = .{ .box = .{ .half_extents = .{ 1.3, 0.09, 1.3 } } }, .mass = 0.3 } },
+    } };
+}
+
+fn runFlight(rt: *SceneRuntime, js: *Js, axes: [8]f32, steps: usize) void {
+    for (axes, 0..) |val, i| rt.setAxis(@intCast(i), val);
+    for (0..steps) |_| rt.update(1.0 / 60.0) catch unreachable;
+    _ = js;
+}
+
+test "flight controller: hovers, climbs, lands on the table, and banks without flipping" {
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, droneScene(), &.{});
+    defer rt.deinit();
+    var js: Js = undefined;
+    try js.init(&rt);
+    defer js.deinit();
+    try js.loadSkill(FLIGHT_CTRL);
+
+    const q = rt.find("quad").?.body.?;
+    const qe = rt.find("quad").?.entity;
+
+    // 1. Hover at h=1.0: settles near 1.0, level, framed.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 1.0 }, 360);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), rt.physics.bodyPosition(q)[1], 0.15);
+    {
+        const e = rt.world.get(core.Transform, qe).?.rotation.toEulerZYX();
+        try std.testing.expect(@abs(e.x) < 0.05 and @abs(e.z) < 0.05); // level
+        const p = rt.physics.bodyPosition(q);
+        try std.testing.expect(@abs(p[0]) < 0.3 and @abs(p[2]) < 0.3); // held in frame
+    }
+
+    // 2. Climb to h=1.9.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, 1.9 }, 360);
+    try std.testing.expect(rt.physics.bodyPosition(q)[1] > 1.6);
+
+    // 3. Land: target below the table → descends and rests on it (top at y=0,
+    //    collider half-height 0.09), settled (no through-floor, near-zero vy).
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0, 0, -0.5 }, 600);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.09), rt.physics.bodyPosition(q)[1], 0.06);
+    try std.testing.expect(@abs(rt.physics.bodyVelocity(q)[1]) < 0.2);
+
+    // 4. Bank: command a roll target while hovering → it really tilts (toward the
+    //    target sign) and stays in frame without flipping over.
+    runFlight(&rt, &js, .{ 0, 0, 0, 0, 0, 0.4, 0, 1.0 }, 300);
+    {
+        const e = rt.world.get(core.Transform, qe).?.rotation.toEulerZYX();
+        try std.testing.expect(e.z > 0.12 and e.z < 0.9); // banked, not flipped
+        const p = rt.physics.bodyPosition(q);
+        try std.testing.expect(@abs(p[0]) < 1.5 and @abs(p[2]) < 1.5); // still framed
+    }
 }
 
 test "a skill reads an input axis, queues audio intents, and sets emissive" {

@@ -40,8 +40,25 @@ var world = (function () {
           set velocity(v) {
             __quine_setBodyVel(name, v.x, v.y, v.z);
           },
+          // Angular velocity (rad/s) — a flight controller reads it for damping.
+          get angularVelocity() {
+            return vec(name, __quine_bodyAngVel);
+          },
           get radius() {
             return __quine_radius(name);
+          },
+          // Real rigid-body actuation. addForceAtPoint at an off-centre point
+          // generates torque (the quad's four rotor thrusts tilt the airframe);
+          // addForce is a pure centre-of-mass push; addTorque a pure couple. Each
+          // accumulates for the next physics step (Jolt clears it after).
+          addForce: function (f) {
+            __quine_addForce(name, f.x, f.y, f.z);
+          },
+          addForceAtPoint: function (f, p) {
+            __quine_addForceAtPoint(name, f.x, f.y, f.z, p.x, p.y, p.z);
+          },
+          addTorque: function (t) {
+            __quine_addTorque(name, t.x, t.y, t.z);
           },
         };
       },

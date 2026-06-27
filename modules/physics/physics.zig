@@ -371,6 +371,21 @@ pub const World = struct {
         self.bi().activate(id);
     }
 
+    /// Accumulate a force through the centre of mass for the next `step` (no
+    /// torque). Wakes the body. A flight controller uses this for its
+    /// position-hold / horizontal-damping assists.
+    pub fn addForce(self: *World, id: BodyId, force: [3]f32) void {
+        self.bi().addForce(id, force);
+        self.bi().activate(id);
+    }
+
+    /// Accumulate a torque for the next `step` (Jolt resets it after). Wakes the
+    /// body. A flight controller uses this for attitude/yaw stabilisation.
+    pub fn addTorque(self: *World, id: BodyId, torque: [3]f32) void {
+        self.bi().addTorque(id, torque);
+        self.bi().activate(id);
+    }
+
     /// Strongest closing speed (m/s) recorded between two tagged bodies during
     /// the last `step`, or 0 if they didn't touch — the general contact query the
     /// scripting API's `contactImpulse` is backed by.

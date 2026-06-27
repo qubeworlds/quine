@@ -238,6 +238,14 @@ pub const SceneRuntime = struct {
                 spec.tag = @intCast(i + 1); // unique, non-zero contact tag per body
                 bnd.tag = spec.tag;
                 bnd.is_dynamic = spec.motion == .dynamic;
+                // A dynamic box's orientation is visually meaningful (it tilts and
+                // tumbles); sync it into the Transform so render + skills see the
+                // attitude. A sphere's orientation is invisible, so it stays
+                // position-only. (Buoyancy opts boxes in here too, below.)
+                bnd.sync_rotation = bnd.is_dynamic and switch (spec.shape) {
+                    .box => true,
+                    else => false,
+                };
                 bnd.radius = switch (spec.shape) {
                     .sphere => |s| s.radius,
                     .box => 0,
