@@ -338,6 +338,70 @@ pub const Mat4 = extern struct {
         r.m[14] = t.z;
         return r;
     }
+
+    /// The world-space axis-aligned bounds of a local AABB transformed by this
+    /// matrix (the abs-matrix trick: a tight enclosing AABB without testing all
+    /// 8 corners). Used for frustum culling.
+    pub fn transformAabb(self: Mat4, lo: Vec3, hi: Vec3) Aabb {
+        const a = self.m;
+        const center = Vec3.init((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5);
+        const ext = Vec3.init((hi.x - lo.x) * 0.5, (hi.y - lo.y) * 0.5, (hi.z - lo.z) * 0.5);
+        const wc = self.transformPoint(center);
+        // Each world axis' half-extent sums |basis component| · local extent.
+        const ex = @abs(a[0]) * ext.x + @abs(a[4]) * ext.y + @abs(a[8]) * ext.z;
+        const ey = @abs(a[1]) * ext.x + @abs(a[5]) * ext.y + @abs(a[9]) * ext.z;
+        const ez = @abs(a[2]) * ext.x + @abs(a[6]) * ext.y + @abs(a[10]) * ext.z;
+        return .{ .lo = Vec3.init(wc.x - ex, wc.y - ey, wc.z - ez), .hi = Vec3.init(wc.x + ex, wc.y + ey, wc.z + ez) };
+    }
+};
+
+pub const Aabb = struct { lo: Vec3, hi: Vec3 };
+
+/// A view frustum as inward-pointing planes for culling. We keep the four side
+/// planes plus far — robust across clip conventions (the near plane's extraction
+/// differs between [-1,1] and [0,1] z, and omitting it only makes the test
+/// conservative, never wrong). Built from a view-projection matrix.
+pub const Frustum = struct {
+    planes: [5]Vec4 = [_]Vec4{.{}} ** 5, // left, right, bottom, top, far
+
+    pub fn fromViewProj(vp: Mat4) Frustum {
+        const m = vp.m; // row i = (m[i], m[4+i], m[8+i], m[12+i]) for column-major storage
+        const row = struct {
+            fn at(mm: [16]f32, i: usize) Vec4 {
+                return .{ .x = mm[i], .y = mm[4 + i], .z = mm[8 + i], .w = mm[12 + i] };
+            }
+        };
+        const r0 = row.at(m, 0);
+        const r1 = row.at(m, 1);
+        const r2 = row.at(m, 2);
+        const r3 = row.at(m, 3);
+        const add = struct {
+            fn f(a: Vec4, b: Vec4) Vec4 {
+                return .{ .x = a.x + b.x, .y = a.y + b.y, .z = a.z + b.z, .w = a.w + b.w };
+            }
+        }.f;
+        const sub = struct {
+            fn f(a: Vec4, b: Vec4) Vec4 {
+                return .{ .x = a.x - b.x, .y = a.y - b.y, .z = a.z - b.z, .w = a.w - b.w };
+            }
+        }.f;
+        return .{ .planes = .{ add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), sub(r3, r2) } };
+    }
+
+    /// True if the world AABB is at least partially inside the frustum (the
+    /// standard conservative p-vertex test: outside only if it's fully beyond
+    /// one plane). False negatives never happen; rare false positives are fine.
+    pub fn intersectsAabb(self: Frustum, b: Aabb) bool {
+        for (self.planes) |p| {
+            // The AABB corner furthest along the plane normal — if even that is
+            // behind the plane, the whole box is outside.
+            const px = if (p.x >= 0) b.hi.x else b.lo.x;
+            const py = if (p.y >= 0) b.hi.y else b.lo.y;
+            const pz = if (p.z >= 0) b.hi.z else b.lo.z;
+            if (p.x * px + p.y * py + p.z * pz + p.w < 0) return false;
+        }
+        return true;
+    }
 };
 
 // =============================================================================
@@ -592,4 +656,29 @@ test "Quat.fromEulerZYX matches the Mat4 Z-Y-X rotation it replaced" {
     const viaQuat = Quat.fromEulerZYX(e).toMat4();
     const viaMat = Mat4.rotationZ(e.z).mul(Mat4.rotationY(e.y)).mul(Mat4.rotationX(e.x));
     for (viaQuat.m, viaMat.m) |a, b| try testing.expectApproxEqAbs(a, b, 1e-5);
+}
+
+test "Frustum culls boxes outside the view and keeps those inside" {
+    // Camera at origin looking down -Z (right-handed), 90° vfov, square aspect.
+    const view = Mat4.lookAt(Vec3.init(0, 0, 0), Vec3.init(0, 0, -1), Vec3.init(0, 1, 0));
+    const proj = Mat4.perspective(std.math.pi * 0.5, 1.0, 0.1, 100.0);
+    const fr = Frustum.fromViewProj(proj.mul(view));
+
+    // A unit box 10 units straight ahead (-Z) is visible.
+    try testing.expect(fr.intersectsAabb(.{ .lo = Vec3.init(-0.5, -0.5, -10.5), .hi = Vec3.init(0.5, 0.5, -9.5) }));
+    // A box behind the camera (+Z) is culled.
+    try testing.expect(!fr.intersectsAabb(.{ .lo = Vec3.init(-0.5, -0.5, 9.5), .hi = Vec3.init(0.5, 0.5, 10.5) }));
+    // A box far off to the side (+X) at the same depth is culled.
+    try testing.expect(!fr.intersectsAabb(.{ .lo = Vec3.init(49.5, -0.5, -10.5), .hi = Vec3.init(50.5, 0.5, -9.5) }));
+    // Beyond the far plane is culled.
+    try testing.expect(!fr.intersectsAabb(.{ .lo = Vec3.init(-0.5, -0.5, -200.5), .hi = Vec3.init(0.5, 0.5, -199.5) }));
+}
+
+test "transformAabb gives the world bounds of a rotated, translated box" {
+    // 90° about Y swaps the X and Z extents; translate by (10,0,0).
+    const t = Mat4.translation(Vec3.init(10, 0, 0)).mul(Quat.fromAxisAngle(Vec3.init(0, 1, 0), std.math.pi * 0.5).toMat4());
+    const b = t.transformAabb(Vec3.init(-1, -2, -3), Vec3.init(1, 2, 3));
+    try testing.expectApproxEqAbs(@as(f32, 3), b.hi.x - 10.0, 1e-4); // X extent came from local Z (±3)
+    try testing.expectApproxEqAbs(@as(f32, 2), b.hi.y, 1e-4); // Y unchanged
+    try testing.expectApproxEqAbs(@as(f32, 1), b.hi.z, 1e-4); // Z extent came from local X (±1)
 }

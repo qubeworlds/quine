@@ -71,7 +71,24 @@ pub const MeshData = struct {
     /// buffer each frame (which thrashes / wedges the WebGL context). Indices stay
     /// static. The vertex COUNT must not change once registered.
     dynamic: bool = false,
+    /// Local-space axis-aligned bounds, filled by `MeshRegistry.add` (the render
+    /// layer transforms this by the model matrix for frustum culling). Generators
+    /// leave it at the origin; `add` computes it from the vertices.
+    aabb_lo: m.Vec3 = .{},
+    aabb_hi: m.Vec3 = .{},
 };
+
+/// Local AABB over a vertex span (empty span → a zero-size box at the origin).
+pub fn computeAabb(verts: []const Vertex) struct { lo: m.Vec3, hi: m.Vec3 } {
+    if (verts.len == 0) return .{ .lo = .{}, .hi = .{} };
+    var lo = verts[0].position;
+    var hi = verts[0].position;
+    for (verts[1..]) |vtx| {
+        lo = m.Vec3.init(@min(lo.x, vtx.position.x), @min(lo.y, vtx.position.y), @min(lo.z, vtx.position.z));
+        hi = m.Vec3.init(@max(hi.x, vtx.position.x), @max(hi.y, vtx.position.y), @max(hi.z, vtx.position.z));
+    }
+    return .{ .lo = lo, .hi = hi };
+}
 
 /// Maximum number of distinct meshes a world can register. Fixed so the
 /// registry needs no allocator and stays a value type.
@@ -100,6 +117,9 @@ pub const MeshRegistry = struct {
         std.debug.assert(self.len < max_meshes);
         const idx = self.len;
         self.meshes[idx] = data;
+        const bb = computeAabb(data.vertices); // local bounds for frustum culling
+        self.meshes[idx].aabb_lo = bb.lo;
+        self.meshes[idx].aabb_hi = bb.hi;
         self.revs[idx] = 0;
         self.len += 1;
         return @enumFromInt(@as(u32, @intCast(idx)));

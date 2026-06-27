@@ -157,6 +157,16 @@ fn aces1(x: f32) f32 {
 /// Build the per-frame lighting uniform from the extracted queue (the scene's
 /// sun/points/environment/post, docs/lights-and-tones.md). Identical packing
 /// feeds both triangle.glsl's `fs_lights` and raymarch.glsl's `rm_params`.
+/// Frustum-cull a draw item: true means skip it (its world-space bounds fall
+/// entirely outside the camera). Dynamic meshes (per-tick bounds) are never
+/// culled. The shadow pass deliberately ignores this — an off-screen caster can
+/// still throw a shadow into view.
+fn culled(frustum: m.Frustum, meshes: *const core.MeshRegistry, item: anytype) bool {
+    const md = meshes.get(item.mesh);
+    if (md.dynamic) return false;
+    return !frustum.intersectsAabb(item.model.transformAabb(md.aabb_lo, md.aabb_hi));
+}
+
 fn lightParams(queue: *const core.RenderQueue) shd.FsLights {
     var l = legacy_lights;
     if (queue.sun.intensity > 0) {
@@ -674,6 +684,7 @@ pub const Renderer = struct {
         hud: ?HudInfo,
     ) void {
         const view_proj = viewProj(queue, aspect);
+        const frustum = m.Frustum.fromViewProj(view_proj); // off-screen meshes are skipped
         const eye4 = [4]f32{ queue.eye.x, queue.eye.y, queue.eye.z, 1 };
         const probe = self.debug_mode != 0; // G-buffer pass: mesh only, black clear
 
@@ -754,6 +765,7 @@ pub const Renderer = struct {
 
         for (queue.slice()) |item| {
             if (item.material.base_color.w < 1.0) continue; // transparent: blended pass below
+            if (culled(frustum, meshes, item)) continue; // off-screen: skip the draw
             const gm = self.cache.resolve(meshes, item.mesh);
 
             var bind = sg.Bindings{};
@@ -870,9 +882,11 @@ pub const Renderer = struct {
         var scratch: [256]Key = undefined;
         var n: usize = 0;
         const eye = m.Vec3.init(eye4[0], eye4[1], eye4[2]);
+        const frustum = m.Frustum.fromViewProj(view_proj);
         const items = queue.slice();
         for (items, 0..) |item, i| {
             if (item.material.base_color.w >= 1.0) continue;
+            if (culled(frustum, meshes, item)) continue; // off-screen
             if (n >= scratch.len) break;
             const center = m.Vec3.init(item.model.m[12], item.model.m[13], item.model.m[14]);
             const d = center.sub(eye);
