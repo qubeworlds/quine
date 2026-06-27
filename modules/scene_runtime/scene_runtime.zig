@@ -378,10 +378,14 @@ pub const SceneRuntime = struct {
         // today — node names aren't loaded, so "head" = topmost).
         for (scene_data.entities, 0..) |e, i| {
             const p = e.parent orelse continue;
+            // Rigid (jointless) parenting is handled by core's scene-graph
+            // (`core.Parent`, composed in `World.tick`); the binding pass only
+            // owns skinned-bone follow. Skipping it here avoids a double-write.
+            if (p.joint == null) continue;
             const pi = findIndex(scene_data, p.entity) orelse continue;
             self.bindings[i].parent_idx = pi;
             self.bindings[i].parent_offset = p.offset;
-            if (p.joint != null and self.bindings[pi].pose != null) {
+            if (self.bindings[pi].pose != null) {
                 self.bindings[i].parent_joint = self.bindings[pi].head_joint;
             }
         }

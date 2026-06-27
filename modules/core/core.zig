@@ -110,6 +110,7 @@ pub const Material = components.Material;
 pub const Surface = components.Surface;
 pub const Camera = components.Camera;
 pub const Spin = components.Spin;
+pub const Parent = components.Parent;
 pub const Squash = components.Squash;
 pub const Gaze = components.Gaze;
 pub const Hop = components.Hop;
@@ -251,7 +252,7 @@ pub const max_entities = ecs.default_capacity;
 
 /// The component set this world manages. Adding a component is a one-line edit
 /// here — the ECS resolves storage for it automatically.
-const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop, Light, Environment, Post, AudioSource, AudioListener }, max_entities);
+const Registry = ecs.Registry(&.{ Transform, MeshRef, Material, Camera, Spin, Squash, Gaze, Hop, Light, Environment, Post, AudioSource, AudioListener, Parent }, max_entities);
 
 // =============================================================================
 // World
@@ -378,6 +379,9 @@ pub const World = struct {
         systems.squash(self, dt);
         systems.gaze(self, dt);
         systems.hop(self, dt);
+        // Resolve the scene graph last, so parented parts compose the local
+        // transforms the motion systems just updated into their world Transform.
+        systems.parent(self);
     }
 };
 
@@ -452,6 +456,25 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
             }
         }
     }
+
+    // Rigid scene-graph parenting: now that every entity is spawned (so names
+    // resolve), attach a `Parent` to each child whose `parent` carries NO joint.
+    // (A `joint` parent follows a skinned bone and is handled by scene_runtime's
+    // binding pass.) The child's authored `transform` is its local, parent-
+    // relative transform; the world `Transform` is recomputed by the `parent`
+    // system. The legacy `offset` is only meaningful for joint parents, so it's
+    // not folded in here — for a rigid parent the `transform` carries the local.
+    for (scene_data.entities, 0..) |e, i| {
+        const sp = e.parent orelse continue;
+        if (sp.joint != null) continue; // skinned-bone follow → scene_runtime bindings
+        const pe = findEntity(scene_data, entities, sp.entity) orelse continue;
+        const local = if (world.get(Transform, entities[i])) |t| t.* else Transform{};
+        world.set(Parent, entities[i], .{ .entity = pe, .local = local });
+    }
+    // Resolve once at load so a render before the first tick (e.g. a static
+    // thumbnail) already shows parts in their composed world positions.
+    systems.parent(world);
+
     return entities;
 }
 
@@ -700,6 +723,35 @@ test "tick is deterministic and advances time" {
     extract(b, b, 1.0, qb);
     try std.testing.expectEqual(qa.len, qb.len);
     try std.testing.expectEqualSlices(f32, &qa.items[0].model.m, &qb.items[0].model.m);
+}
+
+test "scene graph: a child composes its parent's world transform each tick" {
+    var w = World.init();
+    // Parent: translated +X by 2, rotated 0.4 rad about Y.
+    const par = w.spawn();
+    w.set(Transform, par, .{ .position = m.Vec3.init(2, 0, 0), .rotation = m.Vec3.init(0, 0.4, 0) });
+    // Child: 1 unit along the parent's local +Z, with its own local spin.
+    const child = w.spawn();
+    w.set(Transform, child, .{});
+    w.set(Parent, child, .{ .entity = par, .local = .{ .position = m.Vec3.init(0, 0, 1) } });
+    w.set(Spin, child, .{ .velocity = m.Vec3.init(0, 1, 0) });
+
+    w.tick(1.0 / 60.0);
+
+    // Spin drove the child's LOCAL (not its world Transform): the local rotation
+    // advanced by exactly one tick.
+    const local = w.get(Parent, child).?.local;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), local.rotation.y, 1e-6);
+
+    // The child's world Transform must equal parent.world ∘ local — compare the
+    // composed model matrices directly (convention- and Euler-singularity-proof).
+    const ct = w.get(Transform, child).?;
+    const expected = w.get(Transform, par).?.matrix().mul(local.matrix());
+    for (ct.matrix().m, expected.m) |got, want| {
+        try std.testing.expectApproxEqAbs(want, got, 1e-4);
+    }
+    // And the parent itself (a root) is untouched by the parent pass.
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), w.get(Transform, par).?.position.x, 1e-6);
 }
 
 test "init spawns a single drawable that the spin system rotates" {

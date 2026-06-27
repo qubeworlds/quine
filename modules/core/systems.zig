@@ -19,20 +19,89 @@ const Spin = components.Spin;
 const Squash = components.Squash;
 const Gaze = components.Gaze;
 const Hop = components.Hop;
+const Parent = components.Parent;
 
 /// Advance the rotation of every entity that carries a `Spin`, by its own
 /// angular velocity. Entities without a `Spin` (e.g. the camera) are left
-/// alone, even though they have a `Transform`.
+/// alone, even though they have a `Transform`. A parented entity spins in its
+/// own (`local`) frame — the `parent` system then composes that into the world
+/// `Transform` — so a part spins correctly even while its parent moves.
 pub fn spin(world: anytype, dt: f64) void {
     const dt32: f32 = @floatCast(dt);
     var it = world.query(&.{ Transform, Spin });
     while (it.next()) |e| {
         const v = world.get(Spin, e).?.velocity;
-        const t = world.get(Transform, e).?;
+        const t = if (world.get(Parent, e)) |p| &p.local else world.get(Transform, e).?;
         t.rotation.x += v.x * dt32;
         t.rotation.y += v.y * dt32;
         t.rotation.z += v.z * dt32;
     }
+}
+
+/// Scene-graph resolve: for every parented entity, compose its `local` transform
+/// onto its parent's world transform and write the result into its world
+/// `Transform`. Order-independent — each entity composes its full chain from the
+/// `local`s up to a root, so a child gets the right answer no matter when it's
+/// visited. Runs after the motion systems (spin/animation drive `local`).
+pub fn parent(world: anytype) void {
+    var it = world.query(&.{ Parent, Transform });
+    while (it.next()) |e| {
+        const wm = worldMatrix(world, e, 0);
+        world.get(Transform, e).?.* = decompose(wm);
+    }
+}
+
+// The world-space model matrix of `e`: parent's world matrix × the entity's
+// `local` matrix (or its own `Transform` if it's a root). Recurses up `local`s,
+// not Transforms, so it never reads a not-yet-resolved intermediate. `depth`
+// caps a malformed parent cycle instead of recursing forever.
+fn worldMatrix(world: anytype, e: anytype, depth: u32) m.Mat4 {
+    if (depth > 64) return m.Mat4.identity;
+    if (world.get(Parent, e)) |p| {
+        const pm = if (world.isAlive(p.entity)) worldMatrix(world, p.entity, depth + 1) else m.Mat4.identity;
+        return pm.mul(p.local.matrix());
+    }
+    return if (world.get(Transform, e)) |t| t.matrix() else m.Mat4.identity;
+}
+
+// Recover a TRS `Transform` from a model matrix: translation from the last
+// column, scale from the basis-column lengths, rotation (Z-Y-X Euler) from the
+// normalised basis. Exact for rigid + uniformly-scaled chains (what assemblies
+// use); a non-uniform scale through a rotated parent isn't representable as TRS.
+fn decompose(mat: m.Mat4) Transform {
+    const c = mat.m;
+    const sx = @sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    const sy = @sqrt(c[4] * c[4] + c[5] * c[5] + c[6] * c[6]);
+    const sz = @sqrt(c[8] * c[8] + c[9] * c[9] + c[10] * c[10]);
+    const ix: f32 = if (sx > 1e-8) 1.0 / sx else 0;
+    const iy: f32 = if (sy > 1e-8) 1.0 / sy else 0;
+    const iz: f32 = if (sz > 1e-8) 1.0 / sz else 0;
+    var rot = m.Mat4.identity;
+    rot.m[0] = c[0] * ix;
+    rot.m[1] = c[1] * ix;
+    rot.m[2] = c[2] * ix;
+    rot.m[4] = c[4] * iy;
+    rot.m[5] = c[5] * iy;
+    rot.m[6] = c[6] * iy;
+    rot.m[8] = c[8] * iz;
+    rot.m[9] = c[9] * iz;
+    rot.m[10] = c[10] * iz;
+    return .{
+        .position = m.Vec3.init(c[12], c[13], c[14]),
+        .rotation = eulerZYX(rot),
+        .scale = m.Vec3.init(sx, sy, sz),
+    };
+}
+
+// Z-Y-X Euler angles from a pure rotation matrix (column-major: R[row][col] =
+// m[col*4+row]) — the inverse of `Transform.matrix`'s rotation order.
+fn eulerZYX(rot: m.Mat4) m.Vec3 {
+    const mm = rot.m;
+    return m.Vec3.init(
+        std.math.atan2(mm[6], mm[10]), // x = atan2(R21, R22)
+        std.math.asin(std.math.clamp(-mm[2], -1.0, 1.0)), // y = asin(-R20)
+        std.math.atan2(mm[1], mm[0]), // z = atan2(R10, R00)
+    );
 }
 
 /// Relax squash-and-stretch and write it to the scale. Each tick the squash

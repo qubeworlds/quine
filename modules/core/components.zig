@@ -4,6 +4,8 @@
 const std = @import("std");
 const m = @import("math");
 const assets = @import("assets.zig");
+const ecs = @import("ecs");
+const Entity = ecs.Entity;
 
 /// Position / rotation / scale of an entity in world space. Rotation is stored
 /// as Euler angles (radians, applied Z-Y-X); fine for the scaffold and trivial
@@ -84,6 +86,24 @@ pub const Material = struct {
 /// Only entities with this component spin — the camera, for instance, doesn't.
 pub const Spin = struct {
     velocity: m.Vec3 = .{},
+};
+
+/// Parents an entity to another, giving the engine a real scene graph. `local`
+/// is the entity's transform in the parent's space; the `parent` system composes
+/// it onto the parent's world `Transform` every tick and writes the result into
+/// this entity's world `Transform` — so render, interpolation, the camera and
+/// lights keep reading the single world `Transform` unchanged.
+///
+/// `Spin` and timeline animation drive `local` (not the world `Transform`) for a
+/// parented entity, so a part can spin/animate in a frame that is itself moving
+/// (a propeller on a tilting arm, a gear on a turning carrier). Chains resolve
+/// parent-first and any depth deep; parented entities are kinematic (don't also
+/// make one a dynamic physics body — the parent pass would overwrite it).
+pub const Parent = struct {
+    /// The entity this one is parented to. If it dies, `local` becomes world.
+    entity: Entity,
+    /// This entity's transform relative to `entity`.
+    local: Transform = .{},
 };
 
 /// A transient squash-and-stretch applied to an entity's `Transform.scale` by
