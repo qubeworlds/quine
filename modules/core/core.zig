@@ -202,12 +202,16 @@ test {
     _ = @import("png.zig");
     _ = @import("obj.zig");
     _ = @import("ocean.zig");
+    _ = @import("cloth.zig");
     _ = @import("gltf.zig");
 }
 
 /// Gerstner ocean: the closed-form wave surface that feeds both buoyancy (core)
 /// and the visual water grid. See `ocean.zig`.
 pub const ocean = @import("ocean.zig");
+
+/// Cloth / sheet simulation (Verlet + distance constraints). See `cloth.zig`.
+pub const Cloth = @import("cloth.zig").Cloth;
 
 /// Load a static mesh (positions/normals/indices) from a binary glTF (.glb).
 /// Allocator-backed; the returned MeshData lives until freed or process exit.
