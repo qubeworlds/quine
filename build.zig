@@ -66,8 +66,19 @@ pub fn build(b: *Build) !void {
     // libc++ omits std::mutex/thread for single-threaded wasm — which Jolt
     // needs. Emscripten's own libc++ provides them, exactly as the official
     // JoltPhysics.js build relies on.
+    // Our Jolt extensions (soft bodies, …) live in libs/jolt/jolt_ext.cpp and call
+    // Jolt C++ directly. They must be compiled with the SAME Jolt defines as joltc
+    // (float precision + cross-platform determinism) so the C++ class layouts line
+    // up. Native: zig clang compiles it into mod_physics and links it with joltc.
+    // Web: it's appended to the emcc joltc object below (Zig's wasm libc++ lacks the
+    // single-threaded std::mutex Jolt needs; emcc's libc++ has it).
+    const jolt_ext_flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-sanitize=undefined", "-DJPH_CROSS_PLATFORM_DETERMINISTIC" };
     if (!is_web) {
         mod_physics.linkLibrary(dep_zphysics.artifact("joltc"));
+        mod_physics.addIncludePath(dep_zphysics.path("libs"));
+        mod_physics.addIncludePath(dep_zphysics.path("libs/JoltC"));
+        mod_physics.addCSourceFile(.{ .file = b.path("libs/jolt/jolt_ext.cpp"), .flags = jolt_ext_flags });
+        mod_physics.link_libcpp = true;
     } else {
         // The binding's @cImport still translate-c's JoltPhysicsC.h for wasm, so
         // it needs Emscripten's system headers.
@@ -334,22 +345,25 @@ pub fn build(b: *Build) !void {
         // gathers every Jolt .cpp (matching zphysics's source list).
         const emcc_path = dep_emsdk.path("upstream/emscripten/emcc").getPath(b);
         const jolt_libs = dep_zphysics.path("libs").getPath(b);
+        const jolt_ext = b.path("libs/jolt/jolt_ext.cpp").getPath(b);
         const build_joltc = b.addSystemCommand(&.{
             "sh",
             "-c",
             // JoltPhysicsC_Extensions.cpp is omitted: its only wasm-failing bits
             // are static_asserts on the Character* C-struct mirrors (a libc++-
             // dependent layout quirk), and we use none of the Character API. The
-            // core C API we do use is all in JoltPhysicsC.cpp.
+            // core C API we do use is all in JoltPhysicsC.cpp, plus our own
+            // Jolt extensions (libs/jolt/jolt_ext.cpp — soft bodies).
             b.fmt(
                 "set -e; srcs=$(find '{s}/Jolt' -name '*.cpp'); " ++
                     "'{s}' -r -std=c++17 -fno-exceptions -fno-access-control -fno-sanitize=undefined -Oz " ++
                     "-DJPH_CROSS_PLATFORM_DETERMINISTIC= -I '{s}' -I '{s}/JoltC' " ++
-                    "$srcs '{s}/JoltC/JoltPhysicsC.cpp' -o \"$1\"",
-                .{ jolt_libs, emcc_path, jolt_libs, jolt_libs, jolt_libs },
+                    "$srcs '{s}/JoltC/JoltPhysicsC.cpp' '{s}' -o \"$1\"",
+                .{ jolt_libs, emcc_path, jolt_libs, jolt_libs, jolt_libs, jolt_ext },
             ),
             "sh",
         });
+        build_joltc.addFileInput(b.path("libs/jolt/jolt_ext.cpp"));
         mod_app.addObjectFile(build_joltc.addOutputFileArg("joltc.o"));
 
         const link = try sokol.emLinkStep(b, .{

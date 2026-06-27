@@ -33,6 +33,14 @@ pub const obj_moving: jolt.ObjectLayer = 1;
 const bp_non_moving: jolt.BroadPhaseLayer = 0;
 const bp_moving: jolt.BroadPhaseLayer = 1;
 
+// Soft-body (cloth) entry points implemented in libs/jolt/jolt_ext.cpp — Jolt C++
+// reached directly (the C API doesn't wrap soft bodies). The system handle is the
+// same opaque pointer JoltC uses; the `void*` C param matches a Zig pointer ABI.
+extern fn quine_softbody_create_cloth(sys: *jolt.PhysicsSystem, nx: u32, nz: u32, sp: f32, ox: f32, oy: f32, oz: f32, pinned: ?[*]const u8, layer: u16, iterations: u32) u32;
+extern fn quine_softbody_read(sys: *jolt.PhysicsSystem, id: u32, out_xyz: [*]f32, max_v: u32) u32;
+extern fn quine_softbody_set_vertex(sys: *jolt.PhysicsSystem, id: u32, vidx: u32, wx: f32, wy: f32, wz: f32) void;
+extern fn quine_softbody_remove(sys: *jolt.PhysicsSystem, id: u32) void;
+
 const BroadPhaseLayerImpl = struct {
     pub fn getNumBroadPhaseLayers(_: *const jolt.BroadPhaseLayerInterface) callconv(.c) u32 {
         return 2;
@@ -393,6 +401,30 @@ pub const World = struct {
         return self.listener.query(a, b);
     }
 
+    // --- soft bodies (cloth) — via our Jolt extensions (libs/jolt/jolt_ext.cpp).
+    // Jolt's C API doesn't wrap soft bodies, so these call Jolt C++ directly,
+    // taking the physics-system handle as an opaque pointer. The world's `step`
+    // advances soft bodies along with rigid bodies. `0xFFFF_FFFF` = create failed.
+
+    /// Create an `nx × nz` cloth in the XZ plane at `origin` with `spacing`.
+    /// `pinned` (nx*nz bytes, or null) marks held vertices. `iterations` is the
+    /// soft-body solver iteration count (more = stiffer "paper"). Returns its id.
+    pub fn createCloth(self: *World, nx: u32, nz: u32, spacing: f32, origin: [3]f32, pinned: ?[]const u8, iterations: u32) u32 {
+        return quine_softbody_create_cloth(self.system, nx, nz, spacing, origin[0], origin[1], origin[2], if (pinned) |p| p.ptr else null, @intCast(obj_moving), iterations);
+    }
+    /// Read the cloth's world-space vertex positions into `out_xyz` (3 floats per
+    /// vertex). Returns the count written.
+    pub fn readCloth(self: *World, id: u32, out_xyz: []f32) u32 {
+        return quine_softbody_read(self.system, id, out_xyz.ptr, @intCast(out_xyz.len / 3));
+    }
+    /// Move a pinned vertex (grid index j*nx + i) to a world position — lift / peel.
+    pub fn setClothVertex(self: *World, id: u32, vidx: u32, p: [3]f32) void {
+        quine_softbody_set_vertex(self.system, id, vidx, p[0], p[1], p[2]);
+    }
+    pub fn removeCloth(self: *World, id: u32) void {
+        quine_softbody_remove(self.system, id);
+    }
+
     /// Closing speed of the ball's strongest contact with the head / ground last
     /// step (thin wrappers over `contactImpulse`).
     pub fn impactHead(self: *const World) f32 {
@@ -408,6 +440,35 @@ pub const World = struct {
 // Uses the C allocator (joltc links libc) so engine bookkeeping isn't flagged
 // as leaks by testing.allocator.
 // =============================================================================
+
+test "jolt soft body: a cloth pinned along an edge drapes under gravity, pins held" {
+    const nx: u32 = 8;
+    const nz: u32 = 8;
+    const sp: f32 = 0.1;
+    var w: World = undefined;
+    try w.init(std.heap.c_allocator);
+    defer w.deinit();
+
+    // Pin the back edge (row j = 0) so the sheet hangs from it.
+    var pinned = [_]u8{0} ** (nx * nz);
+    for (0..nx) |i| pinned[i] = 1;
+    const id = w.createCloth(nx, nz, sp, .{ 0, 1, 0 }, &pinned, 8);
+    try std.testing.expect(id != 0xFFFF_FFFF);
+    w.optimize();
+
+    var buf = [_]f32{0} ** (nx * nz * 3);
+    const far = (nz - 1) * nx + 0; // a free vertex on the far edge
+    _ = w.readCloth(id, &buf);
+    const far_y0 = buf[far * 3 + 1];
+    for (0..300) |_| try w.step(1.0 / 60.0);
+    const n = w.readCloth(id, &buf);
+
+    try std.testing.expectEqual(@as(u32, nx * nz), n);
+    // The pinned back-edge vertex held near its start (y = 1); the free far edge
+    // fell well below — the sheet draped under real Jolt soft-body physics.
+    try std.testing.expectApproxEqAbs(@as(f32, 1), buf[0 * 3 + 1], 0.06);
+    try std.testing.expect(buf[far * 3 + 1] < far_y0 - 0.1);
+}
 
 test "jolt: a sphere falls under gravity and rests on the ground" {
     const radius: f32 = 0.5;
