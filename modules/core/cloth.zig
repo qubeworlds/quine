@@ -228,7 +228,15 @@ inline fn posAt(p: []const f32, i: u32, j: u32, nx: u32) Vec3 {
 /// Build the grid mesh from flat world-space positions: smooth per-vertex normals
 /// (central-difference grid tangents) + UVs, two triangles per quad, `dynamic` so
 /// render streams it in place each tick.
-pub fn gridMesh(pos: []const f32, nx: u32, nz: u32, verts: []Vertex, indices: []u32, color: m.Vec4) assets.MeshData {
+///
+/// `shell` (metres) inflates each rendered vertex OUT along its normal — a small
+/// cloth "thickness" so the drawn sheet visually rests ON TOP of whatever the
+/// (zero-thickness) simulated cloth rests on: it lifts the sheet off the floor it
+/// lies on (no coplanar z-fighting / floor bleed-through) and off the hard
+/// objects it drapes over (hides the few-mm collision penetration of sharp
+/// corners through a single-layer cloth). The simulation is untouched — this is
+/// purely a render offset. Pass 0 for the bare surface.
+pub fn gridMesh(pos: []const f32, nx: u32, nz: u32, verts: []Vertex, indices: []u32, color: m.Vec4, shell: f32) assets.MeshData {
     var j: u32 = 0;
     while (j < nz) : (j += 1) {
         var i: u32 = 0;
@@ -239,7 +247,9 @@ pub fn gridMesh(pos: []const f32, nx: u32, nz: u32, verts: []Vertex, indices: []
             var nrm = dz.cross(dx);
             const nl = nrm.length();
             nrm = if (nl > 1e-8) nrm.scale(1.0 / nl) else Vec3.init(0, 1, 0);
-            verts[k] = .{ .position = posAt(pos, i, j, nx), .normal = nrm, .color = color, .uv = .{
+            const p0 = posAt(pos, i, j, nx);
+            const pos_shelled = if (shell != 0) p0.add(nrm.scale(shell)) else p0;
+            verts[k] = .{ .position = pos_shelled, .normal = nrm, .color = color, .uv = .{
                 @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(nx - 1)),
                 @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(nz - 1)),
             } };

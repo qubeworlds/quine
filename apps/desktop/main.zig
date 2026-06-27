@@ -573,6 +573,18 @@ fn loadScene() void {
                         App.stage.scrub_time = std.fmt.parseFloat(f32, std.mem.span(tv)) catch 0;
                         App.stage.update(0) catch {};
                     }
+                    // QUINE_THUMB_AXES="i:v,i:v,…": preset input axes before the
+                    // ticks, so an input-driven scene (a cloth handle the host
+                    // peels via axes 0,1,2) can be captured mid-interaction headless.
+                    if (std.c.getenv("QUINE_THUMB_AXES")) |av| {
+                        var it = std.mem.splitScalar(u8, std.mem.span(av), ',');
+                        while (it.next()) |pair| {
+                            const colon = std.mem.indexOfScalar(u8, pair, ':') orelse continue;
+                            const i = std.fmt.parseInt(usize, pair[0..colon], 10) catch continue;
+                            const v = std.fmt.parseFloat(f32, pair[colon + 1 ..]) catch continue;
+                            App.stage.setAxis(i, v);
+                        }
+                    }
                     // QUINE_THUMB_TICKS=<n>: advance the sim n fixed steps before
                     // capture, so a physics scene (e.g. a boat settling on the
                     // ocean swell) is shown in motion, not at its t=0 pose.

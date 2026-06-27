@@ -46,6 +46,13 @@ const BuoyancyRig = struct {
 /// Up to this many Jolt soft-body cloths per scene.
 const max_cloth = 4;
 
+/// Render-only "thickness" of a cloth sheet (metres): each rendered vertex is
+/// pushed out along its normal by this, so the drawn sheet sits ON TOP of the
+/// floor it lies on (no z-fighting / floor bleed-through) and over the hard
+/// objects it drapes (hides the mm-scale corner penetration of a single-layer
+/// soft body). The simulation is unaffected.
+const cloth_shell: f32 = 0.0018;
+
 /// A Jolt soft-body cloth bound to its dynamic render mesh. The soft body lives
 /// in Jolt (`body`, an `nx × nz` vertex grid); each tick the runtime reads its
 /// world-space vertices back and rewrites `verts` in place (then bumps the mesh
@@ -598,7 +605,7 @@ pub const SceneRuntime = struct {
             // Seed the mesh from the soft body's initial (flat) world positions.
             _ = self.physics.readCloth(body, pos);
             const color = if (e.material) |mat| vec4(mat.color) else m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 };
-            const mesh = core.cloth.gridMesh(pos, cl.nx, cl.nz, verts, indices, color);
+            const mesh = core.cloth.gridMesh(pos, cl.nx, cl.nz, verts, indices, color, cloth_shell);
             const handle_mesh = self.world.meshes.add(mesh);
             self.world.set(core.Transform, ent, .{}); // verts are already world-space
             self.world.set(core.MeshRef, ent, .{ .mesh = handle_mesh });
@@ -1511,7 +1518,7 @@ pub const SceneRuntime = struct {
         //      bump the revision so render re-streams it next frame.
         for (self.cloth_rigs[0..self.cloth_rig_len]) |*rig| {
             _ = self.physics.readCloth(rig.body, rig.pos);
-            _ = core.cloth.gridMesh(rig.pos, rig.nx, rig.nz, rig.verts, rig.indices, rig.color);
+            _ = core.cloth.gridMesh(rig.pos, rig.nx, rig.nz, rig.verts, rig.indices, rig.color, cloth_shell);
             if (self.world.get(core.MeshRef, rig.entity)) |mr| self.world.meshes.bump(mr.mesh);
         }
 
