@@ -197,6 +197,9 @@ pub const SceneRuntime = struct {
     /// asset loads + uploads it ONCE and shares the handle, instead of parsing a
     /// model per entity. Lives in the runtime arena (freed on deinit).
     static_meshes: std.StringHashMapUnmanaged(core.MeshHandle) = .{},
+    /// glTF material factors per static source, parsed once (parallel to
+    /// `static_meshes`) so thousands of instances of one prop don't re-parse.
+    static_materials: std.StringHashMapUnmanaged(?core.GltfMaterial) = .{},
 
     /// Host I/O bridge (sokol-free, plain data) — the seam between the skill and
     /// the app's audio device + input. The skill queues audio/output intents via
@@ -255,6 +258,16 @@ pub const SceneRuntime = struct {
             if (e.geometry) |g| if (g == .gltf and staticGeom(a, assets, g.gltf.source)) {
                 const handle = try self.staticMesh(a, assets, g.gltf.source);
                 self.world.set(core.MeshRef, ent, .{ .mesh = handle });
+                // Carry the glTF's own PBR material unless the scene overrides it
+                // (the `e.material` block below wins when present).
+                if (e.material == null) if (try self.staticMaterial(a, assets, g.gltf.source)) |gm| {
+                    self.world.set(core.Material, ent, .{
+                        .base_color = .{ .x = gm.base_color[0], .y = gm.base_color[1], .z = gm.base_color[2], .w = gm.base_color[3] },
+                        .metallic = gm.metallic,
+                        .roughness = gm.roughness,
+                        .emissive = m.Vec3.init(gm.emissive[0], gm.emissive[1], gm.emissive[2]),
+                    });
+                };
             };
             // Skinned glTF geometry: resolve the source bytes, load the skinned
             // model (into the arena, freed with the runtime), scale it, and set up
@@ -1038,6 +1051,20 @@ pub const SceneRuntime = struct {
         const handle = self.world.meshes.add(mesh);
         try self.static_meshes.put(a, try a.dupe(u8, src), handle);
         return handle;
+    }
+
+    /// The glTF material factors for a static source (null for `.obj` or a glb
+    /// with no materials), parsed once per source and cached.
+    fn staticMaterial(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, src: []const u8) !?core.GltfMaterial {
+        if (self.static_materials.get(src)) |cached| return cached;
+        const mat: ?core.GltfMaterial = if (std.mem.endsWith(u8, src, ".obj"))
+            null
+        else if (resolve(assets, src)) |bytes|
+            core.loadStaticGltfMaterial(a, bytes)
+        else
+            null;
+        try self.static_materials.put(a, try a.dupe(u8, src), mat);
+        return mat;
     }
 
     /// Does a `gltf` geometry source resolve to a static (skeleton-free) mesh?
@@ -1839,6 +1866,22 @@ test "a scene audio source resolves its clip name to PCM in the registry" {
     const clip = rt.world.audio_clips.get(@enumFromInt(s.clip - 1));
     try std.testing.expectEqual(@as(usize, 4), clip.samples.len);
     try std.testing.expectApproxEqAbs(@as(f32, 0.3), clip.samples[2], 1e-6);
+}
+
+test "a static glTF prop carries its own PBR material when the scene omits one" {
+    const glb = @embedFile("head.glb"); // static prop, baseColor≈(0.665,0.665,0.823), metallic 0
+    const sc = core.scene.Scene{ .schema_version = 1, .name = "prop", .entities = &.{
+        .{ .name = "prop", .transform = .{}, .geometry = .{ .gltf = .{ .source = "head.glb" } } },
+    } };
+    var rt: SceneRuntime = undefined;
+    try rt.init(std.heap.c_allocator, sc, &.{.{ .name = "head.glb", .bytes = glb }});
+    defer rt.deinit();
+
+    const mat = rt.world.get(core.Material, rt.find("prop").?.entity).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.665), mat.base_color.x, 1e-2);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.823), mat.base_color.z, 1e-2);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), mat.metallic, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), mat.roughness, 1e-4); // glТF default (no roughnessFactor)
 }
 
 test "a scene-declared audio source + listener spatialises by position after update" {

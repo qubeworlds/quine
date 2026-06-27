@@ -199,6 +199,7 @@ test {
     _ = @import("png.zig");
     _ = @import("obj.zig");
     _ = @import("ocean.zig");
+    _ = @import("gltf.zig");
 }
 
 /// Gerstner ocean: the closed-form wave surface that feeds both buoyancy (core)
@@ -213,6 +214,10 @@ pub const loadGlbMesh = gltf.loadStaticMesh;
 /// node world transforms (the right path for props like a boat — see
 /// `gltf.loadStaticScene`). Allocator-backed.
 pub const loadStaticGltf = gltf.loadStaticScene;
+/// The first material's PBR factors from a static glb (null if it has none), so
+/// an imported prop carries its authored colour/metalness/roughness/emission.
+pub const loadStaticGltfMaterial = gltf.loadStaticMaterial;
+pub const GltfMaterial = gltf.Material;
 
 /// True iff a glTF declares a skin (a character) vs. a static prop — lets the
 /// scene runtime pick the skinned vs. static loader. See `gltf.hasSkins`.

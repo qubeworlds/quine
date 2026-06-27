@@ -212,6 +212,45 @@ pub fn loadStaticMesh(allocator: std.mem.Allocator, glb: []const u8) !assets.Mes
     return try extractMesh(allocator, root.get("accessors").?.array, root.get("bufferViews").?.array, c.bin, prim);
 }
 
+/// A glTF PBR metallic-roughness material's factors (the texture maps are still
+/// ignored). Defaults are the glTF spec defaults, so a model with no material —
+/// or one that omits a factor — reads as the spec says it should.
+pub const Material = struct {
+    base_color: [4]f32 = .{ 1, 1, 1, 1 },
+    metallic: f32 = 1,
+    roughness: f32 = 1,
+    emissive: [3]f32 = .{ 0, 0, 0 },
+};
+
+/// The first material's PBR factors, so an imported prop renders with its
+/// authored colour / metalness / roughness / emission instead of the engine
+/// default. Returns null when the glb declares no materials (the caller then
+/// leaves the entity on the default material). The returned struct is plain
+/// floats — safe to use after the parse arena is freed.
+pub fn loadStaticMaterial(allocator: std.mem.Allocator, glb: []const u8) ?Material {
+    const c = split(glb) catch return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, c.json, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const materials = parsed.value.object.get("materials") orelse return null;
+    if (materials != .array or materials.array.items.len == 0) return null;
+    if (materials.array.items[0] != .object) return null;
+    const mat = materials.array.items[0].object;
+    var out = Material{};
+    if (mat.get("pbrMetallicRoughness")) |pbrv| if (pbrv == .object) {
+        const pbr = pbrv.object;
+        if (pbr.get("baseColorFactor")) |b| if (b == .array and b.array.items.len >= 4) {
+            for (0..4) |k| out.base_color[k] = jfloat(b.array.items[k]);
+        };
+        if (pbr.get("metallicFactor")) |x| out.metallic = jfloat(x);
+        if (pbr.get("roughnessFactor")) |x| out.roughness = jfloat(x);
+    };
+    if (mat.get("emissiveFactor")) |e| if (e == .array and e.array.items.len >= 3) {
+        for (0..3) |k| out.emissive[k] = jfloat(e.array.items[k]);
+    };
+    return out;
+}
+
 /// True iff the glb declares at least one skin — i.e. it's a skinned/animated
 /// model (a character) rather than a static prop. Lets the scene runtime choose
 /// the static vs. skinned loader up front, instead of trying the skinned one
@@ -428,4 +467,45 @@ fn extractBaseColor(allocator: std.mem.Allocator, root: std.json.ObjectMap, buff
     const off = jintOr(bv, "byteOffset", 0);
     const len: usize = @intCast(bv.get("byteLength").?.integer);
     return try image.decode(allocator, bin[off .. off + len]);
+}
+
+// Assemble a minimal .glb (header + JSON chunk + empty BIN) into `buf`, padding
+// the JSON to a 4-byte boundary as the glb format requires.
+fn testGlb(buf: []u8, json: []const u8) []u8 {
+    const pad = (4 - (json.len % 4)) % 4;
+    const json_len: u32 = @intCast(json.len + pad);
+    std.mem.writeInt(u32, buf[0..][0..4], glb_magic, .little);
+    std.mem.writeInt(u32, buf[4..][0..4], 2, .little);
+    std.mem.writeInt(u32, buf[8..][0..4], 12 + 8 + json_len + 8, .little);
+    std.mem.writeInt(u32, buf[12..][0..4], json_len, .little);
+    std.mem.writeInt(u32, buf[16..][0..4], chunk_json, .little);
+    @memcpy(buf[20..][0..json.len], json);
+    @memset(buf[20 + json.len ..][0..pad], ' ');
+    var o: usize = 20 + json_len;
+    std.mem.writeInt(u32, buf[o..][0..4], 0, .little); // empty BIN length
+    std.mem.writeInt(u32, buf[o + 4 ..][0..4], chunk_bin, .little);
+    o += 8;
+    return buf[0..o];
+}
+
+test "loadStaticMaterial reads the glTF PBR factors" {
+    const a = std.testing.allocator;
+    var buf: [512]u8 = undefined;
+    const glb = testGlb(&buf,
+        \\{"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.6,0.2,1.0],"metallicFactor":1.0,"roughnessFactor":0.3},"emissiveFactor":[0.1,0.0,0.0]}]}
+    );
+    const mat = loadStaticMaterial(a, glb).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), mat.base_color[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), mat.base_color[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), mat.base_color[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), mat.metallic, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), mat.roughness, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), mat.emissive[0], 1e-6);
+
+    // No materials array → null (caller keeps the engine default material).
+    var buf2: [128]u8 = undefined;
+    const glb2 = testGlb(&buf2,
+        \\{"meshes":[]}
+    );
+    try std.testing.expect(loadStaticMaterial(a, glb2) == null);
 }
