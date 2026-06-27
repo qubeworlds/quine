@@ -122,6 +122,18 @@ vec3 f_schlick(float v_o_h, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - v_o_h, 0.0, 1.0), 5.0);
 }
 
+// Split-sum environment BRDF (Karis 2014, "Physically Based Shading on Mobile"):
+// an analytic fit to the preintegrated DFG term, so the ambient specular scales
+// and biases f0 correctly across roughness/view angle without a BRDF LUT. The
+// reflected env is then `env * (f0 * dfg.x + dfg.y)`.
+vec2 env_brdf(float n_o_v, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * n_o_v)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
 // Cheap procedural environment: a ground→sky vertical gradient. Sampled along
 // the normal (ambient irradiance) and the reflection vector (ambient specular),
 // it gives metals something to reflect so they read as metal — a stand-in until
@@ -282,21 +294,24 @@ void main() {
     float shadow = has_sun ? sunShadow(world_pos) : 1.0;
     vec3 lit = (kd * diffuse_color + spec) * (n_o_l * shadow) * key_rgb;
 
-    // Ambient from the environment: diffuse irradiance along N + a reflection
-    // along R (roughness-aware Fresnel). This is what makes metals look metallic.
+    // Ambient from the environment: diffuse irradiance along N + a prefiltered
+    // reflection along R weighted by the split-sum BRDF. This is what makes
+    // metals look metallic.
     vec3 r = reflect(-v, n);
-    // Grazing reflectance (f90): dielectrics brighten toward white, but metals
-    // keep their tint — else gold/brass desaturate to a white/lavender wash at
-    // grazing, which a dimpled surface (many micro-angles) makes severe.
-    vec3 f90 = mix(vec3(1.0 - rough), f0, metallic);
-    vec3 f_amb = f0 + (max(f90, f0) - f0) * pow(1.0 - n_o_v, 5.0);
-    // Ambient: the data sky gradient × ambient tint/intensity when the scene
-    // carries an Environment (×2 maps intensity 0.5 to full sky radiance),
-    // else the legacy hardcoded env.
     vec3 amb_k = ambient_ci.rgb * (ambient_ci.w * 2.0);
+    // Roughness prefilters the reflection: a gradient env has no detail to blur,
+    // so as it roughens we lerp the sampled reflection toward the diffuse
+    // irradiance (R → N), i.e. mirror-sharp when smooth, sky-flat when rough.
+    float spec_blur = rough * rough;
+    vec3 env_r = has_env ? skyGrad(normalize(mix(r, n, spec_blur))) * amb_k
+                         : env(normalize(mix(r, n, spec_blur)));
+    // Split-sum specular: scale+bias f0 by the preintegrated environment BRDF,
+    // with a multi-scatter energy correction so rough metals don't darken.
+    vec2 dfg = env_brdf(n_o_v, rough);
+    vec3 single = f0 * dfg.x + dfg.y;
+    vec3 ms = 1.0 + f0 * (1.0 / max(dfg.x, 1e-3) - 1.0); // Fdez-Aguera energy comp.
     vec3 amb_n = has_env ? skyGrad(n) * amb_k : env(n);
-    vec3 amb_r = has_env ? skyGrad(r) * amb_k : env(r);
-    vec3 ambient = amb_n * diffuse_color + amb_r * f_amb;
+    vec3 ambient = amb_n * diffuse_color + env_r * single * ms;
 
     vec3 col = lit + ambient + emissive.rgb;
 
