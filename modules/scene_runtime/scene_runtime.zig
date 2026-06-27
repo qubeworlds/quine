@@ -1246,7 +1246,7 @@ pub const SceneRuntime = struct {
             const parent = &self.bindings[pi];
             const pt = self.world.get(core.Transform, parent.entity) orelse continue;
             var target = [3]f32{ pt.position.x, pt.position.y, pt.position.z };
-            var rot: ?m.Vec3 = null;
+            var rot: ?m.Quat = null;
             var rotated_offset = false;
             if (b.parent_joint) |jn| {
                 if (parent.pose) |*pose| {
@@ -1260,7 +1260,7 @@ pub const SceneRuntime = struct {
                     // only — the eye centre (offset) still tracks the head, not gaze.
                     var orient = head_delta;
                     if (self.world.get(core.Gaze, b.entity)) |gz| orient = head_delta.mul(rotZTo(gz.dir));
-                    rot = eulerZYX(orient);
+                    rot = m.Quat.fromMat4(orient);
                     // Rotate the seat offset by the head delta too, so it shifts with
                     // the head's tilt (else the skull pokes through the crown).
                     const off = head_delta.transformPoint(m.Vec3.init(b.parent_offset[0], b.parent_offset[1], b.parent_offset[2]));
@@ -1280,7 +1280,7 @@ pub const SceneRuntime = struct {
             // Standalone gaze (a face part with no head joint to compose with):
             // orient it directly toward its eased look direction.
             if (rot == null) {
-                if (self.world.get(core.Gaze, b.entity)) |gz| rot = eulerZYX(rotZTo(gz.dir));
+                if (self.world.get(core.Gaze, b.entity)) |gz| rot = m.Quat.fromMat4(rotZTo(gz.dir));
             }
 
             if (b.body) |body| self.physics.moveTo(body, target, dt); // kinematic tracking
@@ -1316,7 +1316,10 @@ pub const SceneRuntime = struct {
             const p = self.physics.bodyPosition(body);
             if (self.world.get(core.Transform, b.entity)) |t| {
                 t.position = m.Vec3.init(p[0], p[1], p[2]);
-                if (b.sync_rotation) t.rotation = eulerZYX(quatToMat(self.physics.bodyRotation(body)));
+                if (b.sync_rotation) {
+                    const q = self.physics.bodyRotation(body);
+                    t.rotation = m.Quat.init(q[0], q[1], q[2], q[3]);
+                }
             }
         }
 
@@ -1544,7 +1547,12 @@ pub const SceneRuntime = struct {
         if (std.mem.startsWith(u8, path, "transform.")) {
             const t = self.world.get(core.Transform, id) orelse return;
             const f = path["transform.".len..];
-            if (setVec3(&t.position, f, "position", v)) {} else if (setVec3(&t.rotation, f, "rotation", v)) {} else _ = setVec3(&t.scale, f, "scale", v);
+            if (setVec3(&t.position, f, "position", v)) {} else if (std.mem.startsWith(u8, f, "rotation")) {
+                // Rotation tracks stay Euler-keyed: read back to Euler, set the
+                // lane, recompose the quaternion.
+                var euler = t.rotation.toEulerZYX();
+                if (setVec3(&euler, f, "rotation", v)) t.rotation = m.Quat.fromEulerZYX(euler);
+            } else _ = setVec3(&t.scale, f, "scale", v);
         } else if (std.mem.startsWith(u8, path, "material.")) {
             const mat = self.world.get(core.Material, id) orelse return;
             const f = path["material.".len..];
@@ -1691,17 +1699,6 @@ fn rotZTo(dir: m.Vec3) m.Mat4 {
 /// Column-major rotation matrix from a Jolt body quaternion (x, y, z, w).
 fn quatToMat(q: [4]f32) m.Mat4 {
     return (m.Quat{ .x = q[0], .y = q[1], .z = q[2], .w = q[3] }).toMat4();
-}
-
-/// Euler angles (radians, the Z-Y-X order `components.Transform.matrix` rebuilds)
-/// from a column-major pure-rotation matrix.
-fn eulerZYX(rot: m.Mat4) m.Vec3 {
-    const mm = rot.m; // column-major: R[row][col] = mm[col*4 + row]
-    return m.Vec3.init(
-        std.math.atan2(mm[6], mm[10]), // x = atan2(R21, R22)
-        std.math.asin(std.math.clamp(-mm[2], -1.0, 1.0)), // y = asin(-R20)
-        std.math.atan2(mm[1], mm[0]), // z = atan2(R10, R00)
-    );
 }
 
 /// The "head" joint: the topmost skin joint in the (sampled) bind pose — the
@@ -2227,9 +2224,9 @@ test "gaze eases the eye toward a look target and swings the iris orientation" {
     const iris = rt.find("eyes.L.iris").?.entity;
     // Aim the gaze hard to one side; the system eases `dir` toward it (clamped).
     rt.world.get(core.Gaze, iris).?.target = m.Vec3.init(1, 0, 0.2);
-    const before = rt.world.get(core.Transform, iris).?.rotation;
+    const before = rt.world.get(core.Transform, iris).?.rotation.toEulerZYX();
     for (0..60) |_| try rt.update(1.0 / 60.0);
-    const after = rt.world.get(core.Transform, iris).?.rotation;
+    const after = rt.world.get(core.Transform, iris).?.rotation.toEulerZYX();
     // The iris orientation changed (it swung toward the target), and the eased
     // direction is no longer straight ahead.
     try std.testing.expect(@abs(after.y - before.y) > 0.05);

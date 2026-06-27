@@ -186,9 +186,7 @@ fn interpolated(prev: *World, e: Entity, cur_t: Transform, alpha: f32) Transform
 /// looking down its local -Z, with +Y up. Derived from the rotation matrix's
 /// columns so we don't need a general matrix inverse.
 fn viewFromTransform(t: Transform) m.Mat4 {
-    const r = m.Mat4.rotationZ(t.rotation.z)
-        .mul(m.Mat4.rotationY(t.rotation.y))
-        .mul(m.Mat4.rotationX(t.rotation.x));
+    const r = t.rotation.toMat4();
     // Columns of r are the images of the basis vectors.
     const right = m.Vec3.init(r.m[0], r.m[1], r.m[2]);
     const up = m.Vec3.init(r.m[4], r.m[5], r.m[6]);

@@ -414,6 +414,66 @@ pub const Quat = extern struct {
             0,                   0,                   0,                 1,
         } };
     }
+
+    /// Quaternion for Z-Y-X intrinsic Euler angles (the order `Mat4.rotation*`
+    /// and the old Euler `Transform` used), so authored `[x,y,z]` rotations map
+    /// through unchanged. Equivalent to Rz·Ry·Rx.
+    pub fn fromEulerZYX(e: Vec3) Quat {
+        const qx = fromAxisAngle(.{ .x = 1, .y = 0, .z = 0 }, e.x);
+        const qy = fromAxisAngle(.{ .x = 0, .y = 1, .z = 0 }, e.y);
+        const qz = fromAxisAngle(.{ .x = 0, .y = 0, .z = 1 }, e.z);
+        return qz.mul(qy).mul(qx);
+    }
+
+    /// Z-Y-X Euler angles for this quaternion — the inverse of `fromEulerZYX`,
+    /// for serialising back to authored form and for Euler-keyed timeline tracks.
+    pub fn toEulerZYX(q: Quat) Vec3 {
+        const m0 = q.toMat4().m; // column-major: R[row][col] = m[col*4+row]
+        return .{
+            .x = math.atan2(m0[6], m0[10]), // atan2(R21, R22)
+            .y = math.asin(std.math.clamp(-m0[2], -1.0, 1.0)), // asin(-R20)
+            .z = math.atan2(m0[1], m0[0]), // atan2(R10, R00)
+        };
+    }
+
+    /// Extract a (unit) rotation quaternion from the rotation part of a matrix.
+    /// Assumes the upper-left 3x3 is a pure rotation (callers normalise out scale
+    /// first). Shepperd's method — branches on the largest diagonal for stability.
+    pub fn fromMat4(mat: Mat4) Quat {
+        const c = mat.m;
+        const m00 = c[0];
+        const m11 = c[5];
+        const m22 = c[10];
+        const trace = m00 + m11 + m22;
+        var q: Quat = undefined;
+        if (trace > 0) {
+            var s = @sqrt(trace + 1.0) * 2.0;
+            q.w = 0.25 * s;
+            q.x = (c[6] - c[9]) / s;
+            q.y = (c[8] - c[2]) / s;
+            q.z = (c[1] - c[4]) / s;
+            _ = &s;
+        } else if (m00 > m11 and m00 > m22) {
+            const s = @sqrt(1.0 + m00 - m11 - m22) * 2.0;
+            q.w = (c[6] - c[9]) / s;
+            q.x = 0.25 * s;
+            q.y = (c[4] + c[1]) / s;
+            q.z = (c[8] + c[2]) / s;
+        } else if (m11 > m22) {
+            const s = @sqrt(1.0 + m11 - m00 - m22) * 2.0;
+            q.w = (c[8] - c[2]) / s;
+            q.x = (c[4] + c[1]) / s;
+            q.y = 0.25 * s;
+            q.z = (c[9] + c[6]) / s;
+        } else {
+            const s = @sqrt(1.0 + m22 - m00 - m11) * 2.0;
+            q.w = (c[1] - c[4]) / s;
+            q.x = (c[8] + c[2]) / s;
+            q.y = (c[9] + c[6]) / s;
+            q.z = 0.25 * s;
+        }
+        return q.normalize();
+    }
 };
 
 // =============================================================================
@@ -511,4 +571,25 @@ test "full inverse undoes a perspective * view (non-affine)" {
     const vp = proj.mul(view);
     const prod = vp.mul(vp.inverse());
     for (Mat4.identity.m, prod.m) |e, a| try testing.expectApproxEqAbs(e, a, 1e-3);
+}
+
+test "Quat euler round-trips and fromMat4 inverts toMat4" {
+    const e = Vec3.init(0.3, -0.7, 1.1); // arbitrary ZYX Euler (clear of the asin singularity)
+    const q = Quat.fromEulerZYX(e);
+    const back = q.toEulerZYX();
+    try testing.expectApproxEqAbs(e.x, back.x, 1e-5);
+    try testing.expectApproxEqAbs(e.y, back.y, 1e-5);
+    try testing.expectApproxEqAbs(e.z, back.z, 1e-5);
+
+    // fromMat4(toMat4(q)) == q (up to sign — a quat and its negation are the
+    // same rotation), so compare the resulting rotation matrices instead.
+    const q2 = Quat.fromMat4(q.toMat4());
+    for (q.toMat4().m, q2.toMat4().m) |a, b| try testing.expectApproxEqAbs(a, b, 1e-5);
+}
+
+test "Quat.fromEulerZYX matches the Mat4 Z-Y-X rotation it replaced" {
+    const e = Vec3.init(0.4, 0.9, -0.2);
+    const viaQuat = Quat.fromEulerZYX(e).toMat4();
+    const viaMat = Mat4.rotationZ(e.z).mul(Mat4.rotationY(e.y)).mul(Mat4.rotationX(e.x));
+    for (viaQuat.m, viaMat.m) |a, b| try testing.expectApproxEqAbs(a, b, 1e-5);
 }

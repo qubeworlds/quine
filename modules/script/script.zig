@@ -293,7 +293,8 @@ fn jsTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*
     const js = ctxJs(ctx);
     const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
     const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
-    const r = [3]f32{ t.rotation.x, t.rotation.y, t.rotation.z };
+    const e3 = t.rotation.toEulerZYX(); // JS contract stays Euler
+    const r = [3]f32{ e3.x, e3.y, e3.z };
     return c.JS_NewFloat64(ctx, r[argAxis(ctx, argv[1])]);
 }
 fn jsSetTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -302,7 +303,7 @@ fn jsSetTransformRot(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv:
     const js = ctxJs(ctx);
     const e = argEntity(js, ctx, argv[0]) orelse return undef(ctx);
     const t = js.scene.world.get(core.Transform, e) orelse return undef(ctx);
-    t.rotation = .{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) };
+    t.rotation = @TypeOf(t.rotation).fromEulerZYX(.{ .x = argF32(ctx, argv[1]), .y = argF32(ctx, argv[2]), .z = argF32(ctx, argv[3]) });
     return undef(ctx);
 }
 fn jsSpawn(ctx: ?*c.JSContext, this_val: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
@@ -610,7 +611,7 @@ test "a skill reads and writes transform.rotation (steering)" {
 
     const ship = rt.find("ship").?;
     const t = rt.world.get(core.Transform, ship.entity).?;
-    try std.testing.expectApproxEqAbs(@as(f32, 0.25 + dt), t.rotation.y, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25 + dt), t.rotation.toEulerZYX().y, 1e-4);
 }
 
 test "a skill spawns from a template, drives it, and despawns it" {

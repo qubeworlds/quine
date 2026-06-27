@@ -260,12 +260,7 @@ pub fn syncRenderable(world: *core.World, physics: *phys.World, pieces: []const 
         const p = physics.bodyPosition(pc.body);
         t.position = .{ .x = p[0], .y = p[1], .z = p[2] };
         const q = physics.bodyRotation(pc.body);
-        const rm = (m.Quat{ .x = q[0], .y = q[1], .z = q[2], .w = q[3] }).toMat4().m;
-        t.rotation = m.Vec3.init(
-            std.math.atan2(rm[6], rm[10]),
-            std.math.asin(std.math.clamp(-rm[2], -1.0, 1.0)),
-            std.math.atan2(rm[1], rm[0]),
-        );
+        t.rotation = m.Quat.init(q[0], q[1], q[2], q[3]); // physics quat straight in
     }
 }
 

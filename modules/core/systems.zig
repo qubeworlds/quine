@@ -54,9 +54,10 @@ pub fn spin(world: anytype, dt: f64) void {
     while (it.next()) |e| {
         const v = world.get(Spin, e).?.velocity;
         const t = if (world.get(Parent, e)) |p| &p.local else world.get(Transform, e).?;
-        t.rotation.x += v.x * dt32;
-        t.rotation.y += v.y * dt32;
-        t.rotation.z += v.z * dt32;
+        // Integrate angular velocity as a local-frame rotation: a delta quat
+        // about the velocity axis by |v|·dt, post-multiplied (spin about own axis).
+        const ang = v.length() * dt32;
+        if (ang > 1e-12) t.rotation = t.rotation.mul(m.Quat.fromAxisAngle(v, ang)).normalize();
     }
 }
 
@@ -110,20 +111,9 @@ fn decompose(mat: m.Mat4) Transform {
     rot.m[10] = c[10] * iz;
     return .{
         .position = m.Vec3.init(c[12], c[13], c[14]),
-        .rotation = eulerZYX(rot),
+        .rotation = m.Quat.fromMat4(rot), // exact — no Euler round-trip
         .scale = m.Vec3.init(sx, sy, sz),
     };
-}
-
-// Z-Y-X Euler angles from a pure rotation matrix (column-major: R[row][col] =
-// m[col*4+row]) — the inverse of `Transform.matrix`'s rotation order.
-fn eulerZYX(rot: m.Mat4) m.Vec3 {
-    const mm = rot.m;
-    return m.Vec3.init(
-        std.math.atan2(mm[6], mm[10]), // x = atan2(R21, R22)
-        std.math.asin(std.math.clamp(-mm[2], -1.0, 1.0)), // y = asin(-R20)
-        std.math.atan2(mm[1], mm[0]), // z = atan2(R10, R00)
-    );
 }
 
 /// Relax squash-and-stretch and write it to the scale. Each tick the squash

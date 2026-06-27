@@ -300,7 +300,7 @@ pub const World = struct {
         const cam = w.spawn();
         w.set(Transform, cam, .{
             .position = m.Vec3.init(0, 1.0, 3.2),
-            .rotation = m.Vec3.init(-0.1, 0, 0), // slight pitch down
+            .rotation = m.Quat.fromEulerZYX(m.Vec3.init(-0.1, 0, 0)), // slight pitch down
         });
         w.set(Camera, cam, .{});
 
@@ -412,7 +412,7 @@ pub fn loadScene(allocator: std.mem.Allocator, world: *World, scene_data: SceneD
         if (e.transform) |t| {
             world.set(Transform, ent, .{
                 .position = v3(t.position),
-                .rotation = v3(t.rotation),
+                .rotation = m.Quat.fromEulerZYX(v3(t.rotation)), // authored Euler → quat
                 .scale = v3(t.scale),
             });
         } else if (e.geometry != null or e.camera != null) {
@@ -741,7 +741,7 @@ test "scene graph: a child composes its parent's world transform each tick" {
     var w = World.init();
     // Parent: translated +X by 2, rotated 0.4 rad about Y.
     const par = w.spawn();
-    w.set(Transform, par, .{ .position = m.Vec3.init(2, 0, 0), .rotation = m.Vec3.init(0, 0.4, 0) });
+    w.set(Transform, par, .{ .position = m.Vec3.init(2, 0, 0), .rotation = m.Quat.fromEulerZYX(m.Vec3.init(0, 0.4, 0)) });
     // Child: 1 unit along the parent's local +Z, with its own local spin.
     const child = w.spawn();
     w.set(Transform, child, .{});
@@ -753,7 +753,7 @@ test "scene graph: a child composes its parent's world transform each tick" {
     // Spin drove the child's LOCAL (not its world Transform): the local rotation
     // advanced by exactly one tick.
     const local = w.get(Parent, child).?.local;
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), local.rotation.y, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 / 60.0), local.rotation.toEulerZYX().y, 1e-6);
 
     // The child's world Transform must equal parent.world ∘ local — compare the
     // composed model matrices directly (convention- and Euler-singularity-proof).
@@ -790,9 +790,9 @@ test "coupling: a gear train derives each stage's spin from the driver in one ti
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), w.get(Spin, c).?.velocity.y, 1e-6);
     // And the integrated rotations match those rates after one tick.
     const dt: f32 = 1.0 / 60.0;
-    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, a).?.rotation.y, 1e-6);
-    try std.testing.expectApproxEqAbs(-2.0 * dt, w.get(Transform, b).?.rotation.y, 1e-6);
-    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, c).?.rotation.y, 1e-6);
+    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, a).?.rotation.toEulerZYX().y, 1e-6);
+    try std.testing.expectApproxEqAbs(-2.0 * dt, w.get(Transform, b).?.rotation.toEulerZYX().y, 1e-6);
+    try std.testing.expectApproxEqAbs(1.0 * dt, w.get(Transform, c).?.rotation.toEulerZYX().y, 1e-6);
 }
 
 test "init spawns a single drawable that the spin system rotates" {

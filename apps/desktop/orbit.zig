@@ -56,7 +56,7 @@ pub const Orbit = struct {
     pub fn apply(self: Orbit, world: *core.World, cam: core.Entity) void {
         if (world.get(core.Transform, cam)) |tf| {
             tf.position = self.position();
-            tf.rotation = m.Vec3.init(-self.pitch, self.yaw, 0);
+            tf.rotation = m.Quat.fromEulerZYX(m.Vec3.init(-self.pitch, self.yaw, 0));
         }
     }
 };

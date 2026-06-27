@@ -7,38 +7,34 @@ const assets = @import("assets.zig");
 const ecs = @import("ecs");
 const Entity = ecs.Entity;
 
-/// Position / rotation / scale of an entity in world space. Rotation is stored
-/// as Euler angles (radians, applied Z-Y-X); fine for the scaffold and trivial
-/// to interpolate. Swap for a quaternion if gimbal lock becomes a problem.
+/// Position / rotation / scale of an entity in world space. Rotation is a unit
+/// **quaternion** — no gimbal lock, exact composition through the scene graph,
+/// and correct shortest-arc interpolation between ticks. Authoring and timeline
+/// tracks stay in Euler (Z-Y-X) and convert at the boundary via
+/// `Quat.fromEulerZYX` / `toEulerZYX`.
 pub const Transform = struct {
     position: m.Vec3 = .{},
-    rotation: m.Vec3 = .{},
+    rotation: m.Quat = .{},
     scale: m.Vec3 = m.Vec3.splat(1),
 
     /// The model matrix `T * R * S` for this transform.
     pub fn matrix(self: Transform) m.Mat4 {
-        const r = m.Mat4.rotationZ(self.rotation.z)
-            .mul(m.Mat4.rotationY(self.rotation.y))
-            .mul(m.Mat4.rotationX(self.rotation.x));
-        return m.Mat4.translation(self.position)
-            .mul(r)
-            .mul(m.Mat4.scaling(self.scale));
+        return m.Mat4.fromTRS(self.position, self.rotation, self.scale);
     }
 
-    /// Component-wise interpolation between two transforms.
+    /// Interpolate between two transforms — position/scale linearly, rotation by
+    /// shortest-arc nlerp (so a fast spin never lerps the long way round).
     pub fn lerp(a: Transform, b: Transform, t: f32) Transform {
         return .{
             .position = a.position.lerp(b.position, t),
-            .rotation = a.rotation.lerp(b.rotation, t),
+            .rotation = a.rotation.nlerp(b.rotation, t),
             .scale = a.scale.lerp(b.scale, t),
         };
     }
 
-    /// The rotation matrix (Z-Y-X) — the rotation applied to the world axes.
+    /// The rotation matrix — the rotation applied to the world axes.
     fn rotMat(self: Transform) m.Mat4 {
-        return m.Mat4.rotationZ(self.rotation.z)
-            .mul(m.Mat4.rotationY(self.rotation.y))
-            .mul(m.Mat4.rotationX(self.rotation.x));
+        return self.rotation.toMat4();
     }
     /// The local +X axis in world space (e.g. the listener's right). Same basis
     /// `viewFromTransform` reads.
