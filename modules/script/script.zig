@@ -635,8 +635,9 @@ test "a skill applies real forces: thrust beats gravity, an off-centre force til
 // twitchy. Tuned HERE, deterministically; the identical JS ships in the editor.
 // Inputs: 0..3 = each rotor's thrust (N); 4 = net yaw reaction torque (N·m).
 const FLIGHT_CTRL = QUAD_DECL ++ QUAD_BODY;
-// Split so the editor can embed the identical controller body. Inputs (the solver
-// wrench, per frame): 4 = collective thrust (N), 5 = roll, 6 = pitch, 7 = yaw.
+// Split so the editor can embed the identical controller body. Inputs per frame:
+// 0..3 = each rotor's thrust (N, for the visual prop spin only); 4 = collective
+// thrust (N), 5 = roll, 6 = pitch, 7 = yaw (the solver wrench that flies the body).
 const QUAD_DECL =
     \\var A = 0.778, W = 0.3 * 9.81;
     \\var OFF = [[A,0,A],[-A,0,A],[-A,0,-A],[A,0,-A]]; // FR FL RL RR rotor positions
@@ -691,13 +692,13 @@ const QUAD_BODY =
     \\  var pitchD = KP*(tPitch - e.x);
     \\  var yawD   = KYAW*(KYR*wy - w.y);
     \\  b.body.addTorque({x:fly*pitchD - KD*w.x, y:fly*yawD - KD*w.y, z:fly*rollD - KD*w.z});
-    \\  // visual props: each hub rides the body pose and spins at its actual thrust
-    \\  // (collective + the controller's differential split).
+    \\  // visual props: each hub rides the body pose and spins at ITS OWN rotor's
+    \\  // thrust (axes 0..3), so turning one rotor on spins only that prop.
     \\  for (var i = 0; i < 4; i++) {
-    \\    var th = thrust*0.25 + fly*(rollD*SX[i] + pitchD*SZ[i] + yawD*SP[i])*0.4; if (th < 0) th = 0;
+    \\    var spin = input(i); if (spin < 0) spin = 0;
     \\    var o = mv(Rb, OFF[i]);
     \\    var h = world.get(HUBS[i]);
-    \\    if (h) { ANG[i]=(ANG[i]+DIR[i]*9.0*Math.sqrt(th)*dt)%6.2831853;
+    \\    if (h) { ANG[i]=(ANG[i]+DIR[i]*9.0*Math.sqrt(spin)*dt)%6.2831853;
     \\             h.transform.position={x:p.x+o[0], y:p.y+o[1], z:p.z+o[2]}; h.transform.rotation=zyx(mul(Rb,ry(ANG[i]))); }
     \\  }
     \\});
