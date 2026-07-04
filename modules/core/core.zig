@@ -230,6 +230,8 @@ pub const loadStaticGltf = gltf.loadStaticScene;
 /// The first material's PBR factors from a static glb (null if it has none), so
 /// an imported prop carries its authored colour/metalness/roughness/emission.
 pub const loadStaticGltfMaterial = gltf.loadStaticMaterial;
+/// The first primitive's embedded base-colour texture, decoded — or null.
+pub const loadStaticGltfTexture = gltf.loadStaticTexture;
 pub const GltfMaterial = gltf.Material;
 
 /// True iff a glTF declares a skin (a character) vs. a static prop — lets the

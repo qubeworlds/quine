@@ -299,6 +299,13 @@ pub const SceneRuntime = struct {
             if (e.geometry) |g| if (g == .gltf and staticGeom(a, assets, g.gltf.source)) {
                 const handle = try self.staticMesh(a, assets, g.gltf.source);
                 self.world.set(core.MeshRef, ent, .{ .mesh = handle });
+                // The glb's embedded base-colour texture (if any) goes into the
+                // CPU texture registry keyed by the glb's asset name — entities
+                // sharing a glb share one decode + one slot. A scene-declared
+                // `material.texture` (below) overrides it.
+                if (self.textureSlotForGlb(a, assets, g.gltf.source)) |slot| {
+                    if (self.world.get(core.MeshRef, ent)) |mr| mr.texture = slot;
+                }
                 // Carry the glTF's own PBR material unless the scene overrides it
                 // (the `e.material` block below wins when present).
                 if (e.material == null) if (try self.staticMaterial(a, assets, g.gltf.source)) |gm| {
@@ -1808,6 +1815,26 @@ pub const SceneRuntime = struct {
         if (slot >= max_textures) return null;
         const bytes = resolve(assets, name) orelse return null;
         const tex = core.image.decode(a, bytes) catch return null;
+        self.textures[slot] = tex;
+        self.texture_names[slot] = a.dupe(u8, name) catch return null;
+        return @intCast(slot);
+    }
+
+    /// Find-or-decode a static glb's embedded base-colour texture into the CPU
+    /// registry (keyed by the glb's asset name); null when the glb carries no
+    /// texture, the asset is missing, or the table is full. The static mirror
+    /// of the skinned atlas — same registry the scene `material.texture` path
+    /// fills, so the app's slot-upload loop ships it to the GPU unchanged.
+    fn textureSlotForGlb(self: *SceneRuntime, a: std.mem.Allocator, assets: []const Asset, name: []const u8) ?u32 {
+        var slot: usize = 1;
+        while (slot < max_textures) : (slot += 1) {
+            if (self.texture_names[slot]) |n| {
+                if (std.mem.eql(u8, n, name)) return @intCast(slot);
+            } else break;
+        }
+        if (slot >= max_textures) return null;
+        const bytes = resolve(assets, name) orelse return null;
+        const tex = core.loadStaticGltfTexture(a, bytes) orelse return null;
         self.textures[slot] = tex;
         self.texture_names[slot] = a.dupe(u8, name) catch return null;
         return @intCast(slot);

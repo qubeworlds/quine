@@ -105,14 +105,32 @@ fn readFloats(allocator: std.mem.Allocator, accessors: std.json.Array, buffer_vi
     return out;
 }
 
+/// True iff the primitive's material references a base-colour texture (JSON
+/// walk only — no image decode). Drives the vertex-colour default: textured
+/// primitives start white (× the sampled atlas), untextured keep the grey.
+fn primHasBaseColorTexture(root: std.json.ObjectMap, prim: std.json.ObjectMap) bool {
+    const mat_v = prim.get("material") orelse return false;
+    const materials = (root.get("materials") orelse return false);
+    if (materials != .array) return false;
+    const mat = materials.array.items[jint(mat_v)].object;
+    const pbr = (mat.get("pbrMetallicRoughness") orelse return false);
+    if (pbr != .object) return false;
+    return pbr.object.get("baseColorTexture") != null;
+}
+
 /// Build a MeshData from one primitive (positions, normals, indices).
-fn extractMesh(allocator: std.mem.Allocator, accessors: std.json.Array, buffer_views: std.json.Array, bin: []const u8, prim: std.json.ObjectMap) !assets.MeshData {
+fn extractMesh(allocator: std.mem.Allocator, accessors: std.json.Array, buffer_views: std.json.Array, bin: []const u8, prim: std.json.ObjectMap, textured: bool) !assets.MeshData {
     const attrs = prim.get("attributes").?.object;
     const pos = accView(accessors, buffer_views, jint(attrs.get("POSITION").?));
     const nrm: ?View = if (attrs.get("NORMAL")) |v| accView(accessors, buffer_views, jint(v)) else null;
+    const tex: ?View = if (attrs.get("TEXCOORD_0")) |v| accView(accessors, buffer_views, jint(v)) else null;
     const ind = accView(accessors, buffer_views, jint(prim.get("indices").?));
 
-    const color = m.Vec4{ .x = 0.78, .y = 0.78, .z = 0.82, .w = 1 };
+    // With a base-colour texture the atlas supplies the surface colour, so
+    // start white (× texture, like the skinned path). UVs WITHOUT a texture
+    // keep the neutral grey — whitening on UVs alone would brighten every
+    // UV-unwrapped-but-untextured prop.
+    const color = if (textured and tex != null) m.Vec4{ .x = 1, .y = 1, .z = 1, .w = 1 } else m.Vec4{ .x = 0.78, .y = 0.78, .z = 0.82, .w = 1 };
     const verts = try allocator.alloc(assets.Vertex, pos.count);
     errdefer allocator.free(verts);
     for (verts, 0..) |*v, i| {
@@ -125,6 +143,10 @@ fn extractMesh(allocator: std.mem.Allocator, accessors: std.json.Array, buffer_v
         if (nrm) |n| {
             const no = n.base + i * n.stride;
             v.normal = .{ .x = f32le(bin, no), .y = f32le(bin, no + 4), .z = f32le(bin, no + 8) };
+        }
+        if (tex) |t| {
+            const to = t.base + i * t.stride;
+            v.uv = .{ f32le(bin, to), f32le(bin, to + 4) };
         }
     }
 
@@ -232,7 +254,7 @@ pub fn loadStaticMesh(allocator: std.mem.Allocator, glb: []const u8) !assets.Mes
     const root = parsed.value.object;
     const prim = root.get("meshes").?.array.items[0].object
         .get("primitives").?.array.items[0].object;
-    return try extractMesh(allocator, root.get("accessors").?.array, root.get("bufferViews").?.array, c.bin, prim);
+    return try extractMesh(allocator, root.get("accessors").?.array, root.get("bufferViews").?.array, c.bin, prim, primHasBaseColorTexture(root, prim));
 }
 
 /// A glTF PBR metallic-roughness material's factors (the texture maps are still
@@ -277,6 +299,23 @@ pub fn loadStaticMaterial(allocator: std.mem.Allocator, glb: []const u8) ?Materi
         out.double_sided = ds.bool;
     };
     return out;
+}
+
+/// The first primitive's base-colour texture, decoded (PNG/JPEG) to RGBA — or
+/// null when the glb has no texture / no embedded image. The static mirror of
+/// the skinned loader's atlas: scene_runtime registers it in the CPU texture
+/// registry so a textured PROP renders its atlas, not flat grey.
+pub fn loadStaticTexture(allocator: std.mem.Allocator, glb: []const u8) ?assets.Texture {
+    const c = split(glb) catch return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, c.json, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const root = parsed.value.object;
+    const meshes = root.get("meshes") orelse return null;
+    if (meshes != .array or meshes.array.items.len == 0) return null;
+    const prim = meshes.array.items[0].object.get("primitives").?.array.items[0].object;
+    const buffer_views = root.get("bufferViews") orelse return null;
+    return extractBaseColor(allocator, root, buffer_views.array, c.bin, prim) catch null;
 }
 
 /// True iff the glb declares at least one skin — i.e. it's a skinned/animated
@@ -361,7 +400,7 @@ pub fn loadStaticScene(allocator: std.mem.Allocator, glb: []const u8) !assets.Me
         const mesh_idx = nv.object.get("mesh") orelse continue;
         const wm = world[ni];
         for ((meshes.items[jint(mesh_idx)].object.get("primitives").?.array).items) |pv| {
-            const md = try extractMesh(allocator, accessors, buffer_views, bin, pv.object);
+            const md = try extractMesh(allocator, accessors, buffer_views, bin, pv.object, primHasBaseColorTexture(root, pv.object));
             defer allocator.free(md.vertices);
             defer allocator.free(md.indices);
             const base: u32 = @intCast(verts.items.len);

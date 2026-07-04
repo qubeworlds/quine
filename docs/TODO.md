@@ -112,11 +112,20 @@ The maps, and what each unlocks on a face:
 
 Work, smallest-first:
 
-- [ ] **glTF: load UVs + samplers + image bytes.** `modules/core/gltf.zig`
-      currently drops `TEXCOORD_0` and the images. Read UVs and the material's
-      texture references (base-colour first, then MR/normal/AO/emissive) + the
-      embedded/we-referenced image bytes. CesiumMan is already textured — use it
-      as the first real case.
+- [~] **glTF: load UVs + samplers + image bytes.** BASE-COLOUR DONE for both
+      paths (2026-07-04): the static loader now reads `TEXCOORD_0` and the
+      embedded base-colour image (`gltf.loadStaticTexture`), scene_runtime
+      registers it in the CPU texture registry keyed by the glb asset name
+      (shared decode/slot across entities; a scene `material.texture`
+      override wins), and the app's existing slot-upload loop ships it — a
+      textured prop (e.g. the water scene's `boat.glb`) renders its atlas
+      instead of flat grey. Vertex colour whitens only when the primitive's
+      material actually references a base-colour texture, so UV-unwrapped but
+      untextured props keep their old grey (sundial verified pixel-identical).
+      The skinned path already did all of this. STILL OPEN: MR / normal / AO /
+      emissive maps, samplers/wrap modes, and sRGB→linear decode (deliberately
+      deferred with the tonemap/colour-space pass — scene textures never
+      decoded sRGB either, and changing it moves every existing look).
 - [x] **Image decode (wasm-safe).** PNG was already hand-rolled (`png.zig`);
       added a hand-rolled **baseline + progressive JPEG** decoder (`jpeg.zig`) and a
       magic-byte dispatcher (`image.zig`). Pure Zig, no new build dep (so no
@@ -124,9 +133,12 @@ Work, smallest-first:
       *progressive* JPEG — decoded output matches libjpeg to ≤4/channel (verified
       against a PIL reference in the core test). Chose this over `zigimg`/`stb_image`
       to keep `core` dependency-free, deterministic, and headless-testable.
-- [ ] **CPU texture registry in `core`.** Mirror `MeshRegistry`: handles → CPU
-      image data (no GPU dep), with a revision counter for live edits, so
-      headless/batch/replay still works.
+- [~] **CPU texture registry in `core`.** A working registry exists in
+      scene_runtime (`textures[8]`, name-keyed, decode-once, render-free; the
+      app uploads the slots) and now serves both scene `material.texture`
+      assets AND static-glb embedded atlases. Still open: promote it into
+      `core` proper as a handle-based `TextureRegistry` with a revision
+      counter for live edits, and lift the 8-slot cap.
 - [ ] **Material gains texture handles.** Extend `components.Material` with
       optional handles per map (albedo, MR, normal, AO, emissive) alongside the
       existing scalar factors (factor × sampled texel, the glTF convention).
