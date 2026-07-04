@@ -90,6 +90,27 @@ The **next major effort is PBR**: albedo / metallic / roughness as material
 retires the per-vertex recolour path and its re-upload. See §1 (Materials &
 textures) for the existing breakdown.
 
+## 0. WebGPU backend — verify on a real adapter (city renders nothing)
+
+- [ ] **The WebGPU bundle is effectively unverified in real browsers**, and the
+      `city` scene exposes it: on Safari 26 (which now ships WebGPU on by
+      default, so `gpu=auto` picks it) the engine boots, the tunnel scene
+      renders, but after the swap to `city` **no frames are presented** — the
+      device stays alive (no `device lost`), which is the WebGPU
+      *validation-failure* profile: rejected command buffers draw nothing and
+      the errors land only in the browser console. The same scene renders
+      correctly on the webgl2 bundle (verified headless-Chromium 2026-07-04).
+      `city` is the first scene to combine **scene-level PNG textures + fog +
+      `shadowMapSize` 4096** — prime suspects are the runtime shadow-target
+      recreate (`ensureShadowSize`) and the static-texture bind path on wgpu.
+      Local repro is blocked: under SwiftShader/Dawn even the pre-session
+      engine dies at instance level (`external Instance reference no longer
+      exists`, sapp id:89), so this needs a real WebGPU adapter (Safari 26 /
+      Chrome + native GPU) with the JS console open. Until then `city` pins
+      `"preferredBackend": "webgl2"` (same mechanism as `drill`). The
+      device-loss auto-fallback in the harness does NOT catch this mode —
+      consider a "no frame presented in N s → webgl2" watchdog in scene.html.
+
 ## 1. Materials & textures (PBR maps)
 
 Goal: surfaces carry real **textured** PBR materials, not a flat per-draw colour.
