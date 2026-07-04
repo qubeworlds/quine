@@ -64,6 +64,7 @@ layout(binding=2) uniform fs_lights {
     vec4 point_col[MAX_POINT_LIGHTS]; // rgb colour, w = intensity (0 = unused slot)
     mat4 sun_shadow_mvp; // world -> sun clip ([0,1] z), both write + read side
     vec4 shadow_params;  // x = enabled, y = shadow-map texel size, z = depth bias
+    vec4 fog;            // rgb fog colour, w = exp density (0 = off)
 };
 // The sun shadow map: 16-bit depth packed into RG of an RGBA8 target (works
 // on the WebGL2 floor — no depth-texture sampling needed). NEAREST sampler:
@@ -366,6 +367,14 @@ void main() {
         // a metal reflects are baked into env() now, so they apply in-scene too.)
         float rim = pow(clamp(1.0 - n_o_v, 0.0, 1.0), 3.0);
         col += vec3(0.45, 0.55, 0.75) * rim * 0.22;
+    }
+
+    // Exponential distance fog (atmospheric perspective): blend toward the
+    // scene's fog colour with camera distance, BEFORE exposure/tonemap so the
+    // fog grades with the frame. Density 0 (the default) is a no-op.
+    if (fog.w > 0.0) {
+        float f = 1.0 - exp(-fog.w * length(view_dir));
+        col = mix(col, fog.rgb, clamp(f, 0.0, 1.0));
     }
 
     // Tones: pre-tonemap exposure, then the selected operator. The legacy

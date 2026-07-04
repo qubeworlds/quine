@@ -330,6 +330,9 @@ pub const Environment = struct {
     ambient_color: Vec3 = .{ 1, 1, 1 },
     ambient_intensity: f32 = 0.3,
     stars: f32 = 0,
+    /// Exponential distance fog (`fog: { color, density }`); density 0 = off.
+    fog_color: Vec3 = .{ 0.6, 0.66, 0.72 },
+    fog_density: f32 = 0,
 };
 
 /// Post-processing knobs on the camera entity (mirrors `components.Post`).
@@ -1037,6 +1040,12 @@ fn parseEnvironment(v: Value) !Environment {
         if (ao.get("color")) |x| env.ambient_color = try asVec3(x);
         if (ao.get("intensity")) |x| env.ambient_intensity = try asF32(x);
     }
+    if (o.get("fog")) |fv| {
+        if (fv != .object) return error.InvalidScene;
+        const fo = fv.object;
+        if (fo.get("color")) |x| env.fog_color = try asVec3(x);
+        if (fo.get("density")) |x| env.fog_density = try asF32(x);
+    }
     return env;
 }
 
@@ -1257,6 +1266,23 @@ test "parses per-entity shadow flags and the sun's shadow-map size" {
     const hud = s.entities[2].shadow.?;
     try testing.expect(!hud.cast and !hud.receive);
     try testing.expect(s.entities[3].shadow == null); // absent = default both
+}
+
+test "parses environment fog (colour + density), defaulting to off" {
+    const json =
+        \\{ "schemaVersion":1, "name":"t", "entities":[
+        \\  { "name":"sky", "environment":{ "fog":{ "color":[0.7,0.75,0.8], "density":0.02 } } },
+        \\  { "name":"plain", "environment":{ "ambient":{ "intensity":0.4 } } }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    const foggy = s.entities[0].environment.?;
+    try testing.expectApproxEqAbs(@as(f32, 0.02), foggy.fog_density, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.75), foggy.fog_color[1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), s.entities[1].environment.?.fog_density, 1e-6);
 }
 
 test "parses an sdf/csg geometry into a core SdfScene" {

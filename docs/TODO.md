@@ -138,7 +138,8 @@ Work, smallest-first:
       app uploads the slots) and now serves both scene `material.texture`
       assets AND static-glb embedded atlases. Still open: promote it into
       `core` proper as a handle-based `TextureRegistry` with a revision
-      counter for live edits, and lift the 8-slot cap.
+      counter for live edits. (The slot cap was lifted 8 → 64 on 2026-07-04
+      for the procedural-city work; sokol pools have ample headroom.)
 - [ ] **Material gains texture handles.** Extend `components.Material` with
       optional handles per map (albedo, MR, normal, AO, emissive) alongside the
       existing scalar factors (factor × sampled texel, the glTF convention).
@@ -210,6 +211,14 @@ Open work:
       local X=world-up, Y=world-right, Z=world-back), so the face rides the walk.
 - [ ] **Bake good playground values** into the schema defaults once the look is
       dialed; let a **look-at skill** drive `Gaze` (track the ball).
+
+### Shipped 2026-07-04 — distance fog (atmospheric perspective)
+
+`environment.fog: { color, density }` — exponential distance fog applied to
+mesh draws pre-tonemap; density 0 (default) is a no-op, so legacy scenes are
+pixel-identical (sundial verified). Follow-up: the SDF/raymarch path
+(`raymarch.glsl`) doesn't apply fog yet — fine while no scene mixes SDF with
+fog, but add it before a foggy scene ships SDF geometry.
 
 ## 2. Scenes — preserve & combine
 

@@ -115,7 +115,7 @@ pub const Binding = struct {
 };
 
 /// Per-runtime texture-slot capacity (mirrors the render layer's table).
-pub const max_textures = 8;
+pub const max_textures = 64; // mirrors render.max_static_tex (slot 0 = white)
 
 /// Max queued skill→app output events drained per tick (audio cues, etc.).
 pub const max_out_events = 128;
@@ -383,6 +383,8 @@ pub const SceneRuntime = struct {
                 .ambient_color = m.Vec3.init(env.ambient_color[0], env.ambient_color[1], env.ambient_color[2]),
                 .ambient_intensity = env.ambient_intensity,
                 .stars = env.stars,
+                .fog_color = m.Vec3.init(env.fog_color[0], env.fog_color[1], env.fog_color[2]),
+                .fog_density = env.fog_density,
             });
             if (e.post) |p| self.world.set(core.Post, ent, .{
                 .tonemap = switch (p.tonemap) {

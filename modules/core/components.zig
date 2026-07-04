@@ -226,6 +226,12 @@ pub const Environment = struct {
     /// Night-sky star field strength in the sky background (0 = off, 1 = full).
     /// Timeline-animatable (`environment.sky.stars`) for day/night cycles.
     stars: f32 = 0,
+    /// Exponential distance fog: lit colour blends toward `fog_color` by
+    /// `1 − exp(−fog_density · distance)`. 0 = off (the default — legacy
+    /// scenes render unchanged). The atmospheric-perspective cue that makes
+    /// large scenes (a city skyline) read as large.
+    fog_color: m.Vec3 = .{ .x = 0.6, .y = 0.66, .z = 0.72 },
+    fog_density: f32 = 0,
 };
 
 /// Post-processing knobs, carried on the camera entity: pre-tonemap exposure

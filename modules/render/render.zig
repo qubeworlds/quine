@@ -30,7 +30,10 @@ pub const max_joints = 64;
 
 /// Number of static base-colour atlas slots a frame can reference (per-entity
 /// textures, indexed by `MeshRef.texture`). Slot 0 is a permanent 1×1 white.
-pub const max_static_tex = 8;
+/// Static texture slots (slot 0 = the 1x1 white). 64 gives a generated city
+/// district a real facade wardrobe; each slot only allocates when uploaded,
+/// and the sokol image/view pools (1024) have ample headroom.
+pub const max_static_tex = 64;
 
 /// Sun shadow-map resolution (square).
 /// Default sun shadow-map resolution; a scene's casting light can ask for a
@@ -185,6 +188,7 @@ fn lightParams(queue: *const core.RenderQueue) shd.FsLights {
         l.ambient_ci = .{ queue.env.ambient_color.x, queue.env.ambient_color.y, queue.env.ambient_color.z, queue.env.ambient_intensity };
         l.sky_zenith = .{ queue.env.sky_zenith.x, queue.env.sky_zenith.y, queue.env.sky_zenith.z, l.sky_zenith[3] };
         l.sky_horizon = .{ queue.env.sky_horizon.x, queue.env.sky_horizon.y, queue.env.sky_horizon.z, l.sky_horizon[3] };
+        l.fog = .{ queue.env.fog_color.x, queue.env.fog_color.y, queue.env.fog_color.z, queue.env.fog_density };
     }
     l.sky_zenith[3] = @max(queue.post.exposure, 0);
     l.sky_horizon[3] = if (queue.post.tonemap == .aces) 1 else 0;
