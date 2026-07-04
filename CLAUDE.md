@@ -143,6 +143,21 @@ R2 creds). **User-uploaded assets are a separate, private concern** (the
 
 ## Gotchas
 
+- **Every draw needs `sg.applyBindings` — WebGPU enforces it.** sokol's WebGPU
+  pipeline layout always carries bind group 1 (views/samplers), even for a
+  shader that samples nothing, and WebGPU refuses to draw unless every layout
+  group is set. A resource-less fullscreen pass therefore can't be legally
+  bound: an empty `sg_bindings` fails sokol's own validation, so the pattern is
+  to sample the 1×1 white texture as identity (see `bg_fs` — the sky pass was
+  the only such draw and blanked every environment-sky scene on Safari 26,
+  "number of bind groups set(1) is less than the pipeline uses(2)"). GL treats
+  bindings as global state and silently forgives the omission — so a
+  GL-verified render proves nothing about wgpu bindings. Full story: `docs/TODO.md` §0.
+- **wgpu does not run in headless Chromium** (SwiftShader or lavapipe) with our
+  emscripten glue — instance-level device loss at boot. webgl2 works headless;
+  webgpu verification needs a real browser (Safari 26 / Chrome + native GPU).
+  The `/scene` harness on qubeworlds.com logs WebGPU `uncapturederror`
+  messages into its on-page log — that's the debugging loop.
 - A windowed `zig build run` needs a display; it won't run in a headless CI
   container. Use `zig build test` for headless verification.
 - **Headless *visual* verification** (see the actual render without a display):

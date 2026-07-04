@@ -90,10 +90,10 @@ The **next major effort is PBR**: albedo / metallic / roughness as material
 retires the per-vertex recolour path and its re-upload. See §1 (Materials &
 textures) for the existing breakdown.
 
-## 0. WebGPU backend — sky-pass bind fix shipped; verify on a real adapter
+## 0. WebGPU backend — sky-pass bind fix shipped + verified (RESOLVED)
 
-- [~] **ROOT CAUSE FOUND + FIXED (2026-07-04):** the black-screen was the SKY
-      pass. `scene.html`'s new `uncapturederror` page-log hook surfaced the
+- [x] **ROOT CAUSE FOUND, FIXED, VERIFIED (2026-07-04):** the black-screen was
+      the SKY pass. `scene.html`'s `uncapturederror` page-log hook surfaced the
       real Safari error: *"number of bind groups set(1) is less than the
       pipeline uses(2)"*. sokol's WebGPU pipeline layout ALWAYS carries bind
       group 1 (views/samplers) even for a resource-less shader, and WebGPU
@@ -101,19 +101,19 @@ textures) for the existing breakdown.
       tri was the ONLY draw with no `sg_apply_bindings` (fine on GL, fatal on
       wgpu). Every scene with an `environment` (sundial, city) hit it; the
       tunnel (no env → no sky pass) is why "webgpu rendered the tunnel".
-      Fix: `bg_fs` samples the 1×1 white texture as identity so group 1 is
-      non-empty and bindable (an empty `sg_bindings` fails sokol validation, so
-      "just bind nothing" wasn't an option). GL output verified pixel-identical
-      (city mean-abs-diff 0.0). REMAINING: [ ] user-verify city + sundial on
-      Safari-26 webgpu (`?gpu=webgpu` overrides the pin), then drop city's
-      `"preferredBackend": "webgl2"` pin and republish scene.json — textures /
-      fog / `shadowMapSize` on wgpu are exercised for the first time by that
-      test and may hide a second issue behind this one. Also still true: wgpu
-      does NOT run in headless Chromium (SwiftShader or lavapipe) with our
-      emscripten glue — instance-level device loss at boot on every engine
-      version — so real-browser verification is the only loop. Consider a "no
-      frame presented in N s → webgl2" watchdog in scene.html (device-loss
-      fallback can't catch validation failures).
+      Fix (engine 50cad0d): `bg_fs` samples the 1×1 white texture as identity
+      so group 1 is non-empty and bindable (an empty `sg_bindings` fails sokol
+      validation, so "just bind nothing" wasn't an option). GL verified
+      pixel-identical (city mean-abs-diff 0.0); **user-verified on Safari 26
+      WebGPU: the city renders** — which also verifies scene textures, fog and
+      `shadowMapSize` 4096 on wgpu for the first time. City's temporary
+      `"preferredBackend": "webgl2"` pin is dropped (scene republished).
+      Still true / future: wgpu does NOT run in headless Chromium (SwiftShader
+      or lavapipe) with our emscripten glue — instance-level device loss at
+      boot on every engine version — so real-browser verification is the only
+      loop. Optional hardening: a "no frame presented in N s → webgl2"
+      watchdog in scene.html (device-loss fallback can't catch validation
+      failures).
 
 ## 1. Materials & textures (PBR maps)
 
