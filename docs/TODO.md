@@ -149,10 +149,10 @@ Work, smallest-first:
       (QubeKit's SO-100 printed shells) now light correctly. Also fixed while
       verifying: a glb with NO `NORMAL` accessor used a constant +Y fallback
       (every face lit identically — a flat silhouette); `extractMesh` now
-      derives area-weighted normals from the winding. Still open, later:
-      a cull-BACK pipeline for single-sided solids (fill-rate win), and
-      retiring the inner-lining workaround in qubekit's `tools/so100-stl2glb.py`
-      once a doubleSided-aware engine is published to the CDN.
+      derives area-weighted normals from the winding. Published to the CDN
+      2026-07-04; qubekit's inner-lining workaround is retired (its glbs
+      halved). Still open, later: a cull-BACK pipeline for single-sided
+      solids (fill-rate win).
 - [ ] *(later, for skin specifically)* **subsurface scattering / translucency** —
       cheap wrap-diffuse or a SSS approximation, so skin reads as skin not vinyl.
 
@@ -428,8 +428,8 @@ Engine / infra:
       resolution;
       (c) shadowing is all-or-nothing per light — entities have no
       `castShadows` / `receiveShadows` flags.
-      When a doubleSided-aware + tighter-shadow engine ships to the CDN,
-      retire the `VIS = 3` scale workaround in qubekit's `so100-quine-3d.js`.
+      (Published to the CDN 2026-07-04; qubekit's `VIS = 3` scale workaround
+      is retired — the arm shadows cleanly at true 1:1 scale.)
 - [ ] **Re-enable Jolt's job pool** for the 10k+/multicore target (needs a
       thread-safe contact path; we run single-threaded now). *(ADR 0001)*
 - [ ] **Windows cross-compile**: the zphysics binding's comptime `@sizeOf`
