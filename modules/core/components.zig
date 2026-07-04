@@ -199,6 +199,18 @@ pub const Light = struct {
     range: f32 = 10.0,
     /// Honored on one directional light (the key); others ignored.
     cast_shadows: bool = false,
+    /// Shadow-map resolution the casting sun asks for (square, clamped by the
+    /// renderer). Bigger = sharper shadows for more VRAM/fill.
+    shadow_map_size: u32 = 1024,
+};
+
+/// Per-entity shadow participation. Absent = the default (cast and receive).
+/// `cast = false` keeps an entity out of the shadow map AND out of the
+/// caster-fitted shadow volume — a huge backdrop stops bloating the map.
+/// `receive = false` skips the sun-shadow test when shading the entity.
+pub const Shadow = struct {
+    cast: bool = true,
+    receive: bool = true,
 };
 
 /// The scene's sky + ambient term — replaces the renderer's hardcoded sky

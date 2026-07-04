@@ -33,7 +33,11 @@ pub const max_joints = 64;
 pub const max_static_tex = 8;
 
 /// Sun shadow-map resolution (square).
+/// Default sun shadow-map resolution; a scene's casting light can ask for a
+/// different one (`shadowMapSize`, clamped below) and the target is recreated.
 pub const shadow_size = 1024;
+const shadow_size_min = 256;
+const shadow_size_max = 4096;
 
 /// One skinned instance: where to place it and which palette (phase) to use.
 pub const SkinnedInstance = struct {
@@ -265,6 +269,8 @@ pub const Renderer = struct {
     /// RGBA8 target (16-bit packed depth — samples on the WebGL2 floor where
     /// depth-texture reads aren't portable). SDF stone self-shadows in the
     /// raymarch shader; this map adds mesh-onto-mesh and mesh-onto-SDF shadows.
+    /// Currently allocated shadow-target size (the sun's clamped request).
+    shadow_size_alloc: i32 = shadow_size,
     shadow_img: sg.Image = .{},
     shadow_depth_img: sg.Image = .{},
     shadow_att: sg.View = .{},
@@ -460,13 +466,9 @@ pub const Renderer = struct {
         });
 
         // Sun shadow map target + depth-only-ish writer pipeline (packs depth
-        // into RG of RGBA8). Fixed 1024^2; FRONT culling reduces acne on the
-        // simple convex casters.
-        self.shadow_img = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = shadow_size, .height = shadow_size, .pixel_format = .RGBA8, .label = "sun-shadow-map" });
-        self.shadow_depth_img = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = shadow_size, .height = shadow_size, .pixel_format = .DEPTH_STENCIL, .label = "sun-shadow-depth" });
-        self.shadow_att = sg.makeView(.{ .color_attachment = .{ .image = self.shadow_img } });
-        self.shadow_tex_view = sg.makeView(.{ .texture = .{ .image = self.shadow_img } });
-        self.shadow_depth_att = sg.makeView(.{ .depth_stencil_attachment = .{ .image = self.shadow_depth_img } });
+        // into RG of RGBA8). Sized by the scene's casting light (default
+        // 1024^2); FRONT culling reduces acne on the simple convex casters.
+        self.makeShadowTargets(shadow_size);
         self.shadow_smp = sg.makeSampler(.{
             .min_filter = .NEAREST,
             .mag_filter = .NEAREST,
@@ -585,11 +587,35 @@ pub const Renderer = struct {
     /// matches the runtime GPU backend: WebGPU/Metal/D3D11 use z in [0, 1],
     /// while OpenGL/WebGL2 use [-1, 1]. `aspect` is the viewport width/height,
     /// owned by the app.
+    /// (Re)create the sun shadow-map target at `size` (square). Called at init
+    /// and again whenever the scene's casting light asks for a different
+    /// resolution (`Light.shadow_map_size`, clamped to a sane range).
+    fn makeShadowTargets(self: *Renderer, size: i32) void {
+        self.shadow_size_alloc = size;
+        self.shadow_img = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = size, .height = size, .pixel_format = .RGBA8, .label = "sun-shadow-map" });
+        self.shadow_depth_img = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = size, .height = size, .pixel_format = .DEPTH_STENCIL, .label = "sun-shadow-depth" });
+        self.shadow_att = sg.makeView(.{ .color_attachment = .{ .image = self.shadow_img } });
+        self.shadow_tex_view = sg.makeView(.{ .texture = .{ .image = self.shadow_img } });
+        self.shadow_depth_att = sg.makeView(.{ .depth_stencil_attachment = .{ .image = self.shadow_depth_img } });
+    }
+
+    fn ensureShadowSize(self: *Renderer, requested: u32) void {
+        const want: i32 = @intCast(std.math.clamp(requested, shadow_size_min, shadow_size_max));
+        if (want == self.shadow_size_alloc) return;
+        sg.destroyView(self.shadow_att);
+        sg.destroyView(self.shadow_tex_view);
+        sg.destroyView(self.shadow_depth_att);
+        sg.destroyImage(self.shadow_img);
+        sg.destroyImage(self.shadow_depth_img);
+        self.makeShadowTargets(want);
+    }
+
     /// Rasterize the sun shadow map: an ortho ([0,1]-z) view down the sun
     /// direction, sized to the frame's content (SDF bounds + mesh positions),
     /// drawing every non-emissive mesh item as a caster. Returns the
     /// world->sun-clip matrix the receivers project with.
     fn drawShadowPass(self: *Renderer, queue: *const core.RenderQueue, meshes: *const core.MeshRegistry) m.Mat4 {
+        self.ensureShadowSize(queue.sun.shadow_map_size);
         // Content bounds: union of the SDF objects' AABBs and the draw items'
         // positions (padded — item extents aren't tracked per-item).
         var lo = m.Vec3.splat(std.math.inf(f32));
@@ -600,6 +626,10 @@ pub const Renderer = struct {
             hi = .{ .x = @max(hi.x, bb.max.x), .y = @max(hi.y, bb.max.y), .z = @max(hi.z, bb.max.z) };
         }
         for (queue.slice()) |item| {
+            // Only CASTERS shape the shadow volume: a non-casting backdrop
+            // must not bloat the map (receivers outside the fitted volume
+            // sample outside the map and read fully lit).
+            if (!item.cast_shadows) continue;
             // Real per-item world AABBs, so a small scene's shadow volume fits
             // the casters tightly (texel density on the content, not padding).
             // Dynamic meshes re-tessellate per tick and their registry bounds
@@ -634,6 +664,7 @@ pub const Renderer = struct {
         sg.beginPass(pass);
         sg.applyPipeline(self.shadow_pip);
         for (queue.slice()) |item| {
+            if (!item.cast_shadows) continue;
             // Emissive props (the sun disc, lantern glass) are light sources,
             // not occluders — skip them as casters.
             if (@max(item.material.emissive.x, @max(item.material.emissive.y, item.material.emissive.z)) > 0.5) continue;
@@ -772,7 +803,7 @@ pub const Renderer = struct {
         var lights = lightParams(queue);
         if (shadow_mvp) |smat| {
             lights.sun_shadow_mvp = smat.m;
-            lights.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(shadow_size)), 0.0022, 0 };
+            lights.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(self.shadow_size_alloc)), 0.0022, 0 };
         }
         sg.applyUniforms(shd.UB_fs_lights, sg.asRange(&lights));
 
@@ -798,6 +829,7 @@ pub const Renderer = struct {
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             var fsp = materialParams(item.material);
             if (self.preview) fsp.pbr[2] += 1; // staging lights (fill/rim/softboxes) — bit 0 of the flag field
+            if (!item.receive_shadows) fsp.pbr[2] += 4; // bit 2: skip the sun-shadow test
             if (self.preview_dimples != 0) fsp.pbr[3] = @floatFromInt(self.preview_dimples); // dimple mode
             if (probe) fsp.emissive[3] = @floatFromInt(self.debug_mode); // G-buffer channel
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
@@ -937,6 +969,7 @@ pub const Renderer = struct {
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             var fsp = materialParams(item.material);
             if (self.preview) fsp.pbr[2] += 1;
+            if (!item.receive_shadows) fsp.pbr[2] += 4;
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {
@@ -1047,7 +1080,7 @@ pub const Renderer = struct {
         const lights = lightParams(queue);
         if (shadow_mvp) |smat| {
             p.sun_shadow_mvp = smat.m;
-            p.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(shadow_size)), 0.0022, 0 };
+            p.shadow_params = .{ 1, 1.0 / @as(f32, @floatFromInt(self.shadow_size_alloc)), 0.0022, 0 };
         }
         p.sun_dir_int = lights.sun_dir_int;
         p.sun_color = lights.sun_color;

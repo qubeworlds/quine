@@ -312,6 +312,15 @@ pub const Light = struct {
     direction: Vec3 = .{ 0, -1, 0 }, // directional only; engine normalizes
     range: f32 = 10.0, // point only
     cast_shadows: bool = false,
+    /// Shadow-map resolution the casting sun asks for (renderer clamps).
+    shadow_map_size: u32 = 1024,
+};
+
+/// Per-entity shadow participation (mirrors `components.Shadow`). Absent =
+/// cast and receive.
+pub const Shadow = struct {
+    cast: bool = true,
+    receive: bool = true,
 };
 
 /// Sky gradient + ambient term (one per scene; mirrors `components.Environment`).
@@ -365,6 +374,7 @@ pub const Entity = struct {
     buoyancy: ?Buoyancy = null,
     camera: ?Camera = null,
     light: ?Light = null,
+    shadow: ?Shadow = null,
     environment: ?Environment = null,
     post: ?Post = null,
     /// A scene-declared audio emitter on this entity.
@@ -556,6 +566,13 @@ fn parseEntity(v: Value) !Entity {
     if (o.get("buoyancy")) |x| e.buoyancy = try parseBuoyancy(x);
     if (o.get("camera")) |x| e.camera = try parseCamera(x);
     if (o.get("light")) |x| e.light = try parseLight(x);
+    if (o.get("shadow")) |x| {
+        if (x != .object) return error.InvalidScene;
+        var sh = Shadow{};
+        if (x.object.get("cast")) |cv| sh.cast = try asBool(cv);
+        if (x.object.get("receive")) |rv| sh.receive = try asBool(rv);
+        e.shadow = sh;
+    }
     if (o.get("environment")) |x| e.environment = try parseEnvironment(x);
     if (o.get("post")) |x| e.post = try parsePost(x);
     if (o.get("audio")) |x| e.audio = try parseAudio(x);
@@ -999,6 +1016,7 @@ fn parseLight(v: Value) !Light {
     if (o.get("direction")) |x| l.direction = try asVec3(x);
     if (o.get("range")) |x| l.range = try asF32(x);
     if (o.get("castShadows")) |x| l.cast_shadows = try asBool(x);
+    if (o.get("shadowMapSize")) |x| l.shadow_map_size = @intFromFloat(@max(1.0, try asF32(x)));
     return l;
 }
 
@@ -1218,6 +1236,27 @@ test "parses a scene-declared audio source + listener mark" {
     try testing.expectEqual(@as(f32, 4), au.ref_distance);
     try testing.expectEqual(@as(f32, 40), au.max_distance);
     try testing.expect(au.loop and au.spatial);
+}
+
+test "parses per-entity shadow flags and the sun's shadow-map size" {
+    const json =
+        \\{ "schemaVersion":1, "name":"t", "entities":[
+        \\  { "name":"sun", "light":{ "kind":"directional", "castShadows":true, "shadowMapSize":2048 } },
+        \\  { "name":"backdrop", "shadow":{ "cast":false } },
+        \\  { "name":"hud", "shadow":{ "cast":false, "receive":false } },
+        \\  { "name":"prop" }
+        \\] }
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const s = try parse(arena.allocator(), json);
+
+    try testing.expectEqual(@as(u32, 2048), s.entities[0].light.?.shadow_map_size);
+    const backdrop = s.entities[1].shadow.?;
+    try testing.expect(!backdrop.cast and backdrop.receive); // receive defaults on
+    const hud = s.entities[2].shadow.?;
+    try testing.expect(!hud.cast and !hud.receive);
+    try testing.expect(s.entities[3].shadow == null); // absent = default both
 }
 
 test "parses an sdf/csg geometry into a core SdfScene" {

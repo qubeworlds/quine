@@ -367,7 +367,9 @@ pub const SceneRuntime = struct {
                 .direction = m.Vec3.init(l.direction[0], l.direction[1], l.direction[2]),
                 .range = l.range,
                 .cast_shadows = l.cast_shadows,
+                .shadow_map_size = l.shadow_map_size,
             });
+            if (e.shadow) |sh| self.world.set(core.Shadow, ent, .{ .cast = sh.cast, .receive = sh.receive });
             if (e.environment) |env| self.world.set(core.Environment, ent, .{
                 .sky_zenith = m.Vec3.init(env.sky_zenith[0], env.sky_zenith[1], env.sky_zenith[2]),
                 .sky_horizon = m.Vec3.init(env.sky_horizon[0], env.sky_horizon[1], env.sky_horizon[2]),

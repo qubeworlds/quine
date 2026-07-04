@@ -24,6 +24,7 @@ const MeshRef = components.MeshRef;
 const Material = components.Material;
 const Camera = components.Camera;
 const Light = components.Light;
+const Shadow = components.Shadow;
 const Environment = components.Environment;
 const Post = components.Post;
 const SdfScene = @import("sdf_scene.zig").SdfScene;
@@ -38,6 +39,9 @@ pub const DrawItem = struct {
     material: Material = .{},
     /// Static texture-slot id (from `MeshRef.texture`); 0 = white/untextured.
     texture: u32 = 0,
+    /// Shadow participation (the entity's `Shadow` component; absent = both).
+    cast_shadows: bool = true,
+    receive_shadows: bool = true,
 };
 
 /// Upper bound on draw items per frame — one per entity, matching the ECS
@@ -165,11 +169,14 @@ pub fn extract(prev: *World, cur: *World, alpha: f32, out: *RenderQueue) void {
     while (it.next()) |e| {
         const t = interpolated(prev, e, cur.get(Transform, e).?.*, alpha);
         const mr = cur.get(MeshRef, e).?;
+        const sh: Shadow = if (cur.get(Shadow, e)) |sp| sp.* else .{};
         out.items[out.len] = .{
             .mesh = mr.mesh,
             .model = t.matrix(),
             .material = if (cur.get(Material, e)) |mp| mp.* else .{},
             .texture = mr.texture,
+            .cast_shadows = sh.cast,
+            .receive_shadows = sh.receive,
         };
         out.len += 1;
     }

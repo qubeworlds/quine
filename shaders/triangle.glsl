@@ -46,7 +46,7 @@ layout(binding=0) uniform texture2D tex;
 layout(binding=0) uniform sampler smp;
 layout(binding=1) uniform fs_params {
     vec4 base_color;   // albedo rgba
-    vec4 pbr;          // x = metallic, y = roughness, z = flags (bit0 preview, bit1 doubleSided), w = dimples
+    vec4 pbr;          // x = metallic, y = roughness, z = flags (bit0 preview, bit1 doubleSided, bit2 no-shadow-receive), w = dimples
     vec4 emissive;     // rgb emissive; .w = G-buffer probe (0 lit, 1 uv, 2 pos, 3 normal)
 };
 
@@ -306,7 +306,8 @@ void main() {
     vec3 f = f_schlick(v_o_h, f0);
     vec3 spec = d * vis * f;
     vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
-    float shadow = has_sun ? sunShadow(world_pos, n_o_l) : 1.0;
+    // bit 2: this draw opts out of receiving the sun shadow.
+    float shadow = (has_sun && (zflags & 4) == 0) ? sunShadow(world_pos, n_o_l) : 1.0;
     vec3 lit = (kd * diffuse_color + spec) * (n_o_l * shadow) * key_rgb;
 
     // Ambient from the environment: diffuse irradiance along N + a prefiltered

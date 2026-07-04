@@ -416,18 +416,22 @@ Skill / gameplay:
 - [ ] **Interaction:** pick up / throw the ball; or player control of the actor.
 
 Engine / infra:
-- [~] **Shadow-map quality on fine geometry** (the other SO-100 finding, with
+- [x] **Shadow-map quality on fine geometry** (the other SO-100 finding, with
       the `doubleSided` item in §1). Shipped: the shadow volume is now fitted
       from real per-item world AABBs (`transformAabb` of the registry bounds;
       dynamic meshes keep the padded-position fallback) instead of positions
       padded ±1 — a small scene's texels land on the content — with the
       degenerate-scene radius floor lowered 1.0 → 0.25; and the receiver bias
       is slope-scaled (grows up to 4× as N·L → 0) against acne on
-      light-grazing thin geometry. Still open:
-      (b) the map is a fixed 1024² — no way for a scene to ask for more
-      resolution;
-      (c) shadowing is all-or-nothing per light — entities have no
-      `castShadows` / `receiveShadows` flags.
+      light-grazing thin geometry. Closed out 2026-07-04:
+      (b) the casting sun can ask for a resolution — `light.shadowMapSize`
+      (clamped 256–4096, default 1024; the target is recreated on change);
+      (c) per-entity participation — `shadow: { cast, receive }` on any
+      entity. `cast:false` also keeps the entity OUT of the caster-fitted
+      shadow volume (a huge backdrop no longer bloats the map);
+      `receive:false` skips the sun-shadow test when shading it (flag bit 2
+      of `pbr.z`). Scenes that set neither render pixel-identical (verified
+      against a pre-change sundial capture).
       (Published to the CDN 2026-07-04; qubekit's `VIS = 3` scale workaround
       is retired — the arm shadows cleanly at true 1:1 scale.)
 - [ ] **Re-enable Jolt's job pool** for the 10k+/multicore target (needs a
