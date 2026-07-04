@@ -141,20 +141,18 @@ Work, smallest-first:
       linear normal/MR/AO).
 - [ ] **Retire the per-vertex recolour path** (`MeshRegistry.setColor` + its
       re-upload) once colour is a material uniform/texture, not baked per-vertex.
-- [ ] **glTF: honor the material `doubleSided` flag (two-sided lighting).**
-      The renderer never reads it: the main pass draws every triangle (no cull
-      mode set) but lights single-sided, so the interior walls of thin OPEN
-      meshes render near-black — found shipping QubeKit's SO-100 arm, whose
-      3D-printed shells (the base's cable opening, the gripper mouth) read as
-      inverted/culled faces when viewed through an opening. Implement: parse
-      `doubleSided` in `modules/core/gltf.zig`, carry it per material, and in
-      `shaders/triangle.glsl` flip the shading normal toward the viewer
-      (`faceforward`) for double-sided draws — or split pipelines: cull BACK
-      for single-sided, NONE + two-sided lighting for double-sided (culling
-      single-sided solids is also a fill-rate win). When this lands, retire
-      the interim workaround in qubekit's `tools/so100-stl2glb.py` — an
-      "inner lining" (a winding-reversed copy of every triangle, inset 0.4 mm)
-      baked into the glbs, which doubles their size.
+- [x] **glTF: honor the material `doubleSided` flag (two-sided lighting).**
+      Shipped: `gltf.zig` parses `doubleSided`, `Material.double_sided` carries
+      it (scene materials accept `doubleSided` too), and the shader flips the
+      shading normal toward the viewer for double-sided draws (flag bit 1 of
+      `pbr.z`, alongside the preview bit). Interior walls of thin OPEN meshes
+      (QubeKit's SO-100 printed shells) now light correctly. Also fixed while
+      verifying: a glb with NO `NORMAL` accessor used a constant +Y fallback
+      (every face lit identically — a flat silhouette); `extractMesh` now
+      derives area-weighted normals from the winding. Still open, later:
+      a cull-BACK pipeline for single-sided solids (fill-rate win), and
+      retiring the inner-lining workaround in qubekit's `tools/so100-stl2glb.py`
+      once a doubleSided-aware engine is published to the CDN.
 - [ ] *(later, for skin specifically)* **subsurface scattering / translucency** —
       cheap wrap-diffuse or a SSS approximation, so skin reads as skin not vinyl.
 
@@ -418,22 +416,20 @@ Skill / gameplay:
 - [ ] **Interaction:** pick up / throw the ball; or player control of the actor.
 
 Engine / infra:
-- [ ] **Shadow-map quality on fine geometry** (the other SO-100 finding, with
-      the `doubleSided` item in §1). Three compounding limits show as chunky,
-      banded shadows on small/thin parts:
-      (a) the shadow volume is fitted to content bounds that pad every draw
-      item's *position* by ±1 world unit — item extents aren't tracked — so a
-      small scene (the ~0.35 m arm) gets a shadow volume dominated by padding
-      and few texels on the actual casters (QubeKit works around it by
-      rendering the arm at 3× scale; retire that `VIS` scale in
-      `so100-quine-3d.js` when this improves);
-      (b) the map is a fixed 1024² with a fixed depth bias (0.0022) — no
-      slope-scaled bias, no way for a scene to ask for more resolution;
+- [~] **Shadow-map quality on fine geometry** (the other SO-100 finding, with
+      the `doubleSided` item in §1). Shipped: the shadow volume is now fitted
+      from real per-item world AABBs (`transformAabb` of the registry bounds;
+      dynamic meshes keep the padded-position fallback) instead of positions
+      padded ±1 — a small scene's texels land on the content — with the
+      degenerate-scene radius floor lowered 1.0 → 0.25; and the receiver bias
+      is slope-scaled (grows up to 4× as N·L → 0) against acne on
+      light-grazing thin geometry. Still open:
+      (b) the map is a fixed 1024² — no way for a scene to ask for more
+      resolution;
       (c) shadowing is all-or-nothing per light — entities have no
       `castShadows` / `receiveShadows` flags.
-      Work: track per-item AABBs for the shadow fit, add slope-scaled bias
-      (+ make bias resolution-relative), a configurable map size, and
-      per-entity cast/receive flags in the scene schema.
+      When a doubleSided-aware + tighter-shadow engine ships to the CDN,
+      retire the `VIS = 3` scale workaround in qubekit's `so100-quine-3d.js`.
 - [ ] **Re-enable Jolt's job pool** for the 10k+/multicore target (needs a
       thread-safe contact path; we run single-threaded now). *(ADR 0001)*
 - [ ] **Windows cross-compile**: the zphysics binding's comptime `@sizeOf`

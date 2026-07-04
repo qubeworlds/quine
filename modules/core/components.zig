@@ -75,6 +75,11 @@ pub const Material = struct {
     roughness: f32 = 0.5,
     emissive: m.Vec3 = .{},
     surface: Surface = .plain,
+    /// glTF `doubleSided`: light both faces (the shader flips the normal toward
+    /// the viewer). For thin OPEN meshes — printed shells, leaves, cloth — whose
+    /// interior walls otherwise shade near-black. The rasterizer never culls, so
+    /// this only affects lighting.
+    double_sided: bool = false,
 };
 
 /// Makes an entity rotate on its own each tick. `velocity` is angular velocity

@@ -307,6 +307,7 @@ pub const SceneRuntime = struct {
                         .metallic = gm.metallic,
                         .roughness = gm.roughness,
                         .emissive = m.Vec3.init(gm.emissive[0], gm.emissive[1], gm.emissive[2]),
+                        .double_sided = gm.double_sided,
                     });
                 };
             };
@@ -344,6 +345,7 @@ pub const SceneRuntime = struct {
                     .dimpled => .dimpled,
                     .basketball => .basketball,
                 },
+                .double_sided = mat.double_sided,
             });
             // Scene-declared base-colour texture: decode the PNG asset into the
             // runtime's CPU registry (render-free — the APP uploads the slots,

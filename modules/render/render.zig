@@ -116,8 +116,10 @@ pub fn viewProj(queue: *const core.RenderQueue, aspect: f32) m.Mat4 {
 fn materialParams(mat: core.Material) shd.FsParams {
     return .{
         .base_color = .{ mat.base_color.x, mat.base_color.y, mat.base_color.z, mat.base_color.w },
-        // pbr.w carries the surface-finish code (0 plain, 2 dimpled, 3 basketball).
-        .pbr = .{ mat.metallic, mat.roughness, 0, @floatFromInt(@intFromEnum(mat.surface)) },
+        // pbr.z is a flag field (bit 0 preview — added per draw below; bit 1
+        // doubleSided); pbr.w carries the surface-finish code (0 plain,
+        // 2 dimpled, 3 basketball).
+        .pbr = .{ mat.metallic, mat.roughness, if (mat.double_sided) 2 else 0, @floatFromInt(@intFromEnum(mat.surface)) },
         .emissive = .{ mat.emissive.x, mat.emissive.y, mat.emissive.z, 0 },
     };
 }
@@ -598,16 +600,27 @@ pub const Renderer = struct {
             hi = .{ .x = @max(hi.x, bb.max.x), .y = @max(hi.y, bb.max.y), .z = @max(hi.z, bb.max.z) };
         }
         for (queue.slice()) |item| {
-            const px = item.model.m[12];
-            const py = item.model.m[13];
-            const pz = item.model.m[14];
-            lo = .{ .x = @min(lo.x, px - 1), .y = @min(lo.y, py - 1), .z = @min(lo.z, pz - 1) };
-            hi = .{ .x = @max(hi.x, px + 1), .y = @max(hi.y, py + 1), .z = @max(hi.z, pz + 1) };
+            // Real per-item world AABBs, so a small scene's shadow volume fits
+            // the casters tightly (texel density on the content, not padding).
+            // Dynamic meshes re-tessellate per tick and their registry bounds
+            // can lag, so those keep the old padded-position fallback.
+            const md = meshes.get(item.mesh);
+            if (md.dynamic) {
+                const px = item.model.m[12];
+                const py = item.model.m[13];
+                const pz = item.model.m[14];
+                lo = .{ .x = @min(lo.x, px - 1), .y = @min(lo.y, py - 1), .z = @min(lo.z, pz - 1) };
+                hi = .{ .x = @max(hi.x, px + 1), .y = @max(hi.y, py + 1), .z = @max(hi.z, pz + 1) };
+            } else {
+                const bb = item.model.transformAabb(md.aabb_lo, md.aabb_hi);
+                lo = .{ .x = @min(lo.x, bb.lo.x), .y = @min(lo.y, bb.lo.y), .z = @min(lo.z, bb.lo.z) };
+                hi = .{ .x = @max(hi.x, bb.hi.x), .y = @max(hi.y, bb.hi.y), .z = @max(hi.z, bb.hi.z) };
+            }
         }
         if (lo.x > hi.x) return m.Mat4.identity; // nothing to cast
 
         const center = lo.add(hi).scale(0.5);
-        const radius = @max(hi.sub(lo).length() * 0.5, 1.0);
+        const radius = @max(hi.sub(lo).length() * 0.5, 0.25); // floor guards a degenerate (single-point) scene
         const dir = queue.sun.direction.normalize();
         const eye = center.sub(dir.scale(radius * 2.0));
         const up: m.Vec3 = if (@abs(dir.y) > 0.95) .{ .x = 1, .y = 0, .z = 0 } else .{ .x = 0, .y = 1, .z = 0 };
@@ -784,7 +797,7 @@ pub const Renderer = struct {
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             var fsp = materialParams(item.material);
-            if (self.preview) fsp.pbr[2] = 1; // staging lights (fill/rim/softboxes)
+            if (self.preview) fsp.pbr[2] += 1; // staging lights (fill/rim/softboxes) — bit 0 of the flag field
             if (self.preview_dimples != 0) fsp.pbr[3] = @floatFromInt(self.preview_dimples); // dimple mode
             if (probe) fsp.emissive[3] = @floatFromInt(self.debug_mode); // G-buffer channel
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
@@ -923,7 +936,7 @@ pub const Renderer = struct {
             };
             sg.applyUniforms(shd.UB_vs_params, sg.asRange(&params));
             var fsp = materialParams(item.material);
-            if (self.preview) fsp.pbr[2] = 1;
+            if (self.preview) fsp.pbr[2] += 1;
             sg.applyUniforms(shd.UB_fs_params, sg.asRange(&fsp));
 
             if (gm.indexed) {

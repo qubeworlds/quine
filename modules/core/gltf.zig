@@ -139,6 +139,29 @@ fn extractMesh(allocator: std.mem.Allocator, accessors: std.json.Array, buffer_v
             else => return error.Unsupported,
         };
     }
+
+    // No NORMAL accessor (glTF allows it): derive normals from the triangle
+    // winding — accumulate the area-weighted face normal onto each corner and
+    // normalise. The old constant +Y fallback lit every face identically, so a
+    // normal-less glb rendered as a flat silhouette.
+    if (nrm == null) {
+        for (verts) |*v| v.normal = .{ .x = 0, .y = 0, .z = 0 };
+        var i: usize = 0;
+        while (i + 2 < indices.len) : (i += 3) {
+            const a = verts[indices[i]].position;
+            const b = verts[indices[i + 1]].position;
+            const c = verts[indices[i + 2]].position;
+            const face_n = b.sub(a).cross(c.sub(a)); // length ∝ 2·area — the weight
+            for (0..3) |k| {
+                const v = &verts[indices[i + k]];
+                v.normal = v.normal.add(face_n);
+            }
+        }
+        for (verts) |*v| {
+            const len = v.normal.length();
+            v.normal = if (len > 1e-12) v.normal.scale(1.0 / len) else .{ .x = 0, .y = 1, .z = 0 };
+        }
+    }
     return .{ .vertices = verts, .indices = indices };
 }
 
@@ -220,6 +243,8 @@ pub const Material = struct {
     metallic: f32 = 1,
     roughness: f32 = 1,
     emissive: [3]f32 = .{ 0, 0, 0 },
+    /// glTF `doubleSided` — light both faces (spec default false).
+    double_sided: bool = false,
 };
 
 /// The first material's PBR factors, so an imported prop renders with its
@@ -247,6 +272,9 @@ pub fn loadStaticMaterial(allocator: std.mem.Allocator, glb: []const u8) ?Materi
     };
     if (mat.get("emissiveFactor")) |e| if (e == .array and e.array.items.len >= 3) {
         for (0..3) |k| out.emissive[k] = jfloat(e.array.items[k]);
+    };
+    if (mat.get("doubleSided")) |ds| if (ds == .bool) {
+        out.double_sided = ds.bool;
     };
     return out;
 }

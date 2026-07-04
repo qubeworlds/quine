@@ -46,7 +46,7 @@ layout(binding=0) uniform texture2D tex;
 layout(binding=0) uniform sampler smp;
 layout(binding=1) uniform fs_params {
     vec4 base_color;   // albedo rgba
-    vec4 pbr;          // x = metallic, y = roughness, z = preview staging, w = dimples
+    vec4 pbr;          // x = metallic, y = roughness, z = flags (bit0 preview, bit1 doubleSided), w = dimples
     vec4 emissive;     // rgb emissive; .w = G-buffer probe (0 lit, 1 uv, 2 pos, 3 normal)
 };
 
@@ -79,13 +79,16 @@ float shadowDepth(vec2 uv) {
 // 0 = fully shadowed, 1 = lit. 16-tap (4x4) PCF for a soft penumbra instead of
 // the hard, aliased edge a tight kernel gives — the grid stays dense (1-texel
 // spacing) so a ±1.5-texel filter footprint has no gaps or banding.
-float sunShadow(vec3 wp) {
+// `nol` = N·L at the receiver: the bias grows on light-grazing surfaces
+// (slope-scaled), where a texel of the map spans the most receiver depth —
+// the classic acne case on fine/thin geometry.
+float sunShadow(vec3 wp, float nol) {
     if (shadow_params.x < 0.5) return 1.0;
     vec4 clip = sun_shadow_mvp * vec4(wp, 1.0);
     vec3 ndc = clip.xyz / max(clip.w, 1e-6);
     vec2 uv = ndc.xy * 0.5 + 0.5;
     if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return 1.0;
-    float d = ndc.z - shadow_params.z; // receiver depth, biased
+    float d = ndc.z - shadow_params.z * (1.0 + 3.0 * (1.0 - nol)); // receiver depth, slope-scale biased
     float tx = shadow_params.y;
     float lit = 0.0;
     for (int j = 0; j < 4; j++) {
@@ -250,7 +253,15 @@ void main() {
     if (probe == 3) { frag_color = vec4(normalize(world_normal) * 0.5 + 0.5, 1.0); return; }
 
     vec3 n = normalize(world_normal);
-    bool preview = pbr.z > 0.5;  // staging: backdrop lights, applies to any body
+    // pbr.z is a small flag field: bit 0 = preview staging, bit 1 = the
+    // material's doubleSided (light both faces).
+    int zflags = int(pbr.z + 0.5);
+    bool preview = (zflags & 1) != 0;  // staging: backdrop lights, applies to any body
+    // Two-sided lighting: flip the shading normal toward the viewer so the
+    // interior walls of thin OPEN meshes (printed shells, leaves) light
+    // correctly instead of shading near-black. Culling never happens, so this
+    // is purely a lighting fix.
+    if ((zflags & 2) != 0 && dot(n, normalize(view_dir)) < 0.0) n = -n;
     // Surface finish (pbr.w): 1 = spherical dimples (the material ball),
     // 2 = surface/triplanar dimples (the golf-ball hat), 3 = basketball seams.
     int surf = int(pbr.w + 0.5);
@@ -295,7 +306,7 @@ void main() {
     vec3 f = f_schlick(v_o_h, f0);
     vec3 spec = d * vis * f;
     vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
-    float shadow = has_sun ? sunShadow(world_pos) : 1.0;
+    float shadow = has_sun ? sunShadow(world_pos, n_o_l) : 1.0;
     vec3 lit = (kd * diffuse_color + spec) * (n_o_l * shadow) * key_rgb;
 
     // Ambient from the environment: diffuse irradiance along N + a prefiltered
