@@ -761,13 +761,20 @@ pub const Renderer = struct {
         }
 
         // Backdrop fills the frame first (vertex-less fullscreen tri: the
-        // shader builds positions from gl_VertexIndex, so no bindings). The
-        // material preview uses the legacy studio gradient; a mesh-only scene
-        // with an Environment gets its sky here (SDF scenes draw the sky in
-        // the raymarch miss path instead).
+        // shader builds positions from gl_VertexIndex). The material preview
+        // uses the legacy studio gradient; a mesh-only scene with an
+        // Environment gets its sky here (SDF scenes draw the sky in the
+        // raymarch miss path instead). The white-texture bind is load-bearing
+        // on WebGPU: every pipeline's bind group 1 must be SET before a draw,
+        // so the shader samples 1x1 white as identity purely to keep this
+        // pipeline bindable (see bg_fs in triangle.glsl).
         const want_sky = queue.has_env and queue.sdf.len == 0;
         if ((self.preview or want_sky) and !probe) {
             sg.applyPipeline(self.bg_pip);
+            var bgbind = sg.Bindings{};
+            bgbind.views[shd.VIEW_bg_tex] = self.white_view;
+            bgbind.samplers[shd.SMP_bg_smp] = self.skinned_smp;
+            sg.applyBindings(bgbind);
             var bgp = std.mem.zeroes(shd.BgParams);
             if (want_sky and !self.preview) {
                 const ex = @max(queue.post.exposure, 0);

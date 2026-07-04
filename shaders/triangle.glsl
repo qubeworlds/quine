@@ -406,18 +406,29 @@ layout(binding=0) uniform bg_params {
     vec4 bg_zenith;
     vec4 bg_horizon;
 };
+// The 1x1 white texture, multiplied in as identity. It exists ONLY so this
+// shader has a non-empty resource group: sokol's WebGPU pipeline layout always
+// carries bind group 1 (views/samplers), and WebGPU refuses to draw unless
+// every group in the layout is SET — a resource-less fullscreen shader can't
+// be legally bound (sg_apply_bindings rejects an empty struct, and skipping it
+// leaves group 1 unset: "number of bind groups set(1) is less than the
+// pipeline uses(2)" — the Safari-26 sky-scene black screen). GL never cared,
+// which is why this only ever failed on the webgpu backend.
+layout(binding=0) uniform texture2D bg_tex;
+layout(binding=0) uniform sampler bg_smp;
 in vec2 uv;
 out vec4 frag_color;
 void main() {
+    vec3 white = texture(sampler2D(bg_tex, bg_smp), uv).rgb; // 1x1 white -> (1,1,1)
     if (bg_zenith.w > 0.5) {
-        frag_color = vec4(mix(bg_horizon.rgb, bg_zenith.rgb, clamp(uv.y, 0.0, 1.0)), 1.0);
+        frag_color = vec4(mix(bg_horizon.rgb, bg_zenith.rgb, clamp(uv.y, 0.0, 1.0)) * white, 1.0);
         return;
     }
     float vert = smoothstep(-0.1, 0.8, uv.y);
     vec3 col = mix(vec3(0.015, 0.015, 0.02), vec3(0.07, 0.075, 0.095), vert);
     float d = distance(uv, vec2(0.5, 0.56));
     col += vec3(0.05, 0.055, 0.075) * smoothstep(0.7, 0.0, d);
-    frag_color = vec4(col, 1.0);
+    frag_color = vec4(col * white, 1.0);
 }
 @end
 
