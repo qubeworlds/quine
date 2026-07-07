@@ -108,8 +108,12 @@ const App = struct {
     /// the host calls `quine_set_running`, so the sim clock starts clean instead
     /// of free-running through boot. Native windowed/embedded scenes run on load.
     var running: bool = false;
-    var instance: [1]render.SkinnedInstance = undefined;
-    var palette: [render.max_joints]m.Mat4 = undefined;
+    /// Skinned actors this frame. The renderer draws N instances of one shared
+    /// mesh, each with its own joint palette (bucket) — so a crowd of skinned
+    /// actors (e.g. qpak-spawned walkers) renders, not just a single "dancer".
+    const max_skinned = 16;
+    var instances: [max_skinned]render.SkinnedInstance = undefined;
+    var palettes: [max_skinned * render.max_joints]m.Mat4 = undefined;
 
     var hud_visible: bool = false; // closed on boot; Tab toggles it, host can opt in
     /// Free-run the loaded scene's timeline at wall-clock when the host opts in
@@ -684,13 +688,23 @@ fn buildStage(json: []const u8) !void {
         if (maybe_tex) |tex| App.renderer.uploadStaticTexture(@intCast(slot), tex);
     }
 
-    // Optional: a material-preview / asset scene has no skinned actor.
+    // Optional: a material-preview / asset scene has no skinned actor. `dancer`
+    // stays the primary actor (gaze/gizmo/skill target); the shared skinned mesh
+    // is uploaded from the FIRST skinned binding — every skinned actor draws
+    // against this one mesh (the crowd assumption: they share one mesh/skeleton).
     App.dancer = App.stage.find("dancer");
-    if (App.dancer) |d| if (d.model) |*model| {
+    var first_skinned: ?*scene_runtime.Binding = App.dancer;
+    if (first_skinned == null) for (App.stage.bindings) |*b| {
+        if (b.model != null and b.pose != null) {
+            first_skinned = b;
+            break;
+        }
+    };
+    if (first_skinned) |d| if (d.model) |*model| {
         App.renderer.uploadSkinned(model.mesh);
         App.renderer.uploadSkinnedTexture(model.base_color); // base-colour atlas (eyes, skin)
     };
-    for (&App.palette) |*p| p.* = m.Mat4.identity; // tail joints stay identity
+    for (&App.palettes) |*p| p.* = m.Mat4.identity; // tail joints stay identity
 
     App.camera = findCamera(&App.stage.world);
     App.giz.selected = if (App.dancer) |d| d.entity else null; // gizmo grabs the actor if any
@@ -1088,15 +1102,24 @@ export fn frame() void {
     core.extract(prev, &App.stage.world, alpha, &App.queue);
     App.last_vp = render.viewProj(&App.queue, aspect);
 
-    // The skinned actor: palette from this tick's pose, placed at its Transform.
+    // Every skinned actor: one instance each, sharing the uploaded mesh, each
+    // with its own joint palette (bucket) from this tick's pose. This is how a
+    // crowd of qpak-spawned walkers renders — not just a single "dancer".
     var skinned: ?render.SkinnedScene = null;
-    if (App.dancer) |d| if (d.model) |*model| if (d.pose) |*pose| {
-        const jc = model.skeleton.jointCount();
-        pose.fillPalette(&model.skeleton, App.palette[0..jc]); // eye-bone gaze applied in scene_runtime.update
-        const tf = App.stage.world.get(core.Transform, d.entity).?.*;
-        App.instance[0] = .{ .model = tf.matrix(), .bucket = 0 };
-        skinned = .{ .instances = &App.instance, .palettes = &App.palette };
-    };
+    {
+        var n: usize = 0;
+        for (App.stage.bindings) |*b| {
+            if (n >= App.max_skinned) break;
+            if (b.model) |*model| if (b.pose) |*pose| {
+                const jc = model.skeleton.jointCount();
+                pose.fillPalette(&model.skeleton, App.palettes[n * render.max_joints ..][0..jc]); // eye-bone gaze applied in scene_runtime.update
+                const tf = App.stage.world.get(core.Transform, b.entity).?.*;
+                App.instances[n] = .{ .model = tf.matrix(), .bucket = @intCast(n) };
+                n += 1;
+            };
+        }
+        if (n > 0) skinned = .{ .instances = App.instances[0..n], .palettes = App.palettes[0 .. n * render.max_joints] };
+    }
 
     const hud: ?render.HudInfo = if (App.hud_visible) .{
         .backend = render.backendName(),
