@@ -187,18 +187,28 @@ export function buildQpakSkill(sceneSkill: string, resolved: ResolvedQpak[]): st
   const withBrain = resolved.filter((r) => r.behavior);
   if (!withBrain.length) return sceneSkill; // nothing to compose — pass the scene skill through
 
-  const wrap = (ns: string, code: string) =>
+  // Root entity name per behaviour instance — the set a behaviour's `nearby()`
+  // senses (for avoidance / flocking between qpak characters).
+  const roots = withBrain.map((r) => r.entities[0]?.name).filter(Boolean) as string[];
+
+  // Each behaviour gets: a `world` scoped to its instance; local step collectors;
+  // and `nearby()` → the live positions of the OTHER roots (empty for the scene
+  // skill, whose `self` is null so every root is "other" but it rarely calls it).
+  const wrap = (ns: string, code: string, self: string | null) =>
     `(function(){var __steps=[],__post=[];` +
     `var onPreStep=function(f){__steps.push(f);},onPostStep=function(f){__post.push(f);};` +
     `var world={get:function(n){return __W.get(${JSON.stringify(ns)}+n);},gravity:__W.gravity};` +
+    `var __self=${JSON.stringify(self)};` +
+    `function nearby(){var o=[];for(var k=0;k<__ROOTS.length;k++){var rn=__ROOTS[k];if(rn===__self)continue;` +
+    `var e=__W.get(rn);if(e&&e.transform)o.push(e.transform.position);}return o;}` +
     `\n${code}\n` +
     `__PRE.push(__steps);__POST.push(__post);})();`;
 
-  const groups = withBrain.map((r) => wrap(`${r.instance}__`, r.behavior as string));
-  if (sceneSkill && sceneSkill.trim()) groups.push(wrap('', sceneSkill)); // scene skill, un-namespaced
+  const groups = withBrain.map((r) => wrap(`${r.instance}__`, r.behavior as string, r.entities[0]?.name ?? null));
+  if (sceneSkill && sceneSkill.trim()) groups.push(wrap('', sceneSkill, null)); // scene skill, un-namespaced
 
   return (
-    `(function(){var __W=world,__PRE=[],__POST=[];\n` +
+    `(function(){var __W=world,__PRE=[],__POST=[],__ROOTS=${JSON.stringify(roots)};\n` +
     groups.join('\n') +
     `\nonPreStep(function(dt){for(var i=0;i<__PRE.length;i++){var s=__PRE[i];for(var j=0;j<s.length;j++)s[j](dt);}});` +
     `\nonPostStep(function(dt){for(var i=0;i<__POST.length;i++){var s=__POST[i];for(var j=0;j<s.length;j++)s[j](dt);}});` +

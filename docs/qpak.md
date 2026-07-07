@@ -108,6 +108,10 @@ resolves to `"<instance>__root"`) and local `onPreStep`/`onPostStep` collectors;
 one real handler dispatches them all. Each wrap is its own closure, so instances
 keep **independent** behaviour state. `mountScene` wires this automatically.
 
+Each behaviour also gets **`nearby()`** — the live positions of the *other*
+spawned qpak roots — for inter-agent behaviour (avoidance, flocking). A crowd of
+NPCs uses it to steer away from each other and never overlap.
+
 ```jsonc
 // qpak.json
 "behavior": { "source": "behavior/wander.js" }
