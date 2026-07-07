@@ -46,6 +46,7 @@ export {
   resolveQpakFiles,
   resolveQpakArchive,
   mergeQpakEntities,
+  buildQpakSkill,
   validateQpakManifest,
   refToUrl,
 } from './qpak.js';

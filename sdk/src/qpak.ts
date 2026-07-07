@@ -46,7 +46,10 @@ export interface QpakManifest {
   description?: string;
   entities: QpakEntity[];
   assets?: QpakAsset[];
-  behavior?: unknown; // read only so it can be rejected (not supported yet)
+  /** A per-instance behaviour skill (QuickJS source at `source`, a path inside
+   *  the archive). Authored in normal skill style (`onPreStep`, `world.get`);
+   *  the host scopes `world` to this instance's namespace (see buildQpakSkill). */
+  behavior?: { source: string };
 }
 
 /** A scene's request to spawn one qpak instance at a place. */
@@ -70,6 +73,9 @@ export interface ResolvedQpak {
   entities: QpakEntity[];
   /** Namespaced engine asset names + their bytes. */
   assets: Array<{ name: string; data: Uint8Array }>;
+  /** This instance's behaviour skill source (from the archive), or `null`. The
+   *  host composes all instances' behaviours into one skill (buildQpakSkill). */
+  behavior: string | null;
 }
 
 const ID_RE = /^[a-z0-9_]+(\/[a-z0-9_]+)*$/;
@@ -86,8 +92,11 @@ export function validateQpakManifest(m: unknown): QpakManifest {
     throw new Error('qpak: version must be a positive integer');
   if (!Array.isArray(o.entities) || o.entities.length === 0)
     throw new Error('qpak: entities must be a non-empty array');
-  if (o.behavior !== undefined)
-    throw new Error('qpak: behavior is not supported yet (props only) — it arrives in a later phase');
+  if (o.behavior !== undefined) {
+    const b = o.behavior as { source?: unknown };
+    if (!b || typeof b.source !== 'string')
+      throw new Error('qpak: behavior must be { source: "<path>" }');
+  }
   return o as unknown as QpakManifest;
 }
 
@@ -153,7 +162,48 @@ export function resolveQpakFiles(files: Record<string, Uint8Array>, spawn: QpakS
     if (!data) throw new Error(`qpak ${spawn.ref}: asset "${a.name}" → "${a.url}" missing from archive`);
     return { name: ns(a.name), data };
   });
-  return { instance: spawn.instance, id: m.id, version: m.version, entities, assets };
+
+  let behavior: string | null = null;
+  if (m.behavior) {
+    const code = files[m.behavior.source];
+    if (!code) throw new Error(`qpak ${spawn.ref}: behavior "${m.behavior.source}" missing from archive`);
+    behavior = new TextDecoder().decode(code);
+  }
+
+  return { instance: spawn.instance, id: m.id, version: m.version, entities, assets, behavior };
+}
+
+/**
+ * Compose the scene's skill + every spawned qpak's behaviour into ONE skill the
+ * engine can run. The engine keeps a single pre/post-step handler, so each
+ * behaviour can't register its own `onPreStep` — instead each is wrapped in an
+ * IIFE with a **namespaced `world`** (so its `world.get("root")` resolves to this
+ * instance's `"<instance>__root"`) and local `onPreStep`/`onPostStep` that
+ * *collect* handlers; one real handler then dispatches them all. Each wrap is its
+ * own closure, so instances keep independent behaviour state. The scene's own
+ * skill runs as an un-namespaced group.
+ */
+export function buildQpakSkill(sceneSkill: string, resolved: ResolvedQpak[]): string {
+  const withBrain = resolved.filter((r) => r.behavior);
+  if (!withBrain.length) return sceneSkill; // nothing to compose — pass the scene skill through
+
+  const wrap = (ns: string, code: string) =>
+    `(function(){var __steps=[],__post=[];` +
+    `var onPreStep=function(f){__steps.push(f);},onPostStep=function(f){__post.push(f);};` +
+    `var world={get:function(n){return __W.get(${JSON.stringify(ns)}+n);},gravity:__W.gravity};` +
+    `\n${code}\n` +
+    `__PRE.push(__steps);__POST.push(__post);})();`;
+
+  const groups = withBrain.map((r) => wrap(`${r.instance}__`, r.behavior as string));
+  if (sceneSkill && sceneSkill.trim()) groups.push(wrap('', sceneSkill)); // scene skill, un-namespaced
+
+  return (
+    `(function(){var __W=world,__PRE=[],__POST=[];\n` +
+    groups.join('\n') +
+    `\nonPreStep(function(dt){for(var i=0;i<__PRE.length;i++){var s=__PRE[i];for(var j=0;j<s.length;j++)s[j](dt);}});` +
+    `\nonPostStep(function(dt){for(var i=0;i<__POST.length;i++){var s=__POST[i];for(var j=0;j<s.length;j++)s[j](dt);}});` +
+    `\n})();`
+  );
 }
 
 /** Unzip raw `.qpak` bytes (DEFLATE zip, `qpak.json` at root) and resolve a spawn. */

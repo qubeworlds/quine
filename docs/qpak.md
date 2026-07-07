@@ -96,11 +96,45 @@ import { resolveQpakFiles } from '@taluvi/quine';
 `mountScene` wires this automatically: a scene's `qpaks[]` are resolved in
 `fetchScene` and folded in during `mount` — no caller code needed.
 
+## Behaviour (a qpak's brain)
+
+A qpak may carry a **`behavior`** — a QuickJS skill at `behavior.source` (a path
+inside the archive), authored in the normal skill style (`onPreStep`,
+`world.get`). Because the engine keeps a **single** step handler, the host can't
+let each instance register its own — so `buildQpakSkill` composes the scene's
+skill + every spawned qpak's behaviour into **one** skill: each behaviour is
+wrapped with a `world` scoped to its instance namespace (its `world.get("root")`
+resolves to `"<instance>__root"`) and local `onPreStep`/`onPostStep` collectors;
+one real handler dispatches them all. Each wrap is its own closure, so instances
+keep **independent** behaviour state. `mountScene` wires this automatically.
+
+```jsonc
+// qpak.json
+"behavior": { "source": "behavior/wander.js" }
+```
+```js
+// behavior/wander.js — moves THIS instance; the host namespaces `world`.
+var target = null;
+onPreStep(function (dt) {
+  var s = world.get("root"); if (!s) return;
+  var p = s.transform.position;
+  if (!target) target = { x: p.x + (Math.random()*2-1)*3, z: p.z + (Math.random()*2-1)*3 };
+  var dx = target.x - p.x, dz = target.z - p.z, d = Math.hypot(dx, dz);
+  if (d < 0.25) { target = null; return; }
+  var st = Math.min(1.4 * dt, d);
+  s.transform.position = { x: p.x + dx/d*st, y: p.y, z: p.z + dz/d*st };
+});
+```
+
 ## Phasing
 
 - **P0 (shipped)** — prop qpak: `entities` + `assets`, no behaviour. Live as the
   **Three Walkers** example on qubeworlds.com.
-- **P1** — behaviour: a per-instance skill (`behavior.source`) so a character acts
-  (walk + wander), then an LLM-driven `agent` brain.
+- **P1 (implemented)** — behaviour: a per-instance skill (`behavior.source`) so a
+  character acts. Verified: three walkers spawned from one qpak wander
+  independently (each behaviour scoped to its instance). Next: an LLM-driven
+  `agent` brain (perceive → decide out-of-tick → act), determinism via a decision
+  log.
 - **Later** — bundled materials/textures/collision, declared `params`, and a
-  capability manifest (what a shared/untrusted brain may touch).
+  capability manifest (what a shared/untrusted brain may touch — the security
+  boundary for user-authored behaviours).

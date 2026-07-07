@@ -21,7 +21,7 @@ import {
   type QuineModule,
 } from './engine.js';
 import { fetchScene, type FetchedScene } from './scene.js';
-import { mergeQpakEntities } from './qpak.js';
+import { mergeQpakEntities, buildQpakSkill } from './qpak.js';
 import { version } from './version.js';
 
 export interface MountSceneOptions extends EngineOptions {
@@ -120,7 +120,9 @@ export async function mountScene(opts: MountSceneOptions): Promise<QuineView> {
   // 4. the scene (with qpak entities spliced in), then its skill (opts.skill
   //    overrides the scene's linked one).
   enqueue(mod, { type: 'scene', json: mergeQpakEntities(scene.json, scene.qpaks) });
-  const skillCode = opts.skill ?? scene.skillCode;
+  // Compose the scene's own skill with every spawned qpak's per-instance
+  // behaviour into one skill (the engine keeps a single step handler).
+  const skillCode = buildQpakSkill(opts.skill ?? scene.skillCode, scene.qpaks);
   if (skillCode) enqueue(mod, { type: 'skill', code: skillCode });
 
   // 5. legacy single-flag injectors — only where the config is silent, so a config
