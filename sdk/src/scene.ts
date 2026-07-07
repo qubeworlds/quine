@@ -7,9 +7,14 @@
  * does (the engine is content-agnostic).
  */
 
+import { resolveQpakArchive, refToUrl, type QpakSpawn, type ResolvedQpak } from './qpak.js';
+
 /** The parts of a scene document this SDK reads. Unknown fields are ignored. */
 export interface SceneDoc {
   entities?: Array<{ audio?: { clip?: string } }>;
+  /** Character/agent bundles this scene spawns (resolved host-side into entities
+   *  + assets before the engine builds — the engine never sees "qpak"). */
+  qpaks?: QpakSpawn[];
   /** Mesh / binary assets the scene resolves by name (`quine_provide_asset`). */
   assets?: Array<{ name: string; url: string }>;
   /** Linked skill code (a QuickJS source the engine runs after the scene). */
@@ -52,6 +57,9 @@ export interface FetchedScene {
   base: string;
   /** The backend the scene prefers, or `null`. */
   preferredBackend: 'webgl2' | 'webgpu' | null;
+  /** Resolved qpak instances (fetched + unzipped + namespaced). Their entities
+   *  merge into the scene JSON and their assets feed alongside the scene's own. */
+  qpaks: ResolvedQpak[];
 }
 
 /** Distinct audio clip names a scene's entities reference. */
@@ -91,6 +99,23 @@ export async function fetchScene(url: string, onStatus: (line: string) => void =
     else onStatus(`asset ${a.name}: HTTP ${ar.status}`);
   }
 
+  // Resolve every qpak this scene spawns. Per-qpak failures are isolated — a
+  // broken character shouldn't blank the whole world.
+  const qpaks: ResolvedQpak[] = [];
+  for (const q of doc.qpaks ?? []) {
+    try {
+      const src = q.archive ? new URL(q.archive, url).href : refToUrl(q.ref).url;
+      const ar = await fetch(src);
+      if (!ar.ok) {
+        onStatus(`qpak ${q.ref}: HTTP ${ar.status}`);
+        continue;
+      }
+      qpaks.push(resolveQpakArchive(new Uint8Array(await ar.arrayBuffer()), q));
+    } catch (e) {
+      onStatus(`qpak ${q.ref}: ${String(e)}`);
+    }
+  }
+
   return {
     url,
     json,
@@ -102,5 +127,6 @@ export async function fetchScene(url: string, onStatus: (line: string) => void =
     room: doc.room ?? null,
     base: doc.base ?? '',
     preferredBackend: doc.preferredBackend ?? null,
+    qpaks,
   };
 }

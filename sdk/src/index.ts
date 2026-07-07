@@ -41,6 +41,16 @@ export type {
 export { fetchScene, sceneClipNames } from './scene.js';
 export type { SceneDoc, SceneAsset, FetchedScene } from './scene.js';
 
+// Qpak — portable character/agent bundles a scene spawns.
+export {
+  resolveQpakFiles,
+  resolveQpakArchive,
+  mergeQpakEntities,
+  validateQpakManifest,
+  refToUrl,
+} from './qpak.js';
+export type { QpakManifest, QpakSpawn, QpakAsset, QpakEntity, ResolvedQpak, Vec3 } from './qpak.js';
+
 // The engine surface: loader + low-level ccalls.
 export {
   loadEngine,

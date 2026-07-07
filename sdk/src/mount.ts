@@ -21,6 +21,7 @@ import {
   type QuineModule,
 } from './engine.js';
 import { fetchScene, type FetchedScene } from './scene.js';
+import { mergeQpakEntities } from './qpak.js';
 import { version } from './version.js';
 
 export interface MountSceneOptions extends EngineOptions {
@@ -111,12 +112,14 @@ export async function mountScene(opts: MountSceneOptions): Promise<QuineView> {
   setConfig(mod, cfg);
 
   // 2. assets (meshes) BEFORE the scene — the scene resolves them by name.
-  provideAssets(mod, scene.assets);
+  //    Fold in every spawned qpak's assets alongside the scene's own.
+  provideAssets(mod, [...scene.assets, ...scene.qpaks.flatMap((q) => q.assets)]);
   // 3. audio clips — decoded host-side to PCM, also resolved before build.
   await provideSceneClips(mod, scene.doc, scene.url);
 
-  // 4. the scene, then its skill (opts.skill overrides the scene's linked one).
-  enqueue(mod, { type: 'scene', json: scene.json });
+  // 4. the scene (with qpak entities spliced in), then its skill (opts.skill
+  //    overrides the scene's linked one).
+  enqueue(mod, { type: 'scene', json: mergeQpakEntities(scene.json, scene.qpaks) });
   const skillCode = opts.skill ?? scene.skillCode;
   if (skillCode) enqueue(mod, { type: 'skill', code: skillCode });
 
