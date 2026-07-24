@@ -126,7 +126,11 @@ they do not bundle or serve engine/assets themselves.
 uploads `quine-{webgl2,webgpu}.{js,wasm}` to `/engine/` and the shared meshes +
 example scene/skill to `/assets/`, then sets open (wildcard-GET) CORS so one CDN
 serves every app. Run it after an engine or shared-asset change (needs Cloudflare
-R2 creds). **User-uploaded assets are a separate, private concern** (the
+R2 creds). The scene uploads live in `scripts/publish-scenes.sh` (called by
+publish-cdn.sh) — run it directly for a cheap scenes-only publish; **never upload
+a scene JSON by hand**, the script is the one publish path. The `npcs` scene and
+the Navigator's `scenes/index.json` are owned and published by the `world` repo
+(`scripts/publish-scenes.mjs` there). **User-uploaded assets are a separate, private concern** (the
 `qubeworlds-user` bucket) — not published here.
 
 ## Conventions

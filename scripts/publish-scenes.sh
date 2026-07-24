@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# publish-scenes.sh — publish the example SCENES (JSON + co-located assets) to the
+# public CDN (R2 bucket `cdn-qubeworlds`, https://cdn.qubeworlds.com/scenes/…).
+#
+# This is the ONLY path by which quine's scene JSONs reach the CDN — never upload
+# a scene by hand (world TODO "one publish path for scenes"; the precursor to the
+# Qworld flow). publish-cdn.sh calls this after the engine upload, so a full
+# engine publish still ships everything; run this directly for a scenes-only
+# publish (cheap: a native dump-scenes build, no wasm).
+#
+#   ./scripts/publish-scenes.sh            # dump procedural scenes, upload all
+#   QUINE_SKIP_BUILD=1 ./scripts/publish-scenes.sh   # upload whatever's in zig-out/scenes
+#
+# Scene ownership: this script publishes the scenes whose sources live in THIS
+# repo (the worlds.zig dumps + the static authored modules/core/*.scene.json).
+# The `npcs` scene and the Navigator's scenes/index.json are owned by the `world`
+# repo and published by its scripts/publish-scenes.mjs.
+#
+# Needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (the cdn-qubeworlds account).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
+: "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}"
+
+BUCKET="cdn-qubeworlds"
+ZIG="$ROOT_DIR/.zig/zig"; [ -x "$ZIG" ] || ZIG=zig
+
+# Dump the Frame's procedural worlds to standalone scene JSON (zig-out/scenes).
+if [ "${QUINE_SKIP_BUILD:-0}" != "1" ]; then
+  echo "==> Dumping example scenes (cockpit/tunnel/rabbits/terrain/sundial)"
+  "$ZIG" build dump-scenes
+fi
+
+put() { # put <key> <file> <content-type>
+  echo "    $BUCKET/$1"
+  npx --yes wrangler@latest r2 object put "$BUCKET/$1" --file="$2" --content-type="$3" --remote >/dev/null
+}
+
+# Scenes → scenes/<name>/ — each a SELF-CONTAINED folder: the scene file plus
+# the meshes it references, co-located. The engine carries no meshes; a scene's
+# `assets` manifest links each one RELATIVE to the scene, so a scene folder
+# moves/cleans up as a unit. (The Navigator overlay + the world index.json are
+# published from the `world` repo, alongside the scenes that link them.)
+echo "==> Uploading scenes to scenes/<name>/"
+for s in cockpit tunnel terrain sundial; do
+  put "scenes/$s/scene.json" "zig-out/scenes/$s.scene.json" application/json
+done
+# rabbits is now LIVE (multiplayer): a minimal scene that links the game-server
+# room — its bunny field comes from the room's instances, not baked JSON. Static
+# authored file (not the worlds.zig dump), + its shared mesh co-located.
+put scenes/rabbits/scene.json modules/core/rabbits.scene.json application/json
+put scenes/rabbits/bunny.obj  assets/bunny.obj                 text/plain
+# the editor's keepie-uppie demo scene + skill + its meshes (CesiumMan + rpm). The
+# RUNTIME scene points script.source at the compiled, co-located skill (skill.js);
+# the authoring source keeps its .ts.
+python3 -c "import json;d=json.load(open('modules/core/keepie-uppie.scene.json'));d['script']['source']='skill.js';json.dump(d,open('zig-out/keepie-uppie.runtime.json','w'))"
+put scenes/keepie-uppie/scene.json    zig-out/keepie-uppie.runtime.json     application/json
+# The RUNTIME skill is comment-stripped (a runtime artifact, not the authoring
+# source): comments are where stray non-ASCII / encoding hazards hide, and the
+# host injects the skill source verbatim into the engine's QuickJS. terser strips
+# comments without mangling; fall back to the raw source if terser is unavailable.
+npx --yes terser modules/script/keepie-uppie.skill.js --compress=false --mangle=false --format comments=false \
+  -o zig-out/keepie-uppie.skill.js 2>/dev/null || cp modules/script/keepie-uppie.skill.js zig-out/keepie-uppie.skill.js
+put scenes/keepie-uppie/skill.js      zig-out/keepie-uppie.skill.js         "text/javascript; charset=utf-8"
+put scenes/keepie-uppie/CesiumMan.glb assets/CesiumMan.glb                  model/gltf-binary
+put scenes/keepie-uppie/rpm.glb       assets/rpm-head.glb                   model/gltf-binary
+# the /docs/eyes demo's avatar mesh:
+put scenes/eyes/rpm.glb               assets/rpm-head.glb                   model/gltf-binary
+# the destructible-SDF drill demo: wall + drill, both kind:"sdf" (N SDF objects),
+# keyframe-bored with flying debris. Pure data, no assets.
+put scenes/drill/scene.json           modules/core/drill.scene.json         application/json
+# the water demo: a boat prop at the origin. A skin-less glTF, loaded via the
+# engine's static-glTF path; static authored scene + its co-located mesh.
+put scenes/water/scene.json           modules/core/water.scene.json         application/json
+put scenes/water/boat.glb             assets/boat.glb                       model/gltf-binary
+# the city demo: Dubai Marina / JBR from real OSM footprints (© OpenStreetMap
+# contributors, ODbL — assets/ATTRIBUTION.md). Generated by tools/gen-city.py;
+# the scene + its baked facade/ground textures, co-located.
+put scenes/city/scene.json            modules/core/city.scene.json          application/json
+for t in assets/city/*.png; do
+  put "scenes/city/$(basename "$t")" "$t" image/png
+done
+
+echo "==> Done. Scenes: https://cdn.qubeworlds.com/scenes/"
